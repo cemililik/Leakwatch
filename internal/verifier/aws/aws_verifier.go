@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
+	"github.com/HodeTech/leakwatch/internal/verifier/internal/httpx"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
@@ -75,10 +77,15 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				Message: "AWS credentials are invalid or inactive",
 			}
 		}
-		slog.ErrorContext(ctx, "aws verifier: verification failed", slog.String("error", err.Error()))
+		// AWS error bodies can echo the caller's Access Key ID (and, for some
+		// signature errors, request context) back to the client. Strip the raw
+		// credentials before the message reaches a log record or the returned
+		// VerificationResult (which flows into JSON/SARIF/CSV output).
+		safeMsg := redactSDKError(err, raw)
+		slog.ErrorContext(ctx, "aws verifier: verification failed", slog.String("error", safeMsg))
 		return finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
-			Message: fmt.Sprintf("verification failed: %v", err),
+			Message: fmt.Sprintf("verification failed: %s", safeMsg),
 		}
 	}
 
@@ -141,23 +148,21 @@ func isAuthError(err error) bool {
 
 	errMsg := err.Error()
 	for code := range authErrorCodes {
-		if containsString(errMsg, code) {
+		if strings.Contains(errMsg, code) {
 			return true
 		}
 	}
 	return false
 }
 
-// containsString checks if s contains substr (simple string search).
-func containsString(s, substr string) bool {
-	return len(substr) <= len(s) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// redactSDKError returns the SDK error text with the raw Access Key ID and
+// Secret Access Key stripped, so no raw credential can reach a log record or an
+// output-bound VerificationResult.Message. It reuses the shared httpx redaction
+// chokepoint for the primary credential and masks the secret key on top of it.
+func redactSDKError(err error, raw detector.RawFinding) string {
+	msg := httpx.RedactError(err, string(raw.Raw))
+	if len(raw.RawV2) > 0 {
+		msg = strings.ReplaceAll(msg, string(raw.RawV2), "[REDACTED]")
 	}
-	return false
+	return msg
 }

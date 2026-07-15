@@ -168,6 +168,37 @@ func TestIsAuthError_ExactCodeMatching(t *testing.T) {
 	}
 }
 
+// TestVerify_ErrorEchoingCredentials_Redacts ensures that when the SDK error
+// text echoes the raw Access Key ID or Secret Access Key back (as AWS signature
+// errors can), neither raw credential appears in the log/output-bound message.
+func TestVerify_ErrorEchoingCredentials_Redacts(t *testing.T) {
+	const (
+		accessKeyID = "AKIAIOSFODNN7EXAMPLE"
+		secretKey   = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	)
+	mock := &mockSTSClient{
+		err: fmt.Errorf(
+			"InternalFailure: the AccessKeyId %s with secret %s could not be processed",
+			accessKeyID, secretKey,
+		),
+	}
+	v := &Verifier{client: mock}
+
+	raw := detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte(accessKeyID),
+		RawV2:      []byte(secretKey),
+		Redacted:   "AKIA****MPLE",
+	}
+
+	result := v.Verify(context.Background(), raw)
+
+	require.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.NotContains(t, result.Message, accessKeyID)
+	assert.NotContains(t, result.Message, secretKey)
+	assert.Contains(t, result.Message, "[REDACTED]")
+}
+
 func TestVerify_OtherError_ReturnsVerifyError(t *testing.T) {
 	mock := &mockSTSClient{
 		err: errors.New("network timeout"),
