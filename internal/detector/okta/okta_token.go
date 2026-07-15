@@ -13,6 +13,10 @@ import (
 var (
 	oktaTokenPattern   = regexp.MustCompile(`00[A-Za-z0-9_-]{40}`)
 	oktaContextPattern = regexp.MustCompile(`(?i)(?:okta|SSWS)`)
+	// oktaDomainPattern captures a co-located Okta org domain (for example
+	// https://acme.okta.com) so the verifier can target the correct host.
+	// Capture group 1 is the bare hostname.
+	oktaDomainPattern = regexp.MustCompile(`(?i)(?:https?://)?([a-z0-9][a-z0-9-]*\.(?:okta|oktapreview|okta-emea)\.com)`)
 )
 
 // Detector detects Okta API Tokens.
@@ -42,14 +46,25 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 
+	// Capture a co-located Okta org domain so the verifier can reach the
+	// correct tenant host. Stored as non-secret context in ExtraData["domain"].
+	var domain string
+	if m := oktaDomainPattern.FindSubmatch(data); m != nil {
+		domain = string(m[1])
+	}
+
 	findings := make([]detector.RawFinding, 0, len(matches))
 	for _, match := range matches {
 		redacted := "00****" + string(match[len(match)-4:])
-		findings = append(findings, detector.RawFinding{
+		f := detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        bytes.Clone(match),
 			Redacted:   redacted,
-		})
+		}
+		if domain != "" {
+			f.ExtraData = map[string]string{"domain": domain}
+		}
+		findings = append(findings, f)
 	}
 	return findings
 }

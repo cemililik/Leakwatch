@@ -50,8 +50,10 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 	if apiURL == "" {
 		domain, ok := raw.ExtraData["domain"]
 		if !ok || domain == "" {
+			// Without a co-located Okta org domain the token cannot be routed to
+			// a host, so the outcome is indeterminate — never a false "invalid".
 			return finding.VerificationResult{
-				Status:  finding.StatusVerifyError,
+				Status:  finding.StatusUnverified,
 				Message: "Okta domain required",
 			}
 		}
