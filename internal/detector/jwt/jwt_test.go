@@ -69,6 +69,68 @@ func TestJWT_Scan_MatchesValidTokens(t *testing.T) {
 	}
 }
 
+// TestJWT_Scan_SuppressesGitHubStatelessTokenBody verifies that the JWT body of
+// a GitHub stateless installation token (ghs_APPID_<jwt>) is NOT reported by the
+// jwt detector: that whole token is already reported by github-oauth-token, so
+// emitting the embedded JWT too would split one secret into two findings.
+func TestJWT_Scan_SuppressesGitHubStatelessTokenBody(t *testing.T) {
+	// Built from parts so no contiguous real-looking token literal is committed.
+	header := "eyJ" + strings.Repeat("Ab9Cd0Ef", 5)
+	payload := "eyJ" + strings.Repeat("Gh1Ij2Kl", 30)
+	signature := strings.Repeat("Mn3Op4Qr", 12)
+	jwtBody := header + "." + payload + "." + signature
+	statelessToken := "ghs_12345678_" + jwtBody
+
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{
+			name:     "stateless ghs_ token body is suppressed",
+			input:    statelessToken,
+			expected: 0,
+		},
+		{
+			name:     "stateless token embedded in config is suppressed",
+			input:    "GITHUB_TOKEN=" + statelessToken + "\n",
+			expected: 0,
+		},
+		{
+			// A base64url char glued directly before "ghs_" (no delimiter) must
+			// still be recognised as a ghs_ body: the github-oauth-token detector
+			// matches "ghs_..." mid-string, so reporting the JWT too would double
+			// the same secret.
+			name:     "stateless token glued to a preceding token char is suppressed",
+			input:    "x" + statelessToken,
+			expected: 0,
+		},
+		{
+			name:     "standalone JWT is still reported",
+			input:    jwtBody,
+			expected: 1,
+		},
+		{
+			name:     "JWT preceded by a non-ghs token run is still reported",
+			input:    "Bearer " + jwtBody,
+			expected: 1,
+		},
+		{
+			name:     "stateless token plus an unrelated standalone JWT",
+			input:    statelessToken + " and also " + jwtBody,
+			expected: 1,
+		},
+	}
+
+	d := &JWT{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := d.Scan(context.Background(), []byte(tt.input))
+			assert.Len(t, findings, tt.expected)
+		})
+	}
+}
+
 func TestJWT_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string

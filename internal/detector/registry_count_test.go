@@ -19,11 +19,17 @@ package detector_test
 // sync with cmd/imports.go.
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	// Each blank import runs the package's init(), registering its detector(s)
 	// so the golden count below sees the full compile-time set. The per-line
@@ -110,5 +116,98 @@ func TestAll_RegisteredDetectorCount_MatchesGolden(t *testing.T) {
 		assert.NotEmpty(t, d.ID())
 		assert.False(t, ids[d.ID()], "duplicate detector ID: %s", d.ID())
 		ids[d.ID()] = true
+	}
+}
+
+// playgroundSkippedIDs are registered detectors intentionally absent from the
+// generated site/js/detectors.js bundle. tools/site-build skips the "generic",
+// "custom", and "testutil" detector packages because the in-browser regex
+// scanner cannot reproduce their detection faithfully (see
+// tools/site-build/detectors.go detectorSkipDirs). Of those, only the generic
+// detector is registered at compile time, so it is the sole expected omission;
+// "custom" registers at runtime (not in detector.All()) and "testutil" is a test
+// helper, not a detector.
+var playgroundSkippedIDs = map[string]bool{
+	"generic-api-key": true,
+}
+
+// TestDetectorsJS_CoversEveryRegisteredDetector guards the generated playground
+// bundle (site/js/detectors.js) against silently dropping a detector.
+// tools/site-build extracts each detector's regex from the AST and emits a
+// detector only when it finds a single regexp.MustCompile(`literal`); a pattern
+// written as concatenated fragments, a const, or via fmt.Sprintf would vanish
+// from the bundle while every other test still passes (the detector is still
+// registered, so the golden count above is unaffected). This pins the bundle to
+// the live registry so such a regression fails CI instead of silently shipping a
+// gap in the web playground. See internal/detector/github/github_oauth.go for
+// why that pattern is deliberately kept as one raw-string literal.
+func TestDetectorsJS_CoversEveryRegisteredDetector(t *testing.T) {
+	root, err := repoRoot()
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(root, "site", "js", "detectors.js"))
+	require.NoError(t, err, "site/js/detectors.js missing; run `go run .` in tools/site-build")
+
+	jsIDs := detectorIDsFromBundle(t, data)
+
+	// Every registered detector (except the documented skips) must appear in the
+	// bundle; a documented skip must NOT appear.
+	for _, d := range registeredAtInit {
+		if playgroundSkippedIDs[d.ID()] {
+			assert.NotContains(t, jsIDs, d.ID(),
+				"%q is in playgroundSkippedIDs but present in detectors.js; reconcile the skip set with tools/site-build detectorSkipDirs", d.ID())
+			continue
+		}
+		assert.Contains(t, jsIDs, d.ID(),
+			"detector %q is registered but missing from site/js/detectors.js; its regex is probably not a single regexp.MustCompile(`literal`) the extractor can read — keep the pattern AST-extractable and regenerate via tools/site-build", d.ID())
+	}
+
+	// The bundle must not list IDs for detectors that are not registered.
+	registered := make(map[string]bool, len(registeredAtInit))
+	for _, d := range registeredAtInit {
+		registered[d.ID()] = true
+	}
+	for id := range jsIDs {
+		assert.True(t, registered[id], "detectors.js lists %q which is not a registered detector (stale bundle?)", id)
+	}
+}
+
+// detectorIDsFromBundle extracts the set of detector IDs from the JSON array
+// embedded in the generated detectors.js (window.LW_DETECTORS = [ ... ];).
+func detectorIDsFromBundle(t *testing.T, data []byte) map[string]bool {
+	t.Helper()
+	start := bytes.IndexByte(data, '[')
+	end := bytes.LastIndexByte(data, ']')
+	require.True(t, start >= 0 && end > start, "detectors.js: could not locate the JSON array")
+
+	var entries []struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(data[start:end+1], &entries))
+
+	ids := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	return ids
+}
+
+// repoRoot walks up from the test working directory to the module root (the
+// directory containing go.mod), so the test can read committed repo artifacts
+// regardless of which package directory `go test` runs it from.
+func repoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting working directory: %w", err)
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found searching upward from %s", dir)
+		}
+		dir = parent
 	}
 }

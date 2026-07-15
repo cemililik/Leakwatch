@@ -56,7 +56,7 @@ This page lists every built-in detector. For verification coverage details see [
 | ID | Detects | Severity |
 |----|---------|----------|
 | `github-token` | GitHub Personal Access Token | Critical |
-| `github-oauth-token` | GitHub OAuth2 Token | Critical |
+| `github-oauth-token` | GitHub OAuth2 & installation token — `gho_`/`ghu_`/`ghr_`/`ghs_`, including new stateless (JWT-format) `ghs_` installation tokens | Critical |
 | `gitlab-pat` | GitLab Personal Access Token | Critical |
 | `bitbucket-app-password` | Bitbucket App Password | Critical |
 | `circleci-token` | CircleCI Personal API Token | High |

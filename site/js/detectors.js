@@ -308,7 +308,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "gh[orus]_[A-Za-z0-9_]{36,}"
+        "src": "ghs_[A-Za-z0-9_-]{8,}(?:\\.[A-Za-z0-9_-]{8,}){2}|gh[orus]_[A-Za-z0-9_]{36,}"
       }
     ]
   },

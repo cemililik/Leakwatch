@@ -56,7 +56,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | ID | Tespit eder | Şiddet |
 |----|------------|--------|
 | `github-token` | GitHub Kişisel Erişim Token'ı | Critical |
-| `github-oauth-token` | GitHub OAuth2 Token'ı | Critical |
+| `github-oauth-token` | GitHub OAuth2 ve kurulum (installation) token'ı — `gho_`/`ghu_`/`ghr_`/`ghs_`, yeni durumsuz (JWT biçimli) `ghs_` kurulum token'ları dâhil | Critical |
 | `gitlab-pat` | GitLab Kişisel Erişim Token'ı | Critical |
 | `bitbucket-app-password` | Bitbucket Uygulama Parolası | Critical |
 | `circleci-token` | CircleCI Kişisel API Token'ı | High |

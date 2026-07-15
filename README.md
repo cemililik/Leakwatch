@@ -166,7 +166,7 @@ That's **54 of 63 detectors (85.7%)** with verification. Verification is on by d
 | AI/ML | Hugging Face Token | `huggingface-token` | Critical |
 | AI/ML | DeepSeek API Key | `deepseek-api-key` | Critical |
 | DevTools | GitHub PAT | `github-token` | Critical |
-| DevTools | GitHub OAuth Token | `github-oauth-token` | Critical |
+| DevTools | GitHub OAuth & Installation Token (incl. stateless `ghs_`) | `github-oauth-token` | Critical |
 | DevTools | GitLab PAT | `gitlab-pat` | Critical |
 | DevTools | Bitbucket App Password | `bitbucket-app-password` | Critical |
 | DevTools | NPM Token | `npm-token` | High |

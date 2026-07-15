@@ -91,6 +91,38 @@ func TestOAuthVerify_ServerError_ReturnsError(t *testing.T) {
 	assert.Contains(t, result.Message, "500")
 }
 
+// TestOAuthVerify_Forbidden_ReturnsVerifyError documents the behaviour for a
+// GitHub stateless installation token (ghs_): such tokens authenticate as an app
+// installation, not a user, so GET /user answers 403 ("Resource not accessible
+// by integration"). 403 is neither an active (200) nor an inactive (401) status,
+// so it maps to a verify error — a live installation token is never mislabelled
+// "active" or "invalid or revoked".
+func TestOAuthVerify_Forbidden_ReturnsVerifyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+	}))
+	defer server.Close()
+
+	v := &OAuthVerifier{
+		apiURL:     server.URL,
+		httpClient: server.Client(),
+	}
+
+	raw := detector.RawFinding{
+		DetectorID: oauthDetectorID,
+		// Obviously-fake stateless-shaped token (ghs_APPID_<jwt>), assembled so
+		// no contiguous real-looking literal is committed.
+		Raw:      []byte("ghs_42_" + "eyJhdg" + "." + "eyJbody" + "." + "sig123456"),
+		Redacted: "****3456",
+	}
+
+	result := v.Verify(context.Background(), raw)
+
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Contains(t, result.Message, "403")
+}
+
 func TestOAuthVerify_Type_ReturnsCorrectID(t *testing.T) {
 	v := &OAuthVerifier{}
 	assert.Equal(t, "github-oauth-token", v.Type())
