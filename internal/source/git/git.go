@@ -3,11 +3,13 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,6 +25,19 @@ import (
 // maxSeenEntries is the upper bound for the blob deduplication map.
 // When reached, deduplication is disabled to prevent unbounded memory growth.
 const maxSeenEntries = 1_000_000
+
+// minAbbrevHashLen is the minimum number of hex characters accepted for an
+// abbreviated since-commit hash, matching Git's own default minimum.
+const minAbbrevHashLen = 4
+
+// fullHashLen is the length in hex characters of a full SHA-1 commit hash.
+const fullHashLen = 40
+
+// credentialRE matches a "scheme://user[:password]@" userinfo segment so it can
+// be stripped from library error strings that re-embed the raw clone URL. It is
+// a defense-in-depth complement to the verbatim target replacement in
+// sanitizeCloneError, guarding against go-git re-encoding the userinfo.
+var credentialRE = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]*@`)
 
 // GitSource is a Git repository-based scan source.
 type GitSource struct {
@@ -60,9 +75,10 @@ func (s *GitSource) Type() string {
 }
 
 // Validate checks that the Git repository is accessible and opens/clones it.
-// When --since-commit is set, it also verifies that the given commit is an
-// ancestor of HEAD; otherwise the diff-based walk would silently fall back to
-// scanning the entire history.
+// When --branch is set on a local target it verifies the branch exists, and
+// when --since-commit is set it verifies the given commit is an ancestor of the
+// walk's starting point; otherwise the diff-based walk would silently fall back
+// to scanning the entire history or an unintended branch.
 func (s *GitSource) Validate() error {
 	if s.isRemote() {
 		if err := s.cloneRemote(); err != nil {
@@ -70,6 +86,12 @@ func (s *GitSource) Validate() error {
 		}
 	} else if err := s.openLocal(); err != nil {
 		return err
+	}
+
+	if s.branch != "" {
+		if _, err := s.resolveStartHash(); err != nil {
+			return err
+		}
 	}
 
 	if s.sinceCommit != "" {
@@ -81,39 +103,118 @@ func (s *GitSource) Validate() error {
 	return nil
 }
 
-// validateSinceCommit verifies that the configured since-commit exists and is
-// an ancestor of HEAD. Returning an explicit error prevents the diff-based scan
-// from silently degrading into a full-history scan.
+// validateSinceCommit verifies that the configured since-commit exists and is an
+// ancestor of the walk's starting commit (the configured branch tip, or HEAD).
+// Returning an explicit error prevents the diff-based scan from silently
+// degrading into a full-history scan.
 func (s *GitSource) validateSinceCommit() error {
-	commitHash := plumbing.NewHash(s.sinceCommit)
-	sinceCommitObj, err := s.repo.CommitObject(commitHash)
+	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
 	if err != nil {
-		return fmt.Errorf("since-commit %q not found: %w", s.sinceCommit, err)
+		return err
 	}
 
-	headRef, err := s.repo.Head()
+	startHash, err := s.resolveStartHash()
 	if err != nil {
-		return fmt.Errorf("failed to resolve HEAD for since-commit check: %w", err)
+		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
 	}
 
-	headCommit, err := s.repo.CommitObject(headRef.Hash())
+	startCommit, err := s.repo.CommitObject(startHash)
 	if err != nil {
-		return fmt.Errorf("failed to resolve HEAD commit for since-commit check: %w", err)
+		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
 	}
 
-	if sinceCommitObj.Hash == headCommit.Hash {
+	if sinceCommitObj.Hash == startCommit.Hash {
 		return nil
 	}
 
-	isAncestor, err := sinceCommitObj.IsAncestor(headCommit)
+	isAncestor, err := sinceCommitObj.IsAncestor(startCommit)
 	if err != nil {
 		return fmt.Errorf("failed to check ancestry of since-commit %q: %w", s.sinceCommit, err)
 	}
 	if !isAncestor {
-		return fmt.Errorf("since-commit %q is not an ancestor of HEAD %q", s.sinceCommit, headCommit.Hash.String())
+		return fmt.Errorf("since-commit %q is not an ancestor of %q", s.sinceCommit, startCommit.Hash.String())
 	}
 
 	return nil
+}
+
+// resolveCommitHash resolves a full (40-character) or abbreviated commit hash to
+// a commit object. Full SHAs are looked up directly; shorter hex prefixes are
+// resolved by scanning the object store for a unique match, so the documented
+// `--since-commit abc1234` short-hash usage works rather than silently producing
+// a wrong zero-padded hash via plumbing.NewHash.
+func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
+	ref = strings.TrimSpace(ref)
+
+	if len(ref) == fullHashLen {
+		if !isHexString(ref) {
+			return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
+		}
+		c, err := s.repo.CommitObject(plumbing.NewHash(ref))
+		if err != nil {
+			return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
+		}
+		return c, nil
+	}
+
+	if len(ref) < minAbbrevHashLen {
+		return nil, fmt.Errorf("since-commit %q is too short: provide at least %d hex characters or a full 40-character SHA", ref, minAbbrevHashLen)
+	}
+	if len(ref) > fullHashLen || !isHexString(ref) {
+		return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
+	}
+
+	lower := strings.ToLower(ref)
+	iter, err := s.repo.CommitObjects()
+	if err != nil {
+		return nil, fmt.Errorf("failed to enumerate commits for since-commit lookup: %w", err)
+	}
+	defer iter.Close()
+
+	var (
+		match     *object.Commit
+		ambiguous bool
+	)
+	err = iter.ForEach(func(c *object.Commit) error {
+		if !strings.HasPrefix(c.Hash.String(), lower) {
+			return nil
+		}
+		if match != nil && match.Hash != c.Hash {
+			ambiguous = true
+			return io.EOF // stop early
+		}
+		match = c
+		return nil
+	})
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("failed to scan commits for since-commit lookup: %w", err)
+	}
+	if ambiguous {
+		return nil, fmt.Errorf("since-commit %q is ambiguous: matches multiple commits", ref)
+	}
+	if match == nil {
+		return nil, fmt.Errorf("since-commit %q not found", ref)
+	}
+	return match, nil
+}
+
+// resolveStartHash returns the commit hash the history walk should start from.
+// When --branch is configured it resolves that branch's local ref (so the flag
+// steers which commits are scanned, not just the metadata label); otherwise it
+// falls back to HEAD.
+func (s *GitSource) resolveStartHash() (plumbing.Hash, error) {
+	if s.branch != "" {
+		ref, err := s.repo.Reference(plumbing.NewBranchReferenceName(s.branch), true)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("failed to resolve branch %q: %w", s.branch, err)
+		}
+		return ref.Hash(), nil
+	}
+	headRef, err := s.repo.Head()
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to resolve HEAD: %w", err)
+	}
+	return headRef.Hash(), nil
 }
 
 // Close cleans up temporary resources. For cloned repositories, it removes
@@ -136,7 +237,9 @@ func (s *GitSource) isRemote() bool {
 }
 
 func (s *GitSource) openLocal() error {
-	repo, err := git.PlainOpen(s.target)
+	// DetectDotGit walks up parent directories to find the repository root,
+	// matching real git tooling when pointed at a subdirectory of a repo.
+	repo, err := git.PlainOpenWithOptions(s.target, &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
 		return fmt.Errorf("failed to open git repository %s: %w", s.target, err)
 	}
@@ -169,11 +272,50 @@ func (s *GitSource) cloneRemote() error {
 	repo, err := git.PlainClone(tmpDir, false, cloneOpts)
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return fmt.Errorf("failed to clone git repository %s: %w", s.displayTarget, err)
+		// go-git's HTTP transport and endpoint layers re-embed the raw
+		// user:password@host userinfo from the clone URL into their error
+		// strings, so the raw err must never be wrapped with %w. Sanitize it
+		// first so no credential can reach errors.Unwrap chains, stderr, or CI
+		// logs.
+		return fmt.Errorf("failed to clone git repository %s: %w",
+			s.displayTarget, sanitizeCloneError(err, s.target, s.displayTarget))
 	}
 	s.repo = repo
 	s.tmpDir = tmpDir
 	return nil
+}
+
+// sanitizeCloneError returns a new, flat error whose message has any embedded
+// clone credentials stripped. It first replaces the verbatim credentialed
+// target with its safe form, then strips any remaining "scheme://userinfo@"
+// segment (covering the case where go-git re-encoded the userinfo differently
+// from the raw target). The result is a plain errors.New so the raw error — and
+// any credential substring it carries — never enters the returned error's
+// unwrap chain.
+func sanitizeCloneError(err error, rawTarget, safeTarget string) error {
+	msg := err.Error()
+	if rawTarget != "" && rawTarget != safeTarget {
+		msg = strings.ReplaceAll(msg, rawTarget, safeTarget)
+	}
+	msg = credentialRE.ReplaceAllString(msg, "$1")
+	return errors.New(msg)
+}
+
+// isHexString reports whether s consists solely of hexadecimal digits.
+func isHexString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // SafeDisplayURL returns a credential-stripped form of raw that is safe to put
@@ -218,26 +360,63 @@ func (s *GitSource) Chunks(ctx context.Context) <-chan source.Chunk {
 	return ch
 }
 
+// chunksFullHistory scans the entire reachable history from the configured
+// branch tip (or HEAD), diffing each commit against its first parent so every
+// blob is attributed to the commit that introduced it.
 func (s *GitSource) chunksFullHistory(ctx context.Context, ch chan<- source.Chunk) {
-	logOpts := &git.LogOptions{
-		Order: git.LogOrderCommitterTime,
+	startHash, err := s.resolveStartHash()
+	if err != nil {
+		slog.Error("failed to resolve start commit", "error", err)
+		return
 	}
-	if s.since != nil {
-		logOpts.Since = s.since
+	s.walkCommits(ctx, ch, startHash, plumbing.ZeroHash)
+}
+
+// chunksSinceCommit scans commits between the configured since-commit
+// (exclusive) and the branch tip / HEAD (inclusive), diffing each commit against
+// its parent.
+func (s *GitSource) chunksSinceCommit(ctx context.Context, ch chan<- source.Chunk) {
+	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
+	if err != nil {
+		slog.Error("since-commit resolution failed", "commit", s.sinceCommit, "error", err)
+		return
 	}
 
-	iter, err := s.repo.Log(logOpts)
+	startHash, err := s.resolveStartHash()
+	if err != nil {
+		slog.Error("failed to resolve start commit", "error", err)
+		return
+	}
+
+	s.walkCommits(ctx, ch, startHash, sinceCommitObj.Hash)
+}
+
+// walkCommits walks history newest-first from `from`, diffing each commit
+// against its first parent (an empty tree for the root commit) and emitting the
+// added/modified files. When `stop` is non-zero the walk halts as soon as it is
+// reached (exclusive). The configured --since cutoff, when set, is honored in
+// both full-history and since-commit modes.
+func (s *GitSource) walkCommits(ctx context.Context, ch chan<- source.Chunk, from, stop plumbing.Hash) {
+	iter, err := s.repo.Log(&git.LogOptions{
+		From:  from,
+		Order: git.LogOrderCommitterTime,
+		Since: s.since,
+	})
 	if err != nil {
 		slog.Error("git log failed", "error", err)
 		return
 	}
 	defer iter.Close()
 
-	seen := make(map[string]bool) // blob hash -> already processed
+	seen := make(map[string]bool) // content+path key -> already processed
 	seenFull := false             // true when seen map hit the limit
 	commitCount := 0
 
 	err = iter.ForEach(func(c *object.Commit) error {
+		if stop != plumbing.ZeroHash && c.Hash == stop {
+			return io.EOF // reached the since-commit boundary
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -245,240 +424,164 @@ func (s *GitSource) chunksFullHistory(ctx context.Context, ch chan<- source.Chun
 		}
 
 		commitCount++
-
-		tree, err := c.Tree()
-		if err != nil {
-			slog.Warn("failed to get commit tree", "commit", c.Hash.String()[:8], "error", err)
-			return nil
-		}
-
-		return tree.Files().ForEach(func(f *object.File) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			// Skip already-seen blobs (deduplication).
-			blobKey := f.Hash.String()
-			if !seenFull {
-				if seen[blobKey] {
-					return nil
-				}
-				seen[blobKey] = true
-				if len(seen) >= maxSeenEntries {
-					slog.Warn("blob deduplication map reached limit, disabling dedup",
-						"limit", maxSeenEntries)
-					seenFull = true
-				}
-			}
-
-			if f.Size > s.maxFileSize {
-				return nil
-			}
-
-			isBinary, _ := f.IsBinary()
-			if isBinary {
-				return nil
-			}
-
-			// Skip auto-generated lock files.
-			if filter.IsSkippedFilename(f.Name) {
-				return nil
-			}
-
-			// Skip files matching exclude-path globs (relative path).
-			if filter.MatchesGlob(f.Name, s.excludePaths) {
-				return nil
-			}
-
-			content, err := f.Contents()
-			if err != nil {
-				slog.Warn("failed to read file contents", "file", f.Name, "error", err)
-				return nil
-			}
-
-			branch := s.resolveBranch()
-
-			select {
-			case ch <- source.Chunk{
-				Data: []byte(content),
-				SourceMetadata: finding.SourceMetadata{
-					SourceType: "git",
-					Repository: s.displayTarget,
-					Commit:     c.Hash.String(),
-					Author:     c.Author.Name,
-					Email:      c.Author.Email,
-					Date:       c.Author.When,
-					Branch:     branch,
-					FilePath:   f.Name,
-				},
-			}:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			return nil
-		})
+		return s.emitCommitChanges(ctx, ch, c, seen, &seenFull)
 	})
 
-	if err != nil && ctx.Err() == nil {
+	if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 		slog.Error("commit history scan failed", "error", err)
 	}
 
 	slog.Info("git scan completed", "commits", commitCount, "blobs", len(seen))
 }
 
-func (s *GitSource) chunksSinceCommit(ctx context.Context, ch chan<- source.Chunk) {
-	commitHash := plumbing.NewHash(s.sinceCommit)
-	sinceCommitObj, err := s.repo.CommitObject(commitHash)
+// emitCommitChanges diffs a commit against its first parent and emits a chunk
+// for each added/modified file that passes the size, binary, and exclusion
+// filters.
+func (s *GitSource) emitCommitChanges(
+	ctx context.Context,
+	ch chan<- source.Chunk,
+	c *object.Commit,
+	seen map[string]bool,
+	seenFull *bool,
+) error {
+	commitTree, err := c.Tree()
 	if err != nil {
-		slog.Error("since-commit not found", "commit", s.sinceCommit, "error", err)
-		return
+		slog.Warn("failed to get commit tree", "commit", shortHash(c.Hash), "error", err)
+		return nil
 	}
 
-	headRef, err := s.repo.Head()
-	if err != nil {
-		slog.Error("failed to get HEAD reference", "error", err)
-		return
-	}
-
-	headCommit, err := s.repo.CommitObject(headRef.Hash())
-	if err != nil {
-		slog.Error("failed to get HEAD commit", "error", err)
-		return
-	}
-
-	// Scan commits between since-commit and HEAD.
-	iter, err := s.repo.Log(&git.LogOptions{
-		From:  headCommit.Hash,
-		Order: git.LogOrderCommitterTime,
-	})
-	if err != nil {
-		slog.Error("git log failed", "error", err)
-		return
-	}
-	defer iter.Close()
-
-	seen := make(map[string]bool)
-	seenFull := false
-
-	err = iter.ForEach(func(c *object.Commit) error {
-		// Stop when we reach the since-commit.
-		if c.Hash == sinceCommitObj.Hash {
-			return io.EOF
+	// Diff against the first parent; the root commit diffs against an empty tree
+	// so its files are reported as introduced.
+	parentTree := &object.Tree{}
+	if c.NumParents() > 0 {
+		parent, err := c.Parent(0)
+		if err != nil {
+			slog.Warn("failed to get parent commit", "commit", shortHash(c.Hash), "error", err)
+		} else if pt, err := parent.Tree(); err != nil {
+			slog.Warn("failed to get parent tree", "commit", shortHash(c.Hash), "error", err)
+		} else {
+			parentTree = pt
 		}
+	}
 
+	changes, err := parentTree.Diff(commitTree)
+	if err != nil {
+		slog.Warn("failed to diff commit against parent", "commit", shortHash(c.Hash), "error", err)
+		return nil
+	}
+
+	branch := s.resolveBranch()
+
+	for _, change := range changes {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Get diff between this commit and its parent.
-		parentTree := &object.Tree{}
-		if c.NumParents() > 0 {
-			parent, err := c.Parent(0)
-			if err != nil {
-				slog.Warn("failed to get parent commit", "commit", c.Hash.String()[:8], "error", err)
-			} else {
-				parentTree, _ = parent.Tree()
-			}
+		// Only scan added/modified files.
+		if change.To.Name == "" {
+			continue // Deleted file.
 		}
 
-		commitTree, err := c.Tree()
+		file, err := commitTree.File(change.To.Name)
 		if err != nil {
-			return nil
+			continue
 		}
 
-		changes, err := parentTree.Diff(commitTree)
+		if file.Size > s.maxFileSize {
+			continue
+		}
+
+		isBinary, err := file.IsBinary()
 		if err != nil {
-			return nil
+			slog.Debug("binary check failed", "file", change.To.Name, "error", err)
+		}
+		if isBinary {
+			continue
 		}
 
-		branch := s.resolveBranch()
+		// Skip auto-generated lock files.
+		if filter.IsSkippedFilename(change.To.Name) {
+			continue
+		}
 
-		for _, change := range changes {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+		// Skip files matching exclude-path globs (relative path).
+		if filter.MatchesGlob(change.To.Name, s.excludePaths) {
+			continue
+		}
 
-			// Only scan added/modified files.
-			if change.To.Name == "" {
-				continue // Deleted file
-			}
-
-			blobKey := change.To.TreeEntry.Hash.String()
-			if !seenFull {
-				if seen[blobKey] {
-					continue
-				}
-				seen[blobKey] = true
-				if len(seen) >= maxSeenEntries {
-					slog.Warn("blob deduplication map reached limit, disabling dedup",
-						"limit", maxSeenEntries)
-					seenFull = true
-				}
-			}
-
-			file, err := commitTree.File(change.To.Name)
-			if err != nil {
+		// Deduplicate only blobs that would actually be emitted. Keying on
+		// content+path ensures two distinct files with identical content are
+		// both reported, while a re-added identical blob at the same path is
+		// scanned once.
+		blobKey := change.To.TreeEntry.Hash.String() + "\x00" + change.To.Name
+		if !*seenFull {
+			if seen[blobKey] {
 				continue
 			}
-
-			if file.Size > s.maxFileSize {
-				continue
-			}
-
-			isBinary, _ := file.IsBinary()
-			if isBinary {
-				continue
-			}
-
-			if filter.IsSkippedFilename(change.To.Name) {
-				continue
-			}
-
-			// Skip files matching exclude-path globs (relative path).
-			if filter.MatchesGlob(change.To.Name, s.excludePaths) {
-				continue
-			}
-
-			content, err := file.Contents()
-			if err != nil {
-				slog.Warn("failed to read file contents", "file", change.To.Name, "error", err)
-				continue
-			}
-
-			select {
-			case ch <- source.Chunk{
-				Data: []byte(content),
-				SourceMetadata: finding.SourceMetadata{
-					SourceType: "git",
-					Repository: s.displayTarget,
-					Commit:     c.Hash.String(),
-					Author:     c.Author.Name,
-					Email:      c.Author.Email,
-					Date:       c.Author.When,
-					Branch:     branch,
-					FilePath:   change.To.Name,
-				},
-			}:
-			case <-ctx.Done():
-				return ctx.Err()
+			seen[blobKey] = true
+			if len(seen) >= maxSeenEntries {
+				slog.Warn("blob deduplication map reached limit, disabling dedup",
+					"limit", maxSeenEntries)
+				*seenFull = true
 			}
 		}
-		return nil
-	})
 
-	if err != nil && err != io.EOF && ctx.Err() == nil {
-		slog.Error("diff-based scan failed", "error", err)
+		content, err := readBlob(file, s.maxFileSize)
+		if err != nil {
+			slog.Warn("failed to read file contents", "file", change.To.Name, "error", err)
+			continue
+		}
+
+		select {
+		case ch <- source.Chunk{
+			Data: content,
+			SourceMetadata: finding.SourceMetadata{
+				SourceType: "git",
+				Repository: s.displayTarget,
+				Commit:     c.Hash.String(),
+				Author:     c.Author.Name,
+				Email:      c.Author.Email,
+				Date:       c.Author.When,
+				Branch:     branch,
+				FilePath:   change.To.Name,
+			},
+		}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	return nil
+}
+
+// readBlob reads a file blob's bytes directly into a []byte, avoiding the
+// Reader → bytes.Buffer → string → []byte round-trip of object.File.Contents.
+// The caller has already verified the blob size against limit, so the
+// LimitReader guards only against unexpectedly large streams.
+func readBlob(f *object.File, limit int64) ([]byte, error) {
+	reader, err := f.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open blob reader: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(reader, limit))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read blob: %w", err)
+	}
+	return data, nil
+}
+
+// shortHash returns the abbreviated (8-character) form of a commit hash for
+// logging.
+func shortHash(h plumbing.Hash) string {
+	return h.String()[:8]
 }
 
 // resolveBranch returns the current branch name, caching the result after
-// the first resolution to avoid repeated Head() calls.
+// the first resolution to avoid repeated Head() calls. For a detached HEAD it
+// returns a short-commit reference rather than the bare string "HEAD".
 func (s *GitSource) resolveBranch() string {
 	if s.branch != "" {
 		return s.branch
@@ -490,6 +593,12 @@ func (s *GitSource) resolveBranch() string {
 	if err != nil {
 		return ""
 	}
-	s.resolvedBranch = headRef.Name().Short()
+	if headRef.Name() == plumbing.HEAD {
+		// Detached HEAD (common in CI checkouts of a specific commit/PR): there
+		// is no branch name, so surface a short commit reference instead.
+		s.resolvedBranch = "detached@" + shortHash(headRef.Hash())
+	} else {
+		s.resolvedBranch = headRef.Name().Short()
+	}
 	return s.resolvedBranch
 }

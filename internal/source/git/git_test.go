@@ -2,12 +2,15 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -487,6 +490,41 @@ func TestSafeDisplayURL_ParseFailure_MasksCredential(t *testing.T) {
 	assert.Contains(t, result, "***@")
 }
 
+func TestSanitizeCloneError_StripsVerbatimCredential(t *testing.T) {
+	// fakeToken is a non-secret placeholder used only to prove redaction.
+	const fakeToken = "ghp_FAKEtoken1234567890"
+	rawTarget := "https://user:" + fakeToken + "@github.com/org/repo.git"
+	safeTarget := SafeDisplayURL(rawTarget)
+
+	// Simulate go-git/stdlib wrapping the credentialed URL verbatim in its error.
+	underlying := fmt.Errorf("Get %q: dial tcp: lookup host: no such host", rawTarget)
+	sanitized := sanitizeCloneError(underlying, rawTarget, safeTarget)
+
+	assert.NotContains(t, sanitized.Error(), fakeToken, "token must not survive in the clone error")
+	assert.NotContains(t, sanitized.Error(), "user:", "userinfo must not survive in the clone error")
+	// The sanitized error must be flat: the raw error (and its credential) must
+	// never remain reachable via the unwrap chain.
+	assert.NotErrorIs(t, sanitized, underlying)
+}
+
+func TestSanitizeCloneError_StripsReEncodedUserinfo(t *testing.T) {
+	// fakeToken is a non-secret placeholder used only to prove redaction.
+	const fakeToken = "ghp_FAKEtoken1234567890"
+	safeTarget := "https://github.com/org/repo.git"
+
+	// go-git's HTTP transport may re-embed userinfo in a form that does not match
+	// the raw target verbatim (e.g. token-as-username on an unexpected status);
+	// the regex fallback must still strip it.
+	underlying := fmt.Errorf(
+		`unexpected requesting "https://x-access-token:%s@github.com/org/repo.git/info/refs?service=git-upload-pack" status code: 429`,
+		fakeToken,
+	)
+	sanitized := sanitizeCloneError(underlying, "https://unrelated@example.com", safeTarget)
+
+	assert.NotContains(t, sanitized.Error(), fakeToken, "re-encoded token must be stripped")
+	assert.NotContains(t, sanitized.Error(), "x-access-token", "re-encoded username must be stripped")
+}
+
 func TestGitSource_New_SetsCredentialFreeDisplayTarget(t *testing.T) {
 	// fakeToken is a non-secret placeholder used only to prove redaction.
 	const fakeToken = "ghp_FAKEtoken1234567890"
@@ -523,4 +561,207 @@ func TestGitSource_Chunks_RepositoryMetadataHasNoCredential(t *testing.T) {
 			"SourceMetadata.Repository must not contain the credential")
 	}
 	assert.True(t, sawChunk, "expected at least one chunk")
+}
+
+func TestGitSource_Chunks_FullHistory_AttributesIntroducingCommit(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{
+		"config.txt": "AKIAIOSFODNN7EXAMPLE",
+	})
+
+	// Record the commit that introduced config.txt.
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	introHash := headRef.Hash().String()
+
+	// Later commits that never touch config.txt (its blob is unchanged since).
+	addCommit(t, dir, repo, map[string]string{"a.txt": "aaa"}, "second commit")
+	addCommit(t, dir, repo, map[string]string{"b.txt": "bbb"}, "third commit")
+
+	s := New(dir)
+	require.NoError(t, s.Validate())
+
+	ctx := context.Background()
+	var configCommit string
+	for chunk := range s.Chunks(ctx) {
+		if chunk.SourceMetadata.FilePath == "config.txt" {
+			configCommit = chunk.SourceMetadata.Commit
+		}
+	}
+
+	assert.Equal(t, introHash, configCommit,
+		"config.txt must be attributed to the commit that introduced it, not the newest commit")
+}
+
+func TestGitSource_Chunks_FullHistory_ReportsBothPathsForIdenticalContent(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{
+		"first.txt": "duplicate-content-value",
+	})
+
+	// A second, distinct file with byte-for-byte identical content.
+	addCommit(t, dir, repo, map[string]string{
+		"second.txt": "duplicate-content-value",
+	}, "add duplicate content under a different path")
+
+	s := New(dir)
+	require.NoError(t, s.Validate())
+
+	ctx := context.Background()
+	var files []string
+	for chunk := range s.Chunks(ctx) {
+		files = append(files, chunk.SourceMetadata.FilePath)
+	}
+
+	assert.Contains(t, files, "first.txt")
+	assert.Contains(t, files, "second.txt",
+		"two distinct files with identical content must both be reported, not deduped away")
+}
+
+func TestGitSource_Chunks_Branch_ScansRequestedBranchLocally(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"base.txt": "base"})
+
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	baseHash := headRef.Hash()
+	mainBranch := headRef.Name()
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create a feature branch off base and commit a feature-only file.
+	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{
+		Hash:   baseHash,
+		Branch: "refs/heads/feature",
+		Create: true,
+	}))
+	addCommit(t, dir, repo, map[string]string{"feature-only.txt": "feature content"}, "feature commit")
+
+	// Return HEAD to main and commit a main-only file.
+	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{Branch: mainBranch}))
+	addCommit(t, dir, repo, map[string]string{"main-only.txt": "main content"}, "main commit")
+
+	s := New(dir, WithBranch("feature"))
+	require.NoError(t, s.Validate())
+
+	ctx := context.Background()
+	var files []string
+	var branchLabel string
+	for chunk := range s.Chunks(ctx) {
+		files = append(files, chunk.SourceMetadata.FilePath)
+		branchLabel = chunk.SourceMetadata.Branch
+	}
+
+	assert.Contains(t, files, "feature-only.txt", "--branch feature must actually scan the feature branch")
+	assert.NotContains(t, files, "main-only.txt", "--branch feature must not scan HEAD/main")
+	assert.Equal(t, "feature", branchLabel)
+}
+
+func TestGitSource_Validate_Branch_NotFound_ReturnsError(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
+
+	s := New(dir, WithBranch("does-not-exist"))
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does-not-exist")
+}
+
+func TestGitSource_Validate_SinceCommit_AbbreviatedHash_Resolves(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"a.txt": "content"})
+
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	shortHash := headRef.Hash().String()[:8]
+
+	addCommit(t, dir, repo, map[string]string{"b.txt": "more"}, "second commit")
+
+	s := New(dir, WithSinceCommit(shortHash))
+	require.NoError(t, s.Validate(), "an abbreviated since-commit hash should resolve, not fail as 'not found'")
+
+	ctx := context.Background()
+	var files []string
+	for chunk := range s.Chunks(ctx) {
+		files = append(files, chunk.SourceMetadata.FilePath)
+	}
+
+	assert.Contains(t, files, "b.txt")
+	assert.NotContains(t, files, "a.txt")
+}
+
+func TestGitSource_Validate_SinceCommit_TooShort_ReturnsClearError(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
+
+	s := New(dir, WithSinceCommit("ab"))
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "since-commit")
+	assert.Contains(t, err.Error(), "too short")
+}
+
+func TestGitSource_Validate_SinceCommit_NonHex_ReturnsClearError(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
+
+	s := New(dir, WithSinceCommit("zzzzzzz"))
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid commit hash")
+}
+
+func TestGitSource_Chunks_SinceCommitWithSince_HonorsSince(t *testing.T) {
+	dir := t.TempDir()
+
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	commitAt := func(name, content string, when time.Time) plumbing.Hash {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+		_, err := wt.Add(name)
+		require.NoError(t, err)
+		h, err := wt.Commit("c-"+name, &gogit.CommitOptions{
+			Author:    &object.Signature{Name: "T", Email: "t@t.com", When: when},
+			Committer: &object.Signature{Name: "T", Email: "t@t.com", When: when},
+		})
+		require.NoError(t, err)
+		return h
+	}
+
+	base := commitAt("base.txt", "base", time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	commitAt("bfile.txt", "bbb", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	commitAt("cfile.txt", "ccc", time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC))
+
+	// since-commit excludes base; --since additionally drops the 2024 commit.
+	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := New(dir, WithSinceCommit(base.String()), WithSince(cutoff))
+	require.NoError(t, s.Validate())
+
+	ctx := context.Background()
+	var files []string
+	for chunk := range s.Chunks(ctx) {
+		files = append(files, chunk.SourceMetadata.FilePath)
+	}
+
+	assert.Contains(t, files, "cfile.txt")
+	assert.NotContains(t, files, "bfile.txt", "--since must still be honored when --since-commit is set")
+	assert.NotContains(t, files, "base.txt")
+}
+
+func TestGitSource_ResolveBranch_DetachedHead_ReportsShortCommit(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"a.txt": "content"})
+
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	baseHash := headRef.Hash()
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	// Detach HEAD directly at the commit (no Branch set).
+	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{Hash: baseHash}))
+
+	s := New(dir)
+	require.NoError(t, s.Validate())
+
+	branch := s.resolveBranch()
+	assert.True(t, strings.HasPrefix(branch, "detached@"),
+		"detached HEAD should report a detached@<short-sha> reference, got %q", branch)
+	assert.NotEqual(t, "HEAD", branch)
 }
