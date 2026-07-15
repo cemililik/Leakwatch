@@ -3,6 +3,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -16,8 +17,24 @@ import (
 )
 
 const (
-	defaultRateLimit  = 20.0
+	// defaultRateLimit is a conservative default request rate for the Slack
+	// Web API's conversations.list/conversations.history methods. Slack's
+	// actual enforced tiers for these endpoints are commonly much stricter
+	// than a naive guess, so this default favors reliability over speed;
+	// callers with a higher-tier app/token can raise it via --rate-limit /
+	// WithRateLimit. Combined with the 429 retry handling below, this keeps
+	// scans from silently truncating on the first rate-limit response.
+	defaultRateLimit  = 1.0
 	defaultBufferSize = 100
+
+	// maxRateLimitRetries bounds how many consecutive HTTP 429 responses a
+	// single page fetch will absorb before giving up, preventing an
+	// unbounded retry loop against a workspace that never recovers.
+	maxRateLimitRetries = 5
+
+	// defaultRetryAfter is used when a *slack.RateLimitedError reports a
+	// non-positive RetryAfter duration, as a safe fallback backoff.
+	defaultRetryAfter = time.Second
 )
 
 // SlackSource scans messages in a Slack workspace for leaked secrets.
@@ -133,6 +150,7 @@ func (s *SlackSource) ensureClient() {
 func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) ([]slack.Channel, error) {
 	var allChannels []slack.Channel
 	cursor := ""
+	retries := 0
 
 	for {
 		select {
@@ -158,8 +176,21 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 
 		channels, nextCursor, err := s.client.GetConversationsContext(ctx, params)
 		if err != nil {
+			if retryAfter, ok := rateLimitRetryAfter(err); ok {
+				retries++
+				if retries > maxRateLimitRetries {
+					return allChannels, fmt.Errorf("slack list conversations: rate limited after %d retries: %w", maxRateLimitRetries, err)
+				}
+				slog.Warn("slack list conversations rate limited, retrying",
+					"retry_after", retryAfter, "attempt", retries)
+				if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
+					return allChannels, fmt.Errorf("slack rate limiter wait: %w", waitErr)
+				}
+				continue
+			}
 			return nil, fmt.Errorf("slack list conversations: %w", err)
 		}
+		retries = 0
 
 		allChannels = append(allChannels, channels...)
 
@@ -170,6 +201,33 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 	}
 
 	return allChannels, nil
+}
+
+// rateLimitRetryAfter reports whether err represents a Slack HTTP 429
+// response (surfaced by slack-go as *slack.RateLimitedError) and, if so,
+// returns the duration the API asked callers to wait before retrying.
+func rateLimitRetryAfter(err error) (time.Duration, bool) {
+	var rlErr *slack.RateLimitedError
+	if errors.As(err, &rlErr) {
+		return rlErr.RetryAfter, true
+	}
+	return 0, false
+}
+
+// waitRetryAfter blocks for d (or defaultRetryAfter if d is non-positive),
+// honoring context cancellation.
+func waitRetryAfter(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		d = defaultRetryAfter
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // filterChannels applies include/exclude channel filters.
@@ -212,6 +270,7 @@ func (s *SlackSource) filterChannels(channels []slack.Channel) []slack.Channel {
 // processChannel reads message history for a single channel and emits chunks.
 func (s *SlackSource) processChannel(ctx context.Context, ch chan<- source.Chunk, limiter *rate.Limiter, channel slack.Channel) {
 	cursor := ""
+	retries := 0
 
 	for {
 		select {
@@ -240,9 +299,25 @@ func (s *SlackSource) processChannel(ctx context.Context, ch chan<- source.Chunk
 
 		resp, err := s.client.GetConversationHistoryContext(ctx, params)
 		if err != nil {
+			if retryAfter, ok := rateLimitRetryAfter(err); ok {
+				retries++
+				if retries > maxRateLimitRetries {
+					slog.Warn("slack conversation history rate limited, giving up",
+						"channel", channel.ID, "attempts", retries, "error", err)
+					return
+				}
+				slog.Warn("slack conversation history rate limited, retrying",
+					"channel", channel.ID, "retry_after", retryAfter, "attempt", retries)
+				if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
+					slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", waitErr)
+					return
+				}
+				continue
+			}
 			slog.Warn("slack conversation history failed", "channel", channel.ID, "error", err)
 			return
 		}
+		retries = 0
 
 		for _, msg := range resp.Messages {
 			select {
