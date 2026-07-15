@@ -6,15 +6,18 @@ package container
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/HodeTech/leakwatch/internal/filter"
@@ -24,25 +27,63 @@ import (
 
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
 
+// Decompression-bomb defenses: cap the cumulative number of *decompressed*
+// bytes read from a single layer and from the whole image. A malicious image
+// can declare an extreme compression ratio (a "zip bomb") or a huge number of
+// just-under-limit files; the per-file cap alone does not bound the total
+// decompression work. These ceilings are deliberately generous so they never
+// trip on real-world images (multi-GB images are legitimate) while still
+// guaranteeing the scan cannot be forced to decompress unbounded data.
+const (
+	// defaultMaxLayerSize caps decompressed bytes read from one layer (2 GiB).
+	defaultMaxLayerSize int64 = 2 * 1024 * 1024 * 1024
+	// defaultMaxImageSize caps decompressed bytes read across all layers (10 GiB).
+	defaultMaxImageSize int64 = 10 * 1024 * 1024 * 1024
+)
+
+// errDecompressionLimit is returned by the counting reader once a per-layer or
+// per-image decompressed-byte ceiling is exceeded, signalling the scan to abort
+// the offending layer rather than continue decompressing attacker-controlled data.
+var errDecompressionLimit = errors.New("decompression limit exceeded")
+
 // ContainerSource scans container image layers for secrets.
 type ContainerSource struct {
 	imageRef     string
 	maxFileSize  int64
+	maxLayerSize int64
+	maxImageSize int64
 	bufferSize   int
 	excludePaths []string
+
+	// loadImage resolves an image reference to a v1.Image. It defaults to a
+	// daemon-less remote pull and is overridable in tests to drive the
+	// orchestration path against an in-memory image without any network.
+	loadImage func(ctx context.Context, ref name.Reference) (v1.Image, error)
 }
 
 // New creates a new ContainerSource for the given image reference.
 func New(imageRef string, opts ...Option) *ContainerSource {
 	s := &ContainerSource{
-		imageRef:    imageRef,
-		maxFileSize: defaultMaxFileSize,
-		bufferSize:  64,
+		imageRef:     imageRef,
+		maxFileSize:  defaultMaxFileSize,
+		maxLayerSize: defaultMaxLayerSize,
+		maxImageSize: defaultMaxImageSize,
+		bufferSize:   64,
+		loadImage:    remotePull,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// remotePull pulls an image daemon-less from a remote registry.
+func remotePull(ctx context.Context, ref name.Reference) (v1.Image, error) {
+	img, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("pull image %q: %w", ref.String(), err)
+	}
+	return img, nil
 }
 
 // Type returns the source type identifier.
@@ -71,51 +112,137 @@ func (s *ContainerSource) Chunks(ctx context.Context) <-chan source.Chunk {
 			return
 		}
 
-		img, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
+		img, err := s.loadImage(ctx, ref)
 		if err != nil {
 			slog.Error("failed to pull image", "image", s.imageRef, "error", err)
 			return
 		}
 
-		layers, err := img.Layers()
-		if err != nil {
-			slog.Error("failed to get image layers", "image", s.imageRef, "error", err)
+		s.scanImage(ctx, ch, img)
+	}()
+	return ch
+}
+
+// scanImage scans an image's config blob and every layer's filesystem contents,
+// enforcing the cumulative decompression ceilings across the whole image.
+func (s *ContainerSource) scanImage(ctx context.Context, ch chan<- source.Chunk, img v1.Image) {
+	// Scan the image config blob (ENV/LABEL/CMD/ENTRYPOINT) — a well-known
+	// leakage vector (e.g. ENV AWS_SECRET_ACCESS_KEY=...) that never appears
+	// in any layer's filesystem.
+	s.scanConfig(ctx, ch, img)
+
+	layers, err := img.Layers()
+	if err != nil {
+		slog.Error("failed to get image layers", "image", s.imageRef, "error", err)
+		return
+	}
+
+	slog.Info("scanning container image", "image", s.imageRef, "layers", len(layers))
+
+	// imageDecompressed accumulates decompressed bytes across all layers so a
+	// single image cannot force unbounded total decompression work.
+	var imageDecompressed int64
+
+	for idx, layer := range layers {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if imageDecompressed > s.maxImageSize {
+			slog.Warn("image decompression ceiling exceeded, aborting remaining layers",
+				"image", s.imageRef, "limit_bytes", s.maxImageSize)
 			return
 		}
 
-		slog.Info("scanning container image", "image", s.imageRef, "layers", len(layers))
+		digest, err := layer.Digest()
+		if err != nil {
+			// Without a digest we cannot produce a meaningful layer ID
+			// (digest.String() would yield ":"), so skip the layer.
+			slog.Warn("failed to get layer digest, skipping layer", "layer", idx, "error", err)
+			continue
+		}
+		layerID := digest.String()
 
-		for idx, layer := range layers {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			digest, err := layer.Digest()
-			if err != nil {
-				// Without a digest we cannot produce a meaningful layer ID
-				// (digest.String() would yield ":"), so skip the layer.
-				slog.Warn("failed to get layer digest, skipping layer", "layer", idx, "error", err)
-				continue
-			}
-			layerID := digest.String()
-
-			reader, err := layer.Uncompressed()
-			if err != nil {
-				slog.Warn("failed to read layer", "layer", idx, "error", err)
-				continue
-			}
-
-			func() {
-				defer func() { _ = reader.Close() }()
-				s.scanTarLayer(ctx, ch, tar.NewReader(reader), idx, layerID)
-			}()
+		reader, err := layer.Uncompressed()
+		if err != nil {
+			slog.Warn("failed to read layer", "layer", idx, "error", err)
+			continue
 		}
 
-		slog.Info("container image scan completed", "image", s.imageRef)
-	}()
-	return ch
+		func() {
+			defer func() { _ = reader.Close() }()
+			// Wrap the decompressed stream so both the per-layer and the
+			// cumulative per-image byte ceilings are enforced as the tar
+			// reader pulls data through it.
+			counting := &limitedCountingReader{
+				r:              reader,
+				layerRemaining: s.maxLayerSize,
+				imageTotal:     &imageDecompressed,
+				imageMax:       s.maxImageSize,
+			}
+			s.scanTarLayer(ctx, ch, tar.NewReader(counting), idx, layerID)
+		}()
+	}
+
+	slog.Info("container image scan completed", "image", s.imageRef)
+}
+
+// scanConfig scans the image config blob for secrets baked into ENV, LABEL,
+// CMD, or ENTRYPOINT directives, emitting them as a single synthetic chunk.
+func (s *ContainerSource) scanConfig(ctx context.Context, ch chan<- source.Chunk, img v1.Image) {
+	cfgFile, err := img.ConfigFile()
+	if err != nil {
+		slog.Warn("failed to read image config", "image", s.imageRef, "error", err)
+		return
+	}
+
+	data := renderConfigBlob(cfgFile.Config)
+	if len(data) == 0 {
+		return
+	}
+
+	select {
+	case ch <- source.Chunk{
+		Data: data,
+		SourceMetadata: finding.SourceMetadata{
+			SourceType: "container",
+			Image:      s.imageRef,
+			Layer:      "config",
+			LayerIdx:   -1,
+			FilePath:   "<image config>",
+		},
+	}:
+	case <-ctx.Done():
+	}
+}
+
+// renderConfigBlob renders the scannable directives of an image config into a
+// deterministic, newline-separated text blob. Returns nil when nothing is set.
+func renderConfigBlob(cfg v1.Config) []byte {
+	var lines []string
+	for _, e := range cfg.Env {
+		lines = append(lines, "ENV "+e)
+	}
+	keys := make([]string, 0, len(cfg.Labels))
+	for k := range cfg.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		lines = append(lines, "LABEL "+k+"="+cfg.Labels[k])
+	}
+	if len(cfg.Entrypoint) > 0 {
+		lines = append(lines, "ENTRYPOINT "+strings.Join(cfg.Entrypoint, " "))
+	}
+	if len(cfg.Cmd) > 0 {
+		lines = append(lines, "CMD "+strings.Join(cfg.Cmd, " "))
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
 func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chunk, tr *tar.Reader, layerIdx int, layerID string) {
@@ -128,6 +255,11 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 
 		header, err := tr.Next()
 		if err == io.EOF {
+			break
+		}
+		if errors.Is(err, errDecompressionLimit) {
+			slog.Warn("layer decompression ceiling exceeded, aborting layer",
+				"layer", layerIdx, "limit_bytes", s.maxLayerSize)
 			break
 		}
 		if err != nil {
@@ -173,6 +305,11 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 
 		data, err := io.ReadAll(io.LimitReader(tr, s.maxFileSize))
 		if err != nil {
+			if errors.Is(err, errDecompressionLimit) {
+				slog.Warn("layer decompression ceiling exceeded, aborting layer",
+					"layer", layerIdx, "limit_bytes", s.maxLayerSize)
+				break
+			}
 			slog.Warn("failed to read file from layer", "file", header.Name, "layer", layerIdx, "error", err)
 			continue
 		}
@@ -198,16 +335,51 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 	}
 }
 
+// limitedCountingReader enforces a per-layer decompressed-byte ceiling while
+// accumulating every byte read into a shared per-image total. Once either the
+// per-layer remaining budget is exhausted or the per-image total exceeds its
+// maximum, Read returns errDecompressionLimit so the tar reader aborts instead
+// of decompressing further attacker-controlled data.
+type limitedCountingReader struct {
+	r              io.Reader
+	layerRemaining int64
+	imageTotal     *int64
+	imageMax       int64
+}
+
+func (lr *limitedCountingReader) Read(p []byte) (int, error) {
+	if lr.layerRemaining <= 0 {
+		return 0, errDecompressionLimit
+	}
+	if int64(len(p)) > lr.layerRemaining {
+		p = p[:lr.layerRemaining]
+	}
+	n, err := lr.r.Read(p)
+	lr.layerRemaining -= int64(n)
+	*lr.imageTotal += int64(n)
+	if *lr.imageTotal > lr.imageMax {
+		return n, errDecompressionLimit
+	}
+	return n, err
+}
+
 // sanitizeTarPath validates a tar entry name and returns a cleaned, slash-based
 // relative path safe for use as a finding location. It rejects absolute paths
-// and any path that escapes the archive root via a leading ".." segment.
+// (Unix, Windows drive-letter, and UNC), Windows drive-relative paths, and any
+// path that escapes the archive root via a leading ".." segment.
 // The boolean result is false when the entry must be skipped.
 func sanitizeTarPath(name string) (string, bool) {
-	// Normalize to forward slashes so segment checks are platform-independent.
-	slashed := filepath.ToSlash(name)
+	// Normalize separators to forward slashes independent of the host OS.
+	// filepath.ToSlash only rewrites the *host* separator (a no-op for
+	// backslashes on Linux/macOS), so replace backslashes explicitly to make
+	// backslash-based traversal (e.g. `..\..\etc\passwd`) detectable on every
+	// platform this tool ships for.
+	slashed := strings.ReplaceAll(name, "\\", "/")
 
-	// Reject absolute paths (both Unix "/etc/..." and Windows "C:\...").
-	if path.IsAbs(slashed) || filepath.IsAbs(name) {
+	// Reject absolute paths: Unix ("/etc/..."), the host's own notion of
+	// absolute, UNC ("//host/share"), and Windows drive-letter ("C:/...").
+	if path.IsAbs(slashed) || filepath.IsAbs(name) ||
+		strings.HasPrefix(slashed, "//") || hasWindowsVolume(slashed) {
 		return "", false
 	}
 
@@ -220,6 +392,16 @@ func sanitizeTarPath(name string) (string, bool) {
 	}
 
 	return clean, true
+}
+
+// hasWindowsVolume reports whether a slash-normalized path begins with a
+// Windows volume specifier such as "C:" or "C:/foo".
+func hasWindowsVolume(slashed string) bool {
+	if len(slashed) < 2 || slashed[1] != ':' {
+		return false
+	}
+	c := slashed[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // shouldSkipContainerPath returns true for paths unlikely to contain secrets.

@@ -395,6 +395,12 @@ func TestSanitizeTarPath(t *testing.T) {
 		{name: "absolute unix path rejected", input: "/etc/passwd", wantOK: false},
 		{name: "escapes root via dotdot rejected", input: "a/../../etc/passwd", wantOK: false},
 		{name: "bare dotdot rejected", input: "..", wantOK: false},
+		{name: "backslash traversal rejected", input: `..\..\etc\passwd`, wantOK: false},
+		{name: "single backslash traversal rejected", input: `..\etc\passwd`, wantOK: false},
+		{name: "backslash separators normalized", input: `app\sub\config.env`, wantPath: "app/sub/config.env", wantOK: true},
+		{name: "windows drive-letter path rejected", input: `C:\Windows\system32`, wantOK: false},
+		{name: "windows drive-letter slash path rejected", input: "C:/Windows/system32", wantOK: false},
+		{name: "unc path rejected", input: `\\host\share\file`, wantOK: false},
 	}
 
 	for _, tt := range tests {

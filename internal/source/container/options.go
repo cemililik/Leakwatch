@@ -14,6 +14,30 @@ func WithMaxFileSize(size int64) Option {
 	}
 }
 
+// WithMaxLayerSize sets the maximum number of decompressed bytes read from a
+// single layer, guarding against decompression-bomb layers with an extreme
+// compression ratio. Values less than or equal to zero are ignored.
+func WithMaxLayerSize(size int64) Option {
+	return func(s *ContainerSource) {
+		if size <= 0 {
+			return
+		}
+		s.maxLayerSize = size
+	}
+}
+
+// WithMaxImageSize sets the maximum number of decompressed bytes read across
+// all of an image's layers, bounding total decompression work. Values less
+// than or equal to zero are ignored.
+func WithMaxImageSize(size int64) Option {
+	return func(s *ContainerSource) {
+		if size <= 0 {
+			return
+		}
+		s.maxImageSize = size
+	}
+}
+
 // WithBufferSize sets the chunk channel buffer size.
 // Values less than or equal to zero are ignored.
 func WithBufferSize(size int) Option {
