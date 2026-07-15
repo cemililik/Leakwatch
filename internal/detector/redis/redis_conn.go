@@ -50,13 +50,22 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 
 // redactPassword masks the password portion in a Redis connection URL.
 // Uses net/url.Parse for proper parsing, then reconstructs with masked password.
+//
+// It is fail-safe: it NEVER returns the raw input. If the URL cannot be parsed,
+// or net/url finds no userinfo component in the authority (in which case a
+// credential may still be embedded elsewhere in the match, e.g. in the path or
+// query, because the detector regex only excludes whitespace and quotes), the
+// entire value is masked so no cleartext credential can escape.
 func redactPassword(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "****"
 	}
 	if u.User == nil {
-		return raw
+		if u.Scheme == "" {
+			return "****"
+		}
+		return u.Scheme + "://****"
 	}
 	username := u.User.Username()
 	u.User = nil

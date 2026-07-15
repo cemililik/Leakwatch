@@ -112,9 +112,10 @@ func TestRedactPassword_VariousFormats(t *testing.T) {
 			expected: "redis://user:****@host:6379/0",
 		},
 		{
+			// No userinfo: fail safe and mask everything but the scheme.
 			name:     "no credentials in URL",
 			input:    "redis://host:6379/0",
-			expected: "redis://host:6379/0",
+			expected: "redis://****",
 		},
 		{
 			name:     "user without password",
@@ -134,4 +135,21 @@ func TestRedactPassword_VariousFormats(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestRedactPassword_EmbeddedCredentialInPath_MasksInsteadOfLeaking guards the
+// fail-open regression: the detector regex only excludes whitespace and quotes,
+// so a whitespace-free run can carry a "user:pass@" credential in the path or
+// query while net/url parses the authority as having no userinfo. redactPassword
+// must MASK such a match, never return the raw string with the cleartext credential.
+func TestRedactPassword_EmbeddedCredentialInPath_MasksInsteadOfLeaking(t *testing.T) {
+	// Synthetic credential embedded in the query, not the authority.
+	raw := "redis://simplehost/path?redirect=http://user:s3cr3tP4ss@evil.com"
+
+	result := redactPassword(raw)
+
+	assert.Equal(t, "redis://****", result)
+	assert.NotContains(t, result, "s3cr3tP4ss")
+	assert.NotContains(t, result, "user:")
+	assert.NotEqual(t, raw, result)
 }
