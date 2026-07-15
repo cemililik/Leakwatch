@@ -37,34 +37,56 @@ func (v *Verifier) Type() string {
 }
 
 // Verify checks if the detected Twilio API key is valid/active.
-// The Account SID must be provided in raw.ExtraData["account_sid"].
+//
+// The detector emits the API Key SID ("SK...") as raw.Raw and the Account SID
+// ("AC...") as raw.ExtraData["account_sid"]. Twilio's REST API accepts exactly
+// two Basic-Auth pairs: (Account SID, Auth Token) or (API Key SID, API Key
+// Secret). Since raw.Raw is an API Key SID, the only valid pairing is
+// (API Key SID, API Key Secret): the SID is the Basic-Auth username and the
+// paired API Key Secret is the password. The API Key SID alone is a non-secret
+// identifier and cannot authenticate on its own, so when the paired secret is
+// not available (raw.ExtraData["api_key_secret"] is empty) the key is reported
+// as Unverified — never as inactive, which would misread a live but unpaired
+// credential as revoked.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
-	token := string(raw.Raw)
-	if token == "" {
+	apiKeySID := string(raw.Raw)
+	if apiKeySID == "" {
 		return finding.VerificationResult{
 			Status:  finding.StatusUnverified,
 			Message: "empty token",
 		}
 	}
 
-	accountSID := ""
+	var accountSID, apiKeySecret string
 	if raw.ExtraData != nil {
 		accountSID = raw.ExtraData["account_sid"]
+		apiKeySecret = raw.ExtraData["api_key_secret"]
 	}
-	if accountSID == "" {
+
+	if apiKeySecret == "" {
+		// Without the paired API Key Secret the credential cannot be
+		// authenticated. Report Unverified rather than guessing at liveness.
 		return finding.VerificationResult{
 			Status:  finding.StatusUnverified,
-			Message: "Account SID required",
+			Message: "API Key Secret unavailable; cannot verify",
 		}
 	}
 
 	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
-	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
+	// When the Account SID is known, scope the request to that account;
+	// otherwise fall back to the accounts collection, which an API Key can also
+	// reach.
+	path := "/2010-04-01/Accounts.json"
+	if accountSID != "" {
+		path = "/2010-04-01/Accounts/" + accountSID + ".json"
+	}
+
+	return httpx.VerifyToken(ctx, v.httpClient, apiKeySID, httpx.TokenSpec{
 		Name: "twilio",
 		Request: httpx.Request{
-			URL:           apiURL + "/2010-04-01/Accounts.json",
-			BasicAuthUser: accountSID,
-			BasicAuthPass: token,
+			URL:           apiURL + path,
+			BasicAuthUser: apiKeySID,
+			BasicAuthPass: apiKeySecret,
 		},
 		ActiveMessage:   "Twilio API key is active",
 		InactiveMessage: "Twilio API key is invalid or revoked",
