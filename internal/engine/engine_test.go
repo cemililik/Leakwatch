@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/source"
+	"github.com/HodeTech/leakwatch/internal/verifier"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -481,4 +484,399 @@ func TestScan_SameInput_ReturnsDeterministicID(t *testing.T) {
 	require.Len(t, r1.Findings, 1)
 	require.Len(t, r2.Findings, 1)
 	assert.Equal(t, r1.Findings[0].ID, r2.Findings[0].ID, "same input must produce same ID")
+}
+
+// --- Spy verifier (verification-enabled pipeline coverage) ---
+
+// spyVerifier records how many times Verify is called and returns a fixed
+// status. All fixtures are synthetic; no real secret material is used.
+type spyVerifier struct {
+	detectorID string
+	calls      int32
+	status     finding.VerificationStatus
+}
+
+func (s *spyVerifier) Type() string { return s.detectorID }
+
+func (s *spyVerifier) Verify(_ context.Context, _ detector.RawFinding) finding.VerificationResult {
+	atomic.AddInt32(&s.calls, 1)
+	return finding.VerificationResult{Status: s.status}
+}
+
+// TestScan_VerificationEnabled_IgnoredLineNeverVerified asserts the security-
+// relevant guarantee that an inline-ignored finding never reaches the verifier
+// (no network call), while a non-ignored finding on another line is verified
+// exactly once and carries the verifier's status.
+func TestScan_VerificationEnabled_IgnoredLineNeverVerified(t *testing.T) {
+	data := []byte("k=SECRETONE # leakwatch:ignore\nx\nk=SECRETTWO\n")
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: data, SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	det := &mockDetector{
+		id: "spy-detector",
+		findings: []detector.RawFinding{
+			{DetectorID: "spy-detector", Raw: []byte("SECRETONE"), Redacted: "SEC***ONE"},
+			{DetectorID: "spy-detector", Raw: []byte("SECRETTWO"), Redacted: "SEC***TWO"},
+		},
+	}
+	spy := &spyVerifier{detectorID: "spy-detector", status: finding.StatusVerifiedActive}
+
+	eng := New(Config{
+		Concurrency:    1,
+		Detectors:      []detector.Detector{det},
+		Clock:          fixedClock,
+		VerifierConfig: verifier.Config{Enabled: true, RateLimit: 1000},
+		Verifiers:      []verifier.Verifier{spy},
+	})
+
+	result, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1, "only the non-ignored finding is reported")
+	assert.Equal(t, 3, result.Findings[0].SourceMetadata.Line)
+	assert.Equal(t, finding.StatusVerifiedActive, result.Findings[0].Verification.Status)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&spy.calls),
+		"the ignored line must never trigger a verification call")
+}
+
+// TestScan_SameLineDuplicate_DistinctIDsSingleVerify is the regression test for
+// the same-line duplicate collapse bug: two identical matches on one line must
+// produce two findings with distinct IDs (no collapse) while the verifier is
+// called only once for the shared secret value (no duplicate verifier call).
+func TestScan_SameLineDuplicate_DistinctIDsSingleVerify(t *testing.T) {
+	data := []byte("k=DUPSECRET k=DUPSECRET\n")
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: data, SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	det := &mockDetector{
+		id: "dup-detector",
+		findings: []detector.RawFinding{
+			{DetectorID: "dup-detector", Raw: []byte("DUPSECRET"), Redacted: "DUP***"},
+			{DetectorID: "dup-detector", Raw: []byte("DUPSECRET"), Redacted: "DUP***"},
+		},
+	}
+	spy := &spyVerifier{detectorID: "dup-detector", status: finding.StatusVerifiedActive}
+
+	eng := New(Config{
+		Concurrency:    1,
+		Detectors:      []detector.Detector{det},
+		Clock:          fixedClock,
+		VerifierConfig: verifier.Config{Enabled: true, RateLimit: 1000},
+		Verifiers:      []verifier.Verifier{spy},
+	})
+
+	result, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 2, "same-line duplicates must not collapse")
+	assert.Equal(t, 1, result.Findings[0].SourceMetadata.Line)
+	assert.Equal(t, 1, result.Findings[1].SourceMetadata.Line)
+	assert.NotEqual(t, result.Findings[0].ID, result.Findings[1].ID,
+		"same-line duplicates must receive distinct Finding.IDs")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&spy.calls),
+		"the shared secret value must be verified only once")
+}
+
+func TestApplyFilters(t *testing.T) {
+	mk := func(id string, sev finding.Severity, status finding.VerificationStatus) finding.Finding {
+		return finding.Finding{
+			ID:           id,
+			Severity:     sev,
+			Verification: finding.VerificationResult{Status: status},
+		}
+	}
+	all := []finding.Finding{
+		mk("low-unv", finding.SeverityLow, finding.StatusUnverified),
+		mk("high-active", finding.SeverityHigh, finding.StatusVerifiedActive),
+		mk("crit-inactive", finding.SeverityCritical, finding.StatusVerifiedInactive),
+		mk("med-active", finding.SeverityMedium, finding.StatusVerifiedActive),
+	}
+
+	tests := []struct {
+		name         string
+		onlyVerified bool
+		minSeverity  finding.Severity
+		wantIDs      []string
+	}{
+		{
+			name:    "no filters keeps everything",
+			wantIDs: []string{"low-unv", "high-active", "crit-inactive", "med-active"},
+		},
+		{
+			name:         "only verified keeps active only",
+			onlyVerified: true,
+			wantIDs:      []string{"high-active", "med-active"},
+		},
+		{
+			name:        "min severity high drops lower",
+			minSeverity: finding.SeverityHigh,
+			wantIDs:     []string{"high-active", "crit-inactive"},
+		},
+		{
+			name:         "combined only-verified and min-severity",
+			onlyVerified: true,
+			minSeverity:  finding.SeverityHigh,
+			wantIDs:      []string{"high-active"},
+		},
+		{
+			name:         "min severity critical with none matching",
+			minSeverity:  finding.SeverityCritical,
+			onlyVerified: true,
+			wantIDs:      nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := New(Config{
+				Concurrency:  1,
+				OnlyVerified: tc.onlyVerified,
+				MinSeverity:  tc.minSeverity,
+			})
+			got := eng.applyFilters(append([]finding.Finding(nil), all...))
+			var gotIDs []string
+			for _, f := range got {
+				gotIDs = append(gotIDs, f.ID)
+			}
+			assert.Equal(t, tc.wantIDs, gotIDs)
+		})
+	}
+}
+
+func TestScan_EntropyGating(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		threshold float64
+		wantCount int
+	}{
+		{name: "low entropy dropped", raw: "aaaaaaaaaa", threshold: 4.0, wantCount: 0},
+		{name: "high entropy kept", raw: "aB3kL9mN2pQ7rT4xYz", threshold: 4.0, wantCount: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &mockSource{
+				chunks: []source.Chunk{
+					{Data: []byte(tc.raw), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+				},
+			}
+			det := &mockDetector{
+				id:       "det",
+				findings: []detector.RawFinding{{DetectorID: "det", Raw: []byte(tc.raw), Redacted: "r***"}},
+			}
+			eng := New(Config{
+				Concurrency:      1,
+				Detectors:        []detector.Detector{det},
+				EnableEntropy:    true,
+				EntropyThreshold: tc.threshold,
+				Clock:            fixedClock,
+			})
+			result, err := eng.Scan(context.Background(), src)
+			require.NoError(t, err)
+			assert.Len(t, result.Findings, tc.wantCount)
+		})
+	}
+}
+
+func TestScan_EntropyDisabled_NoGating(t *testing.T) {
+	// Low-entropy value must be reported when entropy analysis is off.
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: []byte("aaaaaaaaaa"), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	det := &mockDetector{
+		id:       "det",
+		findings: []detector.RawFinding{{DetectorID: "det", Raw: []byte("aaaaaaaaaa"), Redacted: "a***"}},
+	}
+	eng := New(Config{Concurrency: 1, Detectors: []detector.Detector{det}, Clock: fixedClock})
+	result, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	assert.Len(t, result.Findings, 1, "gating must not apply when EnableEntropy is false")
+}
+
+func TestScan_DeterministicOrder(t *testing.T) {
+	// Chunks are intentionally out of sorted file-path order and scanned with
+	// many workers; the final order must be stable and sorted regardless.
+	paths := []string{"c.txt", "a.txt", "b.txt", "e.txt", "d.txt"}
+	chunks := make([]source.Chunk, len(paths))
+	for i, p := range paths {
+		chunks[i] = source.Chunk{
+			Data:           []byte("AKIATESTKEY"),
+			SourceMetadata: finding.SourceMetadata{FilePath: p},
+		}
+	}
+	src := &mockSource{chunks: chunks}
+	det := &mockDetector{
+		id:       "det",
+		findings: []detector.RawFinding{{DetectorID: "det", Raw: []byte("AKIATESTKEY"), Redacted: "AKIA****"}},
+	}
+
+	eng := New(Config{Concurrency: 8, Detectors: []detector.Detector{det}, Clock: fixedClock})
+
+	r1, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	require.Len(t, r1.Findings, len(paths))
+
+	gotPaths := make([]string, len(r1.Findings))
+	for i, f := range r1.Findings {
+		gotPaths[i] = f.SourceMetadata.FilePath
+	}
+	assert.Equal(t, []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"}, gotPaths,
+		"findings must be sorted by file path")
+
+	// Second run must return the identical order.
+	r2, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	got2 := make([]string, len(r2.Findings))
+	for i, f := range r2.Findings {
+		got2[i] = f.SourceMetadata.FilePath
+	}
+	assert.Equal(t, gotPaths, got2, "order must be deterministic across runs")
+}
+
+// TestScan_NoGoroutineLeak asserts that a completed scan leaves no lingering
+// goroutines (worker pool, collector, and per-detector safeguard goroutines all
+// exit). Uses runtime.NumGoroutine rather than an external dependency.
+func TestScan_NoGoroutineLeak(t *testing.T) {
+	keywords := []string{"akia_fake", "ghp_fake", "xoxb_fake"}
+	dets := make([]detector.Detector, len(keywords))
+	for i, kw := range keywords {
+		dets[i] = &keywordDetector{keyword: kw}
+	}
+	var sb bytes.Buffer
+	for _, kw := range keywords {
+		fmt.Fprintf(&sb, "token_%s = \"value\"\n", kw)
+	}
+	chunks := make([]source.Chunk, 50)
+	for i := range chunks {
+		chunks[i] = source.Chunk{
+			Data:           sb.Bytes(),
+			SourceMetadata: finding.SourceMetadata{FilePath: fmt.Sprintf("f_%03d.txt", i)},
+		}
+	}
+	eng := New(Config{Concurrency: 8, Detectors: dets, Clock: fixedClock})
+
+	// Warm up once so any lazily-started runtime goroutines exist in the baseline.
+	_, err := eng.Scan(context.Background(), &mockSource{chunks: chunks})
+	require.NoError(t, err)
+
+	baseline := waitGoroutines()
+
+	for i := 0; i < 5; i++ {
+		_, err := eng.Scan(context.Background(), &mockSource{chunks: chunks})
+		require.NoError(t, err)
+	}
+
+	after := waitGoroutines()
+	assert.LessOrEqual(t, after, baseline+2,
+		"scan must not leak goroutines (baseline %d, after %d)", baseline, after)
+}
+
+// waitGoroutines returns the goroutine count after giving any recently-finished
+// goroutines a chance to be scheduled out and torn down.
+func waitGoroutines() int {
+	var n int
+	for i := 0; i < 50; i++ {
+		runtime.GC()
+		time.Sleep(2 * time.Millisecond)
+		n = runtime.NumGoroutine()
+	}
+	return n
+}
+
+func TestResolveLine(t *testing.T) {
+	data := []byte("first\nKEY=AKIATESTKEY\nthird\r\n")
+	offset := bytes.Index(data, []byte("AKIATESTKEY"))
+
+	// Offset-derived line.
+	line, text := resolveLine(data, 0, offset)
+	assert.Equal(t, 2, line)
+	assert.Equal(t, "KEY=AKIATESTKEY", text)
+
+	// Source-provided line takes precedence and CRLF is trimmed.
+	line, text = resolveLine(data, 3, -1)
+	assert.Equal(t, 3, line)
+	assert.Equal(t, "third", text)
+
+	// Unknown line.
+	line, text = resolveLine(data, 0, -1)
+	assert.Equal(t, 0, line)
+	assert.Empty(t, text)
+}
+
+// --- Benchmarks ---
+
+func benchSource(numChunks int, data []byte) *mockSource {
+	chunks := make([]source.Chunk, numChunks)
+	for i := range chunks {
+		chunks[i] = source.Chunk{
+			Data:           data,
+			SourceMetadata: finding.SourceMetadata{FilePath: fmt.Sprintf("f_%05d.txt", i)},
+		}
+	}
+	return &mockSource{chunks: chunks}
+}
+
+func BenchmarkEngine_Scan(b *testing.B) {
+	keywords := []string{"akia_fake", "ghp_fake", "xoxb_fake", "sk_fake"}
+	dets := make([]detector.Detector, len(keywords))
+	for i, kw := range keywords {
+		dets[i] = &keywordDetector{keyword: kw}
+	}
+	var sb bytes.Buffer
+	for i := 0; i < 20; i++ {
+		for _, kw := range keywords {
+			fmt.Fprintf(&sb, "line_%d_token_%s = \"value\"\n", i, kw)
+		}
+	}
+	data := sb.Bytes()
+	eng := New(Config{Concurrency: 8, Detectors: dets, Clock: fixedClock})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		src := benchSource(100, data)
+		if _, err := eng.Scan(context.Background(), src); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkResolveLine(b *testing.B) {
+	var sb bytes.Buffer
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&sb, "some padding line number %d with content\n", i)
+	}
+	sb.WriteString("KEY=AKIATESTKEY at the end\n")
+	data := sb.Bytes()
+	offset := bytes.Index(data, []byte("AKIATESTKEY"))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = resolveLine(data, 0, offset)
+	}
+}
+
+func BenchmarkNextMatchOffset(b *testing.B) {
+	var sb bytes.Buffer
+	for i := 0; i < 500; i++ {
+		sb.WriteString("padding SECRET padding\n")
+	}
+	data := sb.Bytes()
+	raw := []byte("SECRET")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cursor := make(map[string]int, 1)
+		for {
+			if off := nextMatchOffset(data, raw, cursor); off < 0 {
+				break
+			}
+		}
+	}
 }
