@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.12'
       - name: Install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       # shellcheck is preinstalled on ubuntu runners, so actionlint also lints
@@ -133,7 +133,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
-          go-version: '1.25.10'
+          go-version: '1.25.12'
       - name: Build leakwatch from this branch
         run: go build -o "${RUNNER_TEMP}/leakwatch" .
       - name: github format emits inline annotations
