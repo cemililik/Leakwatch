@@ -6,5 +6,7 @@ node_modules/**
 .gitignore
 webpack.config.js
 tsconfig.json
+eslint.config.mjs
+package-lock.json
 **/*.ts
 **/*.map

@@ -29,6 +29,8 @@ export function setIdle(): void {
 export function setScanning(): void {
   statusBarItem.text = "$(loading~spin) Leakwatch: Scanning...";
   statusBarItem.tooltip = "Scan in progress";
+  // Reset any stale error/warning tint from a previous scan.
+  statusBarItem.backgroundColor = undefined;
 }
 
 /** Shows scan results. */

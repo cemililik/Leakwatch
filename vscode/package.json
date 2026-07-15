@@ -7,7 +7,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HodeTech/Leakwatch"
+    "url": "https://github.com/HodeTech/Leakwatch",
+    "directory": "vscode"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -27,6 +28,16 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Leakwatch runs an external binary; in untrusted workspaces scanning is disabled and the executable/config paths cannot be overridden by workspace settings.",
+      "restrictedConfigurations": [
+        "leakwatch.executablePath",
+        "leakwatch.customRulesPath"
+      ]
+    }
+  },
   "contributes": {
     "commands": [
       {
@@ -48,7 +59,8 @@
         "leakwatch.executablePath": {
           "type": "string",
           "default": "leakwatch",
-          "description": "Path to the leakwatch binary"
+          "scope": "machine-overridable",
+          "description": "Path to the leakwatch binary. For security this cannot be set by workspace settings."
         },
         "leakwatch.scanOnSave": {
           "type": "boolean",
@@ -66,10 +78,23 @@
           "default": true,
           "description": "Show inline hints for detected secrets"
         },
+        "leakwatch.scanTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Maximum time (in milliseconds) a scan may run before it is aborted. Increase for large repositories."
+        },
+        "leakwatch.maxBufferMb": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Maximum size (in megabytes) of scan output to buffer. Increase if scans of large repositories exceed the limit."
+        },
         "leakwatch.customRulesPath": {
           "type": "string",
           "default": "",
-          "description": "Path to custom rules YAML file"
+          "scope": "machine-overridable",
+          "description": "Path to a leakwatch config file passed as --config. Note: this overrides the entire .leakwatch.yaml config, not only custom rules. For security this cannot be set by workspace settings."
         }
       }
     }
@@ -78,17 +103,20 @@
     "vscode:prepublish": "npm run compile",
     "compile": "webpack --mode production",
     "watch": "webpack --mode development --watch",
-    "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "lint": "eslint src",
+    "pretest": "tsc -p ./",
+    "test": "node --test \"out/test/**/*.test.js\""
   },
   "devDependencies": {
+    "@eslint/js": "^9.18.0",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
     "ts-loader": "^9.5.0",
     "typescript": "^5.3.0",
+    "typescript-eslint": "^8.20.0",
     "webpack": "^5.90.0",
     "webpack-cli": "^5.1.0"
   }
