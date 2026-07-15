@@ -18,6 +18,7 @@ import (
 // mockGCSClient implements the gcsClient interface for testing.
 type mockGCSClient struct {
 	buckets map[string]*mockBucketHandle
+	closed  bool
 }
 
 func (m *mockGCSClient) Bucket(name string) bucketHandle {
@@ -27,7 +28,10 @@ func (m *mockGCSClient) Bucket(name string) bucketHandle {
 	return &mockBucketHandle{name: name, notFound: true}
 }
 
-func (m *mockGCSClient) Close() error { return nil }
+func (m *mockGCSClient) Close() error {
+	m.closed = true
+	return nil
+}
 
 // mockBucketHandle implements the bucketHandle interface for testing.
 type mockBucketHandle struct {
@@ -112,6 +116,22 @@ func TestGCSSource_New_WithOptions(t *testing.T) {
 	assert.Equal(t, int64(5*1024*1024), s.maxFileSize)
 	assert.Equal(t, 32, s.bufferSize)
 	assert.Equal(t, "my-project", s.project)
+}
+
+func TestWithMaxFileSize_InvalidValue_NoOp(t *testing.T) {
+	s := New("my-bucket")
+	original := s.maxFileSize
+
+	WithMaxFileSize(0)(s)
+	assert.Equal(t, original, s.maxFileSize)
+
+	WithMaxFileSize(-1)(s)
+	assert.Equal(t, original, s.maxFileSize)
+}
+
+func TestWithMaxFileSize_ValidValue_Applied(t *testing.T) {
+	s := New("my-bucket", WithMaxFileSize(1024))
+	assert.Equal(t, int64(1024), s.maxFileSize)
 }
 
 func TestGCSSource_Validate_EmptyBucket_ReturnsError(t *testing.T) {
@@ -412,6 +432,29 @@ func TestGCSSource_Chunks_WithExcludePaths_FiltersObjects(t *testing.T) {
 func TestGCSSource_New_WithExcludePaths_StoresPatterns(t *testing.T) {
 	s := New("my-bucket", WithExcludePaths([]string{"a/**", "b"}))
 	assert.Equal(t, []string{"a/**", "b"}, s.excludePaths)
+}
+
+func TestGCSSource_Chunks_ClosesClientOnCompletion(t *testing.T) {
+	mock := &mockGCSClient{
+		buckets: map[string]*mockBucketHandle{
+			"my-bucket": {
+				name: "my-bucket",
+				objects: []*gcsstorage.ObjectAttrs{
+					{Name: "a.txt", Size: 5},
+				},
+				data: map[string]string{"a.txt": "aaaaa"},
+			},
+		},
+	}
+
+	s := New("my-bucket")
+	s.client = mock
+
+	for range s.Chunks(context.Background()) {
+		// Drain the channel so Chunks' goroutine can finish and close the client.
+	}
+
+	assert.True(t, mock.closed, "gcs client must be closed once Chunks completes")
 }
 
 func TestGCSSource_Chunks_WithPrefix_FiltersObjects(t *testing.T) {

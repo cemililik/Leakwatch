@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -20,6 +21,13 @@ import (
 
 // defaultMaxFileSize is the maximum object size to scan (10 MB).
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
+
+// validateTimeout bounds the network calls made by Validate. The
+// source.Source interface's Validate() method takes no context.Context
+// parameter, so the caller's own cancellation cannot be threaded through
+// here; a bounded timeout at least prevents an unreachable/misconfigured
+// bucket from hanging Validate indefinitely.
+const validateTimeout = 30 * time.Second
 
 // s3Client defines the subset of the S3 API used by S3Source.
 // This interface enables unit testing without real AWS calls.
@@ -66,11 +74,14 @@ func (s *S3Source) Validate() error {
 		return fmt.Errorf("s3 bucket name is required")
 	}
 
-	if err := s.ensureClient(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
+	defer cancel()
+
+	if err := s.ensureClient(ctx); err != nil {
 		return fmt.Errorf("s3 client initialization failed: %w", err)
 	}
 
-	_, err := s.client.HeadBucket(context.Background(), &s3.HeadBucketInput{
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: &s.bucket,
 	})
 	if err != nil {
