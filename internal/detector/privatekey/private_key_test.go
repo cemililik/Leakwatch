@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDetector_Metadata(t *testing.T) {
@@ -44,6 +46,11 @@ func TestDetector_Scan(t *testing.T) {
 		{
 			name:     "generic private key (PKCS8)",
 			input:    "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----",
+			expected: 1,
+		},
+		{
+			name:     "encrypted private key (PKCS8)",
+			input:    "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIF...\n-----END ENCRYPTED PRIVATE KEY-----",
 			expected: 1,
 		},
 		{
@@ -108,6 +115,57 @@ func TestDetector_Scan_CapturesBlockRegionWithoutLeakingBody(t *testing.T) {
 	// The block region length must span the whole BEGIN..END block.
 	assert.Equal(t, "block_bytes", firstKey(f.ExtraData))
 	assert.Equal(t, len(pem), blockBytes(t, f.ExtraData))
+}
+
+// TestDetector_Scan_BackToBackBlocks_BlockBytesDoesNotSpanAdjacentKey is a
+// regression test for the block-length measurement bug: when two full
+// BEGIN/END PEM blocks sit back-to-back, the first block's block_bytes must
+// only cover its own BEGIN..END span, never extend into the second key's
+// header/body. See review section 04-detectors-d3.md LOW finding
+// "private_key.go:56".
+func TestDetector_Scan_BackToBackBlocks_BlockBytesDoesNotSpanAdjacentKey(t *testing.T) {
+	firstBlock := "-----BEGIN RSA PRIVATE KEY-----\nFAKEBODY1\n-----END RSA PRIVATE KEY-----"
+	secondBlock := "-----BEGIN EC PRIVATE KEY-----\nFAKEBODY2\n-----END EC PRIVATE KEY-----"
+	pem := firstBlock + "\n" + secondBlock
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(pem))
+
+	require.Len(t, findings, 2)
+	assert.Equal(t, len(firstBlock), blockBytes(t, findings[0].ExtraData),
+		"first block's block_bytes must not span into the second, unrelated key block")
+	assert.Equal(t, len(secondBlock), blockBytes(t, findings[1].ExtraData))
+}
+
+// TestDetector_Scan_TwoBeginsNoEnd_BlockBytesCappedAtNextBegin covers the
+// case where a BEGIN header has no END armor of its own before the next
+// BEGIN header starts (e.g. a truncated/malformed first block): block_bytes
+// must be capped at the next BEGIN rather than left unbounded or spanning
+// into it.
+func TestDetector_Scan_TwoBeginsNoEnd_BlockBytesCappedAtNextBegin(t *testing.T) {
+	first := "-----BEGIN RSA PRIVATE KEY-----\n"
+	second := "-----BEGIN EC PRIVATE KEY-----\n"
+	pem := first + second
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(pem))
+
+	require.Len(t, findings, 2)
+	assert.Equal(t, len(first), blockBytes(t, findings[0].ExtraData))
+}
+
+// TestDetector_ScanViaMatcher_EncryptedPrivateKey_IsDetected is a
+// testutil.ScanViaMatcher regression test proving the "ENCRYPTED PRIVATE
+// KEY" armor survives the real Aho-Corasick matcher gate, i.e. that
+// Keywords() was correctly broadened alongside the regex.
+func TestDetector_ScanViaMatcher_EncryptedPrivateKey_IsDetected(t *testing.T) {
+	input := "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIF...\n-----END ENCRYPTED PRIVATE KEY-----"
+
+	d := &Detector{}
+	findings := testutil.ScanViaMatcher(d, []byte(input))
+
+	require.Len(t, findings, 1, "encrypted private key must survive the matcher gate")
+	assert.Equal(t, "private-key", findings[0].DetectorID)
 }
 
 func firstKey(m map[string]string) string {

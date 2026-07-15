@@ -10,7 +10,18 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var mailgunKeyPattern = regexp.MustCompile(`key-[a-f0-9]{32}`)
+var (
+	mailgunKeyPattern = regexp.MustCompile(`key-[a-f0-9]{32}`)
+	// mailgunContextPattern requires a Mailgun-specific context word to be
+	// present anywhere in the scanned data before a key-<32 hex> match is
+	// reported. Without this gate, the bare "key-" + 32 lowercase hex chars
+	// shape collides with unrelated identifiers (cache keys, checksums,
+	// license/feature-flag IDs, Terraform/K8s resource IDs), producing
+	// Critical-severity false positives. Mirrors the context-gating pattern
+	// already used by okta and pagerduty in the same batch (see review
+	// section 04-detectors-d3.md HIGH finding "mailgun_key.go:13").
+	mailgunContextPattern = regexp.MustCompile(`(?i)mailgun`)
+)
 
 // Detector detects Mailgun API Keys.
 type Detector struct{}
@@ -27,8 +38,15 @@ func (d *Detector) Keywords() []string { return []string{"mailgun", "MAILGUN", "
 // Severity returns the default severity level for Mailgun API Key findings.
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
-// Scan searches the data for Mailgun API Key patterns.
+// Scan searches the data for Mailgun API Key patterns. A match is only
+// reported when the data also contains Mailgun-specific context (the word
+// "mailgun", case-insensitively) — the bare key-<32 hex> shape alone is too
+// generic to safely report as a Critical secret.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
+	if !mailgunContextPattern.Match(data) {
+		return nil
+	}
+
 	matches := mailgunKeyPattern.FindAll(data, -1)
 	if len(matches) == 0 {
 		return nil
