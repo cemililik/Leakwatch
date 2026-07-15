@@ -11,6 +11,12 @@ import (
 
 var databricksTokenPattern = regexp.MustCompile(`dapi[a-f0-9]{32}(-[0-9])?`)
 
+// databricksHostPattern captures a co-located Databricks workspace host URL.
+// A workspace PAT authenticates against its own workspace host, so the verifier
+// needs this host to make a live call; it is non-secret context attached to the
+// finding's ExtraData.
+var databricksHostPattern = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.(?:cloud\.databricks\.com|azuredatabricks\.net|gcp\.databricks\.com)`)
+
 // Detector detects Databricks Personal Access Tokens.
 type Detector struct{}
 
@@ -33,15 +39,26 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 
+	// Capture a co-located workspace host (if any) so the verifier can target
+	// the correct workspace REST API. This is non-secret context.
+	var host string
+	if h := databricksHostPattern.Find(data); h != nil {
+		host = string(h)
+	}
+
 	findings := make([]detector.RawFinding, 0, len(matches))
 	for _, match := range matches {
 		s := string(match)
 		last4 := s[len(s)-4:]
-		findings = append(findings, detector.RawFinding{
+		f := detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        match,
 			Redacted:   "dapi****" + last4,
-		})
+		}
+		if host != "" {
+			f.ExtraData = map[string]string{"host": host}
+		}
+		findings = append(findings, f)
 	}
 	return findings
 }

@@ -48,8 +48,8 @@ func TestDetector_Scan_MatchesValidPasswords(t *testing.T) {
 			rawLen:   20,
 		},
 		{
-			name:     "bitbucket with colon separator",
-			input:    "bitbucket: " + password20,
+			name:     "bitbucket_password with colon separator",
+			input:    "bitbucket_password: " + password20,
 			expected: 1,
 			redacted: "****" + password20[len(password20)-4:],
 			rawLen:   20,
@@ -105,6 +105,46 @@ func TestDetector_Scan_MatchesValidPasswords(t *testing.T) {
 	}
 }
 
+func TestDetector_Scan_CapturesCoLocatedUsername(t *testing.T) {
+	password20 := strings.Repeat("AbCd", 5)
+
+	tests := []struct {
+		name         string
+		input        string
+		wantUsername string
+	}{
+		{
+			name:         "BITBUCKET_USERNAME assignment",
+			input:        "BITBUCKET_USERNAME=jdoe\nBITBUCKET_APP_PASSWORD=" + password20,
+			wantUsername: "jdoe",
+		},
+		{
+			name:         "atlassian_user assignment",
+			input:        "atlassian_user: john.doe\nbitbucket_app_password: " + password20,
+			wantUsername: "john.doe",
+		},
+		{
+			name:         "no username present",
+			input:        "BITBUCKET_APP_PASSWORD=" + password20,
+			wantUsername: "",
+		},
+	}
+
+	d := &Detector{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := d.Scan(context.Background(), []byte(tt.input))
+			require.Len(t, findings, 1)
+			if tt.wantUsername == "" {
+				assert.Nil(t, findings[0].ExtraData)
+				return
+			}
+			require.NotNil(t, findings[0].ExtraData)
+			assert.Equal(t, tt.wantUsername, findings[0].ExtraData["username"])
+		})
+	}
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -121,6 +161,12 @@ func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 		{
 			name:  "no recognized variable name",
 			input: "MY_PASSWORD=" + strings.Repeat("a", 20),
+		},
+		{
+			// Bare "bitbucket:" must NOT match — it caused broad false
+			// positives on workspace UUIDs, repo slugs, and commit fragments.
+			name:  "bare bitbucket prefix with non-secret identifier",
+			input: "bitbucket: " + strings.Repeat("a", 20),
 		},
 		{
 			name:  "special characters in password",

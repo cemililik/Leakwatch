@@ -67,6 +67,46 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 	}
 }
 
+func TestDetector_Scan_CapturesCoLocatedHost(t *testing.T) {
+	hex32 := strings.Repeat("abcdef01", 4)
+
+	tests := []struct {
+		name     string
+		input    string
+		wantHost string
+	}{
+		{
+			name:     "cloud.databricks.com host",
+			input:    "DATABRICKS_HOST=https://dbc-a1b2345c-d6e7.cloud.databricks.com\nDATABRICKS_TOKEN=dapi" + hex32,
+			wantHost: "https://dbc-a1b2345c-d6e7.cloud.databricks.com",
+		},
+		{
+			name:     "azuredatabricks.net host",
+			input:    "host = \"https://adb-123456789.10.azuredatabricks.net\"\ntoken = \"dapi" + hex32 + "\"",
+			wantHost: "https://adb-123456789.10.azuredatabricks.net",
+		},
+		{
+			name:     "no host present",
+			input:    "DATABRICKS_TOKEN=dapi" + hex32,
+			wantHost: "",
+		},
+	}
+
+	d := &Detector{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := d.Scan(context.Background(), []byte(tt.input))
+			require.Len(t, findings, 1)
+			if tt.wantHost == "" {
+				assert.Nil(t, findings[0].ExtraData)
+				return
+			}
+			require.NotNil(t, findings[0].ExtraData)
+			assert.Equal(t, tt.wantHost, findings[0].ExtraData["host"])
+		})
+	}
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string
