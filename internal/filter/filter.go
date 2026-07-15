@@ -60,7 +60,13 @@ func IsExcludedExtension(path string, extraExts []string) bool {
 
 // IsBinaryFile checks whether data appears to be a binary file.
 // If a null byte is found within the first 8KB, it is considered binary.
+// UTF-16 text (identified by a leading BOM) is exempted from the null-byte
+// heuristic: UTF-16 encodes every ASCII character with an accompanying 0x00
+// byte, so it would otherwise always be misclassified as binary.
 func IsBinaryFile(data []byte) bool {
+	if hasUTF16BOM(data) {
+		return false
+	}
 	checkLen := binaryCheckLen
 	if len(data) < checkLen {
 		checkLen = len(data)
@@ -71,6 +77,15 @@ func IsBinaryFile(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// hasUTF16BOM reports whether data begins with a UTF-16 byte order mark
+// (little-endian 0xFF 0xFE or big-endian 0xFE 0xFF).
+func hasUTF16BOM(data []byte) bool {
+	if len(data) < 2 {
+		return false
+	}
+	return (data[0] == 0xFF && data[1] == 0xFE) || (data[0] == 0xFE && data[1] == 0xFF)
 }
 
 // MatchesGlob reports whether path matches any of the given glob patterns.
@@ -114,12 +129,28 @@ func matchGlob(pattern, path string) bool {
 		return matchDoubleStar(pattern, path)
 	}
 
-	matched, err := filepath.Match(pattern, path)
+	// Normalize both sides to forward slashes: exclude-path patterns are
+	// conventionally written with "/" (e.g. "config/secret.pem"), but
+	// filepath.Match treats "/" as a literal character rather than an
+	// equivalent of the platform separator, so on Windows an un-normalized
+	// pattern would never match a backslash-separated path (filepath.Rel
+	// produces "\"-separated relative paths there). normalizeSlashes is used
+	// instead of filepath.ToSlash because the latter is a no-op except when
+	// GOOS is windows, which would make this branch's behavior untestable
+	// outside a Windows build.
+	matched, err := filepath.Match(normalizeSlashes(pattern), normalizeSlashes(path))
 	if err != nil {
 		slog.Debug("ignoring invalid glob pattern", "pattern", pattern, "error", err)
 		return false
 	}
 	return matched
+}
+
+// normalizeSlashes converts backslash path separators to forward slashes,
+// unconditionally on every build platform (unlike filepath.ToSlash, which
+// only does so when GOOS is windows).
+func normalizeSlashes(s string) string {
+	return strings.ReplaceAll(s, `\`, "/")
 }
 
 // matchDirPrefix reports whether path lies within a directory matching dirPattern
@@ -152,35 +183,54 @@ func matchDoubleStar(pattern, path string) bool {
 	return matchSegments(patternParts, pathParts)
 }
 
+// matchSegments reports whether pattern (path segments, where "**" matches
+// zero or more segments) matches path. It is implemented as an iterative
+// dynamic-programming table — the same technique used for classic wildcard
+// matching — rather than naive backtracking recursion, which would otherwise
+// explore every split-position combination for each "**" token and blow up
+// combinatorially on adversarial patterns (e.g. many chained "**" segments
+// against a deep, non-matching path). This keeps matching bounded to
+// O(len(pattern) * len(path)) filepath.Match calls in the worst case,
+// regardless of how many "**" tokens the pattern contains.
+//
+// A malformed non-"**" segment (invalid filepath.Match syntax) is logged at
+// debug level and the whole match is treated as a non-match, mirroring the
+// error handling of the sibling matchGlob/matchDirPrefix functions.
 func matchSegments(pattern, path []string) bool {
-	// Base cases
-	if len(pattern) == 0 {
-		return len(path) == 0
+	n := len(pattern)
+	m := len(path)
+
+	// dp[i][j] reports whether pattern[:i] matches path[:j].
+	dp := make([][]bool, n+1)
+	for i := range dp {
+		dp[i] = make([]bool, m+1)
 	}
-
-	head := pattern[0]
-	rest := pattern[1:]
-
-	if head == "**" {
-		// ** matches zero or more segments
-		// Try matching rest of pattern from every position in path
-		for i := 0; i <= len(path); i++ {
-			if matchSegments(rest, path[i:]) {
-				return true
-			}
+	dp[0][0] = true
+	for i := 1; i <= n; i++ {
+		if pattern[i-1] == "**" {
+			dp[i][0] = dp[i-1][0]
 		}
-		return false
 	}
 
-	if len(path) == 0 {
-		return false
+	for i := 1; i <= n; i++ {
+		segment := pattern[i-1]
+		for j := 1; j <= m; j++ {
+			if segment == "**" {
+				// "**" matches zero segments (dp[i-1][j]) or consumes one more
+				// path segment while still matching (dp[i][j-1]).
+				dp[i][j] = dp[i-1][j] || dp[i][j-1]
+				continue
+			}
+			matched, err := filepath.Match(segment, path[j-1])
+			if err != nil {
+				slog.Debug("ignoring invalid glob pattern segment", "segment", segment, "error", err)
+				return false
+			}
+			dp[i][j] = dp[i-1][j-1] && matched
+		}
 	}
 
-	matched, _ := filepath.Match(head, path[0])
-	if !matched {
-		return false
-	}
-	return matchSegments(rest, path[1:])
+	return dp[n][m]
 }
 
 func splitPath(p string) []string {
