@@ -158,6 +158,26 @@ type SourceMetadata struct {
 	ThreadTS    string `json:"thread_ts,omitempty"`
 }
 
+// MarshalJSON serializes SourceMetadata, omitting Date when it holds the zero
+// time. encoding/json's omitempty is a no-op on a time.Time struct value, so a
+// non-git finding (which never sets Date) would otherwise serialize a bogus
+// "date":"0001-01-01T00:00:00Z". A pointer shadow field lets omitempty apply.
+func (m SourceMetadata) MarshalJSON() ([]byte, error) {
+	type alias SourceMetadata
+	shadow := struct {
+		alias
+		Date *time.Time `json:"date,omitempty"`
+	}{alias: alias(m)}
+	if !m.Date.IsZero() {
+		shadow.Date = &m.Date
+	}
+	out, err := json.Marshal(shadow)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal SourceMetadata JSON: %w", err)
+	}
+	return out, nil
+}
+
 // Remediation provides actionable guidance for rotating or revoking a detected secret.
 type Remediation struct {
 	Title      string   `json:"title"`
@@ -175,16 +195,35 @@ type Remediation struct {
 // a Finding cannot accidentally leak the secret. Output formatters that support
 // an explicit opt-in (e.g. --show-raw) re-add the value via a dedicated wire
 // type rather than relying on this struct's tags.
+//
+// ExtraData is treated with the same defense-in-depth as Raw: it also carries a
+// json:"-" tag so a detector that mistakenly stashes secret material there can
+// never leak it into the default (non --show-raw) output path. Formatters that
+// support --show-raw re-add it through their own opt-in wire type.
 type Finding struct {
-	ID             string             `json:"id"`
-	DetectorID     string             `json:"detector_id"`
-	Severity       Severity           `json:"severity"`
-	Raw            string             `json:"-"`
-	Redacted       string             `json:"redacted"`
+	// ID is an opaque, deterministic identifier: a truncated SHA-256 rendered
+	// as a lowercase hex string (32 hex characters, no dashes). It is NOT a
+	// UUID; consumers must not validate it against a UUID format.
+	ID         string   `json:"id"`
+	DetectorID string   `json:"detector_id"`
+	Severity   Severity `json:"severity"`
+	Raw        string   `json:"-"`
+	Redacted   string   `json:"redacted"`
+	// SourceMetadata describes where the finding originated. Its custom
+	// MarshalJSON omits a zero Date so non-git sources do not serialize a
+	// bogus "0001-01-01T00:00:00Z".
 	SourceMetadata SourceMetadata     `json:"source"`
 	Verification   VerificationResult `json:"verification"`
 	Remediation    *Remediation       `json:"remediation,omitempty"`
 	DetectedAt     time.Time          `json:"detected_at"`
-	Entropy        float64            `json:"entropy,omitempty"`
-	ExtraData      map[string]string  `json:"extra_data,omitempty"`
+	// Entropy is the Shannon entropy of the raw match, populated only when
+	// entropy analysis is enabled. It is omitted (via omitempty) when it holds
+	// the Go zero value, so a serialized finding cannot distinguish "not
+	// computed" from "computed as exactly 0.0"; consumers should treat an
+	// absent entropy as "not computed" rather than zero.
+	Entropy float64 `json:"entropy,omitempty"`
+	// ExtraData carries non-secret contextual metadata. It is json:"-" as a
+	// defense-in-depth measure (see the type doc); it must never hold secret
+	// material.
+	ExtraData map[string]string `json:"-"`
 }
