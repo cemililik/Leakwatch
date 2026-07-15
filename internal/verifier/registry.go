@@ -23,6 +23,12 @@ func Register(v Verifier) {
 }
 
 // Get returns the verifier registered for the given detector ID.
+//
+// It is the public single-lookup counterpart to All (which the engine uses to
+// snapshot every verifier). Get is retained for callers that need to resolve a
+// single verifier by detector ID directly against the global registry (for
+// example an ad-hoc single-secret verification path) without constructing an
+// Engine.
 func Get(detectorID string) (Verifier, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
