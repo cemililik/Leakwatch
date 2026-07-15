@@ -198,7 +198,7 @@ func detectorIDsFromBundle(t *testing.T, data []byte) map[string]bool {
 func repoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getting working directory: %w", err)
 	}
 	for {
 		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
