@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
@@ -18,14 +19,14 @@ type Formatter struct {
 }
 
 // Format writes findings as CSV to the given writer.
-// Header (ShowRaw=false): id,detector_id,severity,redacted,file_path,commit,verification_status,remediation
+// Header (ShowRaw=false): id,detector_id,severity,redacted,source,file_path,line,commit,verification_status,remediation
 // Header (ShowRaw=true):  the above, with a trailing "raw" column.
 // Every cell is sanitized against spreadsheet formula injection before writing.
 func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 	writer := csv.NewWriter(w)
 
 	// Write header row.
-	header := []string{"id", "detector_id", "severity", "redacted", "file_path", "commit", "verification_status", "remediation"}
+	header := []string{"id", "detector_id", "severity", "redacted", "source", "file_path", "line", "commit", "verification_status", "remediation"}
 	if f.ShowRaw {
 		header = append(header, "raw")
 	}
@@ -40,12 +41,19 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 			remediation = fd.Remediation.Title
 		}
 
+		line := ""
+		if fd.SourceMetadata.Line > 0 {
+			line = strconv.Itoa(fd.SourceMetadata.Line)
+		}
+
 		row := []string{
 			fd.ID,
 			fd.DetectorID,
 			fd.Severity.String(),
 			fd.Redacted,
+			sourceLabel(fd.SourceMetadata),
 			fd.SourceMetadata.FilePath,
+			line,
 			fd.SourceMetadata.Commit,
 			fd.Verification.Status.String(),
 			remediation,
@@ -63,6 +71,29 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 		return fmt.Errorf("failed to flush CSV output: %w", err)
 	}
 	return nil
+}
+
+// sourceLabel returns a human-readable label identifying the repository,
+// container image, or Slack channel a finding originated from, so multi-repo
+// scans (which combine findings from several git repositories into one CSV,
+// see cmd/scan_repos.go) and non-git sources remain attributable without
+// cross-referencing JSON. It returns the first populated field, in priority
+// order: git repository, container image, Slack channel name (falling back
+// to the channel ID). Returns "" when the source carries none of these
+// (e.g. a plain filesystem scan of a single directory).
+func sourceLabel(m finding.SourceMetadata) string {
+	switch {
+	case m.Repository != "":
+		return m.Repository
+	case m.Image != "":
+		return m.Image
+	case m.ChannelName != "":
+		return m.ChannelName
+	case m.Channel != "":
+		return m.Channel
+	default:
+		return ""
+	}
 }
 
 // formulaInjectionPrefixes are the leading characters a spreadsheet may treat as

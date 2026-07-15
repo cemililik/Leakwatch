@@ -4,9 +4,11 @@ package table
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/HodeTech/leakwatch/internal/output"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
@@ -31,15 +33,22 @@ type Formatter struct {
 }
 
 // Format writes findings as a formatted table to the given writer.
-// Columns: SEVERITY | DETECTOR | FILE | REDACTED | STATUS | REMEDIATION
+// Columns: SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
 // When ShowRaw is true, a trailing RAW column is appended.
 // A summary line is appended at the bottom.
+//
+// DetectorID, FilePath, and Redacted are attacker-influenced (a malicious
+// file name or a permissive custom detector rule can embed arbitrary bytes)
+// and are sanitized via output.SanitizeForDisplay before reaching this
+// writer, which is a real terminal when the CLI is run interactively. This
+// strips control/ANSI-escape bytes so a crafted finding cannot inject
+// terminal escape sequences into the operator's session.
 func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 
 	// Write header.
-	header := "SEVERITY\tDETECTOR\tFILE\tREDACTED\tSTATUS\tREMEDIATION"
-	separator := "--------\t--------\t----\t--------\t------\t-----------"
+	header := "SEVERITY\tDETECTOR\tFILE\tLINE\tREDACTED\tSTATUS\tREMEDIATION"
+	separator := "--------\t--------\t----\t----\t--------\t------\t-----------"
 	if f.ShowRaw {
 		header += "\tRAW"
 		separator += "\t---"
@@ -65,12 +74,18 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 			sevText = f.colorizeSeverity(fd.Severity, sevText)
 		}
 
+		lineNo := "-"
+		if fd.SourceMetadata.Line > 0 {
+			lineNo = strconv.Itoa(fd.SourceMetadata.Line)
+		}
+
 		line := fmt.Sprintf(
-			"%s\t%s\t%s\t%s\t%s\t%s",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			sevText,
-			fd.DetectorID,
-			fd.SourceMetadata.FilePath,
-			fd.Redacted,
+			output.SanitizeForDisplay(fd.DetectorID),
+			output.SanitizeForDisplay(fd.SourceMetadata.FilePath),
+			lineNo,
+			output.SanitizeForDisplay(fd.Redacted),
 			fd.Verification.Status.String(),
 			remediation,
 		)

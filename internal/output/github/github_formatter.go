@@ -16,6 +16,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/HodeTech/leakwatch/internal/output"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
@@ -120,20 +121,32 @@ func annotationMessage(fd finding.Finding) string {
 
 // escapeData escapes a workflow command's message payload. Percent is replaced
 // first so the escape sequences introduced below are not double-escaped.
+//
+// After the workflow-command metacharacters are encoded, output.SanitizeForDisplay
+// strips any remaining control bytes — most importantly ESC (0x1B), which
+// begins ANSI/OSC/DCS terminal escape sequences and is not one of the
+// characters GitHub's own workflow-command syntax requires escaping. This
+// stream is rendered in the Actions run log, a terminal-like view, so a
+// malicious file name or a permissive custom detector rule must not be able
+// to inject raw escape sequences into it. \r and \n are already percent-encoded
+// above (to %0D/%0A) before this runs, so this sanitization pass only ever
+// strips bytes that survived unescaped, such as ESC.
 func escapeData(s string) string {
 	s = strings.ReplaceAll(s, "%", "%25")
 	s = strings.ReplaceAll(s, "\r", "%0D")
 	s = strings.ReplaceAll(s, "\n", "%0A")
-	return s
+	return output.SanitizeForDisplay(s)
 }
 
 // escapeProperty escapes a workflow command property value. In addition to the
 // message escapes, "," and ":" are encoded because they delimit properties.
+// See escapeData's doc comment for why output.SanitizeForDisplay is applied
+// last.
 func escapeProperty(s string) string {
 	s = strings.ReplaceAll(s, "%", "%25")
 	s = strings.ReplaceAll(s, "\r", "%0D")
 	s = strings.ReplaceAll(s, "\n", "%0A")
 	s = strings.ReplaceAll(s, ":", "%3A")
 	s = strings.ReplaceAll(s, ",", "%2C")
-	return s
+	return output.SanitizeForDisplay(s)
 }

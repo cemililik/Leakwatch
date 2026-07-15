@@ -12,12 +12,16 @@ import (
 )
 
 const (
-	sarifSchema    = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
-	sarifVersion   = "2.1.0"
-	toolName       = "Leakwatch"
-	toolInfoURI    = "https://github.com/HodeTech/Leakwatch"
-	toolVersion    = "dev"
-	rawPropertyKey = "raw"
+	sarifSchema  = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
+	sarifVersion = "2.1.0"
+	toolName     = "Leakwatch"
+	toolInfoURI  = "https://github.com/HodeTech/Leakwatch"
+	// defaultToolVersion is used for tool.driver.version when Formatter.Version
+	// is left unset (e.g. zero-value Formatter in tests or older callers). Real
+	// scans should set Formatter.Version to the actual build version (see
+	// Formatter.Version doc) so shipped SARIF never reports "dev".
+	defaultToolVersion = "dev"
+	rawPropertyKey     = "raw"
 )
 
 // sarifDocument represents the top-level SARIF v2.1.0 document.
@@ -109,6 +113,54 @@ type Formatter struct {
 	// "raw" entry under each result's properties bag. When false, no raw value
 	// is emitted anywhere in the output.
 	ShowRaw bool
+
+	// Version is embedded verbatim as tool.driver.version. Callers should set
+	// this to the real build version (the same value reported by `leakwatch
+	// version`) so shipped SARIF documents are traceable to the Leakwatch
+	// release that produced them. When left empty (e.g. a zero-value
+	// Formatter), it falls back to defaultToolVersion ("dev") so existing
+	// callers keep producing valid, non-empty output.
+	Version string
+}
+
+// driverVersion returns f.Version, falling back to defaultToolVersion when
+// unset.
+func (f *Formatter) driverVersion() string {
+	if f.Version == "" {
+		return defaultToolVersion
+	}
+	return f.Version
+}
+
+// syntheticArtifactURI builds a stable, synthetic artifactLocation.uri for a
+// finding whose source has no natural file path (currently: Slack). It
+// returns "" for sources that either have a file path (the caller should use
+// that instead) or that this function does not yet recognize, so a future
+// non-file source without explicit support here still degrades to the prior
+// location-less behavior rather than emitting a misleading URI.
+//
+// The URI is deterministic and derived only from non-secret identifying
+// fields already present on SourceMetadata, so it is stable across repeated
+// scans of the same message and never embeds the finding's redacted or raw
+// match text.
+func syntheticArtifactURI(m finding.SourceMetadata) string {
+	switch m.SourceType {
+	case "slack":
+		channel := m.ChannelName
+		if channel == "" {
+			channel = m.Channel
+		}
+		if channel == "" {
+			channel = "unknown"
+		}
+		ts := m.MessageTS
+		if ts == "" {
+			ts = "unknown"
+		}
+		return fmt.Sprintf("slack://%s/%s", channel, ts)
+	default:
+		return ""
+	}
 }
 
 // locationStableFingerprint returns a fingerprint that survives line moves so
@@ -189,11 +241,20 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 			result.Properties = map[string]string{rawPropertyKey: fd.Raw}
 		}
 
-		// Add location if file path is available.
-		if fd.SourceMetadata.FilePath != "" {
+		// Every result gets a location. Sources with a natural file path use
+		// it directly; sources without one (e.g. Slack) get a stable
+		// synthetic artifactLocation.uri instead of being left location-less,
+		// since GitHub Code Scanning does not render location-less results as
+		// inline annotations and would otherwise silently drop them from the
+		// Security view.
+		uri := fd.SourceMetadata.FilePath
+		if uri == "" {
+			uri = syntheticArtifactURI(fd.SourceMetadata)
+		}
+		if uri != "" {
 			loc := sarifLocation{
 				PhysicalLocation: sarifPhysicalLocation{
-					ArtifactLocation: sarifArtifactLocation{URI: fd.SourceMetadata.FilePath},
+					ArtifactLocation: sarifArtifactLocation{URI: uri},
 				},
 			}
 			if fd.SourceMetadata.Line > 0 {
@@ -218,7 +279,7 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 				Tool: sarifTool{
 					Driver: sarifDriver{
 						Name:           toolName,
-						Version:        toolVersion,
+						Version:        f.driverVersion(),
 						InformationURI: toolInfoURI,
 						Rules:          rules,
 					},
