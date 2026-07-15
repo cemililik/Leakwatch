@@ -3,7 +3,9 @@ package filesystem
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -16,6 +18,15 @@ import (
 
 // defaultMaxFileSize is the maximum file size to scan (10 MB).
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
+
+// binaryPeekSize is the number of leading bytes read to sniff whether a file
+// is binary before the rest of the file is read into memory. It mirrors the
+// window that filter.IsBinaryFile inspects.
+const binaryPeekSize = 8192
+
+// vcsDirName is the version-control metadata directory excluded by default
+// from every filesystem scan (unless it is the explicit scan root).
+const vcsDirName = ".git"
 
 // FilesystemSource is a filesystem-based scan source.
 type FilesystemSource struct {
@@ -86,6 +97,13 @@ func (s *FilesystemSource) Chunks(ctx context.Context) <-chan source.Chunk {
 			}
 
 			if d.IsDir() {
+				// Skip version-control metadata directories by default so the
+				// Git object/pack store is never walked and read as plain files.
+				// The explicit scan root is exempt, so `scan fs .git` still
+				// works if a user genuinely targets it.
+				if d.Name() == vcsDirName && path != s.root {
+					return fs.SkipDir
+				}
 				return nil
 			}
 
@@ -93,13 +111,13 @@ func (s *FilesystemSource) Chunks(ctx context.Context) <-chan source.Chunk {
 				return nil
 			}
 
-			data, err := os.ReadFile(path)
+			data, err := readIfNotBinary(path)
 			if err != nil {
 				slog.Warn("file read error", "path", path, "error", err)
 				return nil
 			}
-
-			if filter.IsBinaryFile(data) {
+			if data == nil {
+				// Binary content detected from the leading bytes; skip it.
 				return nil
 			}
 
@@ -155,4 +173,38 @@ func (s *FilesystemSource) shouldSkip(path string, d fs.DirEntry) bool {
 	}
 
 	return false
+}
+
+// readIfNotBinary reads path, returning its full contents. It first reads a
+// bounded leading prefix (binaryPeekSize) and checks it for binary content
+// before reading the remainder of the file, so binary files are never fully
+// buffered just to be discarded. It returns a nil slice (with a nil error)
+// when the file is detected as binary.
+func readIfNotBinary(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	peek := make([]byte, binaryPeekSize)
+	n, err := io.ReadFull(f, peek)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	peek = peek[:n]
+
+	if filter.IsBinaryFile(peek) {
+		return nil, nil
+	}
+
+	rest, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	if len(rest) == 0 {
+		return peek, nil
+	}
+	return append(peek, rest...), nil
 }
