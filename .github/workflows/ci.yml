@@ -36,13 +36,10 @@ jobs:
             echo "::error::Coverage ${COVERAGE}% is below 70% threshold"
             exit 1
           fi
-      - name: Detector coverage floor (95%, reporting-only)
+      - name: Detector coverage floor (95%)
         # CLAUDE.md mandates 95% coverage for internal/detector/... packages.
-        # This does not yet fail the build: as of this step's introduction a
-        # few packages (heroku, snowflake, stripe) sit just below 95%, and
-        # this wave is infra-only (no Go source changes). Once those packages
-        # are brought up to the floor, flip the `exit 1` back on below to make
-        # this a hard gate instead of a warning.
+        # Every detector package currently meets it, so this is a hard gate:
+        # any detector package that drops below 95% fails the build.
         run: |
           set -uo pipefail
           OUTPUT=$(go test -cover ./internal/detector/... 2>&1)
@@ -62,12 +59,11 @@ jobs:
             fi
           done <<<"$OUTPUT"
           if [ -n "$STALE" ]; then
-            echo "::warning::internal/detector packages below the CLAUDE.md-mandated 95% coverage floor (reporting-only for now):"
+            echo "::error::internal/detector packages below the CLAUDE.md-mandated 95% coverage floor:"
             printf '%b' "$STALE"
-            echo "TODO: bring the packages above back to >=95% coverage, then make this step fail the build (see the comment on this step)."
-          else
-            echo "All internal/detector packages meet the 95% coverage floor — safe to turn this into a hard gate."
+            exit 1
           fi
+          echo "All internal/detector packages meet the 95% coverage floor."
       - run: go build ./...
       - name: Cross-compile smoke test (windows/amd64)
         # Catches Windows build breaks on every push/PR instead of only at

@@ -35,6 +35,10 @@ linters:
         # (with its own _test.go exclusion below) for unchecked-error findings.
         - G104
   exclusions:
+    paths:
+      # Third-party Go files vendored inside the VS Code extension's npm
+      # dependencies (e.g. flatted) are not our source and must never be linted.
+      - vscode/node_modules
     rules:
       - path: _test\.go
         linters:
