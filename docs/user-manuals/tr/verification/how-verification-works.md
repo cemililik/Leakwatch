@@ -20,13 +20,13 @@ Tüm sırlar aynı şekilde doğrulanamaz. Leakwatch, her kimlik bilgisi türü 
 
 ### Canlı API doğrulaması
 
-Yaklaşık 49 dedektör türü için Leakwatch, sağlayıcıya **kontrollü, salt-okunur bir API çağrısı** yapar — örneğin AWS anahtarları için `sts:GetCallerIdentity`, GitHub token'ları için `GET /user`. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez, kaynak oluşturmaz veya faturalandırma olayı tetiklemez.
+48 dedektör türü için Leakwatch, sağlayıcıya **kontrollü, salt-okunur bir API çağrısı** yapar — örneğin AWS anahtarları için `sts:GetCallerIdentity`, GitHub token'ları için `GET /user`. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez, kaynak oluşturmaz veya faturalandırma olayı tetiklemez.
 
-Sağlayıcı başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Sağlayıcı kimlik bilgisini reddederse (örneğin HTTP 401 veya 403 ile) bulgu `verified_inactive` olarak işaretlenir.
+Sağlayıcı başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Sağlayıcı kimlik bilgisini reddederse (örneğin HTTP 401 veya kapsamlı-anahtar hatalarını "inaktif" içinde birleştiren bir sağlayıcı için HTTP 403 ile) bulgu `verified_inactive` olarak işaretlenir. Birkaç doğrulayıcı (örneğin SendGrid), kapsamı daraltılmış ama geçerli bir anahtardan kaynaklanan bir 403'ü gerçek bir reddediliş yanıtından ayırt eder ve bu durumda yine `verified_active` bildirir — sağlayıcıya özgü notlar için [Doğrulama Kapsamı](#/verification/verification-coverage) sayfasına bakın.
 
 ### Yalnızca format doğrulaması
 
-Beş kimlik bilgisi türü için güvenli bir canlı kontrol mevcut değildir — sağlayıcının anonim bir kimlik uç noktası yoktur ya da gerçek bir çağrı yan etkiye yol açar. Bu durumlar için Leakwatch, herhangi bir ağ isteği yapmadan kimlik bilgisinin yapısını doğrular:
+Altı kimlik bilgisi türü için güvenli bir canlı kontrol mevcut değildir — sağlayıcının anonim bir kimlik uç noktası yoktur, gerçek bir çağrı yan etkiye yol açar ya da (`coinbase-api-key` için) canlı API, anahtarla güvenilir biçimde ilişkilendirilemeyen eşleştirilmiş bir sırla HMAC istek imzalaması gerektirir. Bu durumlar için Leakwatch, herhangi bir ağ isteği yapmadan kimlik bilgisinin yapısını doğrular:
 
 | Dedektör ID | Doğrulanan özellik |
 |-------------|-------------------|
@@ -35,6 +35,7 @@ Beş kimlik bilgisi türü için güvenli bir canlı kontrol mevcut değildir �
 | `snowflake-credentials` | Yalnızca format kontrolü — geçerli bir format hiçbir şeyi kanıtlamaz, sonuç her zaman `unverified` |
 | `azure-storage-key` | Format kontrolü |
 | `azure-entra-secret` | Format kontrolü |
+| `coinbase-api-key` | Karakter kümesi ve uzunluk kontrolü |
 
 :::note
 Format kontrolü geçse bile sonuç `unverified` olarak kalır. Yapısal olarak geçerli bir kimlik bilgisi süresi dolmuş veya iptal edilmiş olabilir. Bu bulgular her zaman manuel inceleme gerektirir.

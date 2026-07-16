@@ -15,7 +15,7 @@ Leakwatch, yapılandırma dosyasını aşağıdaki sırayla çözer:
 2. **Geçerli dizin** — komutun çalıştırıldığı dizindeki `.leakwatch.yaml`.
 3. **Ana dizin** — yedek olarak `~/.leakwatch.yaml`.
 
-Hiçbir dosya bulunamazsa, her ayar için yerleşik varsayılanlar kullanılır.
+Hiçbir dosya bulunamazsa, her ayar için yerleşik varsayılanlar kullanılır. Bir dosya bulunur**sa** (veya `--config` bir dosyayı işaret ederse) ama geçerli bir YAML olarak ayrıştırılamazsa, bu ölümcül bir hatadır — tarama sessizce varsayılanlara geri dönmez, çünkü bunu yapmak operatörün yapılandırdığı sınırların ötesinde tespit kapsamını sessizce genişletebilir.
 
 ## Başlangıç dosyası oluşturma
 
@@ -87,7 +87,8 @@ detection:
     # Her aday eşleşme için Shannon entropi hesaplamasını etkinleştirir.
     enabled: true
 
-    # Gösterim ve özel kural kapısı için kullanılan entropi eşiği.
+    # Gösterim için kullanılan ve yerleşik generic-api-key dedektörüyle kendi
+    # entropy alanına sahip her özel kuralı kapılayan entropi eşiği.
     # Aralık: 0–8. Varsayılan: 4.0.
     # Yerleşik bulgular hakkındaki nota bakın.
     threshold: 4.0
@@ -118,7 +119,9 @@ filter:
   # yol segmentini kapsayan ** çift yıldız ve herhangi bir derinlikte adlandırılmış
   # dizini eşleştiren sondaki eğik çizgili dir/ desenleri. Her desen hem tam yol
   # hem de temel dosya adına karşı test edilir.
-  # Tüm tarama kaynaklarına uygulanır. (`scan fs` komutunda --exclude bayrağı da bunu ayarlar.)
+  # Tüm tarama kaynaklarına uygulanır. (`scan slack` hariç her tarama alt
+  # komutunda bulunan --exclude bayrağı, bu listenin yerine geçmek yerine
+  # çalışma zamanında ona ekleme yapar.)
   # Varsayılan: [] (yerleşik ikili/kilit dosya atlamalarının ötesinde hariç tutma yok).
   exclude-paths:
     - "vendor/**"
@@ -132,17 +135,22 @@ filter:
   # Tamamen devre dışı bırakılacak dedektör ID'leri. Listelenen dedektörlerden
   # gelen bulgular, diğer ayarlardan bağımsız olarak hiçbir zaman üretilmez.
   # Varsayılan: [].
+  # Her tarama alt komutunda bulunan --exclude-detectors bayrağı, bu listenin
+  # yerine geçmek yerine çalışma zamanında ona ekleme yapar.
   exclude-detectors: []
 
 # ── Çıktı ─────────────────────────────────────────────────────────────────────
 
 output:
-  # Çıktı biçimi. Şunlardan biri: json, sarif, csv, table. Varsayılan: json.
+  # Çıktı biçimi. Şunlardan biri: json, sarif, csv, table, github. Varsayılan: json.
   # --format / -f bayrağı bunu çalışma zamanında geçersiz kılar.
   format: json
 
   # Çıktıyı stdout yerine bu dosya yoluna yaz. Varsayılan: "" (stdout).
-  # --output / -o bayrağı bunu çalışma zamanında geçersiz kılar.
+  # --output / -o bayrağı bunu çalışma zamanında geçersiz kılar. Uzantısız düz
+  # bir yol, biçimin kendi uzantısıyla otomatik olarak tamamlanır ve dosya
+  # 0600 izinleriyle yazılır. Her zaman stdout'a yazan "github" biçiminde
+  # yok sayılır.
   file: ""
 
   # Bu önem seviyesinin altındaki bulguları bırak.
@@ -168,7 +176,7 @@ custom-rules: []
 ```
 
 :::note
-`detection.entropy.threshold`, bir bulgunun yanında gösterilen entropi değerini kontrol eder ve özel kurallar için bir kapı görevi görür (entropisi eşiğin altına düşen özel kural eşleşmeleri bastırılır). Yerleşik dedektörlerin bulgularını **bastırmaz** — yerleşik dedektörlerin kendi eşleşme kriterleri vardır ve bu ayar tarafından hiçbir zaman bırakılmazlar.
+`detection.entropy.threshold`, bir bulgunun yanında gösterilen entropi değerini kontrol eder ve entropi tabanlı sezgisel yöntemleri tercih eden her dedektörü kapılar — şu anda yalnızca yerleşik `generic-api-key` dedektörü, artı kendi `entropy` alanını bildiren özel kurallar. Bunlardan birine ait, entropisi eşiğin altına düşen bir eşleşme, olası bir yer tutucu olarak bastırılır. Diğer her (yapısal/biçim-çapalı) yerleşik dedektör — `aws-access-key-id`, `github-token` ve diğerleri — kendi sabit eşleşme kriterlerine sahiptir ve entropiden bağımsız olarak bu ayar tarafından **hiçbir zaman** bırakılmaz.
 :::
 
 ## Doğrulama
@@ -179,7 +187,7 @@ Leakwatch, taramaya başlamadan önce yüklenen yapılandırmayı doğrular ve a
 |---|---|
 | `scan.concurrency < 1` | Geçersiz eşzamanlılık değeri |
 | `scan.max-file-size < 1` | Geçersiz max-file-size değeri |
-| `output.format` `json\|sarif\|csv\|table` içinde değil | Desteklenmeyen çıktı biçimi |
+| `output.format` `json\|sarif\|csv\|table\|github` içinde değil | Desteklenmeyen çıktı biçimi |
 | `detection.entropy.threshold` 0–8 dışında | Geçersiz entropi eşiği |
 | `output.severity-threshold` geçerli bir seviye değil (boş değilse) | Geçersiz severity-threshold |
 | `verification.timeout < 1ms` (doğrulama etkinleştirildiğinde) | Geçersiz doğrulama zaman aşımı |

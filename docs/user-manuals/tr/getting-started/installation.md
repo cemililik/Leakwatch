@@ -71,6 +71,10 @@ sudo mv leakwatch /usr/local/bin/leakwatch
 
 Platform adlandırması `leakwatch_<OS>_<ARCH>.tar.gz` kalıbını izler; `<OS>` değeri `Linux`, `Darwin` veya `Windows`, `<ARCH>` değeri ise `amd64` veya `arm64` olabilir.
 
+:::tip
+Her sürüm ayrıca her arşiv için bir Yazılım Malzeme Listesi (SBOM) ve sürümün sağlama toplamları dosyası üzerinde bir [Sigstore/cosign](https://github.com/sigstore/cosign) anahtarsız imza (`checksums.txt.sig` / `checksums.txt.pem`) yayımlar; böylece indirilen bir ikili dosyanın kökeni, tedarik zinciri açısından hassas ortamlarda doğrulanabilir.
+:::
+
 ## Kurulumu doğrulama
 
 Herhangi bir kurulum yönteminin ardından ikili dosyanın erişilebilir olduğunu doğrulayın ve sürümü kontrol edin:

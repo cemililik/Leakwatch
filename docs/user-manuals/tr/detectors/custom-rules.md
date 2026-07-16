@@ -1,11 +1,11 @@
 ---
 title: "Özel Kurallar"
-description: "YAML ile kendi sır tespit kalıplarınızı nasıl tanımlayacağınız ve 63 yerleşik dedektörün yanında bir Leakwatch taramasına nasıl ekleyeceğiniz."
+description: "YAML ile kendi sır tespit kalıplarınızı nasıl tanımlayacağınız ve 64 yerleşik dedektörün yanında bir Leakwatch taramasına nasıl ekleyeceğiniz."
 ---
 
 # Özel Kurallar
 
-63 yerleşik dedektör yaygın kullanılan kimlik bilgisi formatlarını kapsar; ancak her kuruluşun dahili token'ları, özel servis anahtarları veya hiçbir genel aracın önceden tahmin edemeyeceği ortama özgü kalıpları vardır. Özel kurallar, kaynak kodu değiştirmeden veya ikili dosyayı yeniden derlemeden kendi kalıplarınızı düz YAML ile tanımlamanıza ve çalışma zamanında yüklemenize olanak tanıyarak Leakwatch'ı genişletmenizi sağlar.
+64 yerleşik dedektör yaygın kullanılan kimlik bilgisi formatlarını kapsar; ancak her kuruluşun dahili token'ları, özel servis anahtarları veya hiçbir genel aracın önceden tahmin edemeyeceği ortama özgü kalıpları vardır. Özel kurallar, kaynak kodu değiştirmeden veya ikili dosyayı yeniden derlemeden kendi kalıplarınızı düz YAML ile tanımlamanıza ve çalışma zamanında yüklemenize olanak tanıyarak Leakwatch'ı genişletmenizi sağlar.
 
 ## Özel kurallar nerede tanımlanır
 
@@ -78,22 +78,29 @@ Bu yapılandırmayla bir tarama çalıştırın:
 leakwatch scan fs . --config .leakwatch.yaml
 ```
 
-Özel kural bulgusu için örnek JSON çıktısı (sır değeri maskelenmiştir):
+Özel kural bulgusu için örnek JSON çıktısı (sır değeri maskelenmiştir) — bir özel kural bulgusu, her yerleşik dedektörle tamamen aynı `Finding` şemasını kullanır (bkz. [Çıktı Biçimleri](#/output/output-formats)); özel kurallar için ayrı bir şema yoktur:
 
 ```json
 {
+  "id": "8a403a46336fc6ffdc847d202b74536c",
   "detector_id": "acme-internal-token",
-  "description": "ACME Corp dahili servis token'ı (format: acme_ + 32 hex karakter)",
   "severity": "critical",
-  "verification_status": "unverified",
-  "file": "config/production.env",
-  "line": 14,
-  "raw_redacted": "acme_********************************"
+  "redacted": "****cdef",
+  "source": {
+    "source_type": "filesystem",
+    "file_path": "config/production.env",
+    "line": 14
+  },
+  "verification": {
+    "status": "unverified"
+  },
+  "detected_at": "2026-05-23T10:15:30Z",
+  "entropy": 4.12
 }
 ```
 
 :::note
-`raw_redacted` alanı gerçek sırrı her zaman maskeler. Ham değer, açıkça `--show-raw` geçilmedikçe çıktıya asla yazılmaz (kontrollü ortamlar dışında önerilmez).
+`redacted` alanı gerçek sırrı her zaman maskeler (varsayılan olarak, `****` ve ardından en fazla son 4 karakter). Ham değer, açıkça `--show-raw` geçilmedikçe çıktıya asla yazılmaz (kontrollü ortamlar dışında önerilmez). Özel kuralların doğrulayıcısı olmadığından, `verification.status` her zaman `unverified` olur.
 :::
 
 ## Özel kuralı hariç tutma
@@ -109,5 +116,5 @@ filter:
 ## Ayrıca bakın
 
 - [Yapılandırma: Yapılandırma Dosyası](#/configuration/config-file) — `custom-rules:` öğesinin belge yapısındaki yeri dahil `.leakwatch.yaml` için tam referans.
-- [Dedektör Kataloğu](#/detectors/detector-catalog) — özel kuralınızı adlandırmadan önce ID çakışmalarını kontrol etmek için 63 yerleşik dedektör.
+- [Dedektör Kataloğu](#/detectors/detector-catalog) — özel kuralınızı adlandırmadan önce ID çakışmalarını kontrol etmek için 64 yerleşik dedektör.
 - [Nasıl Çalışır](#/getting-started/how-it-works) — `keywords` öğesinin bağlandığı Aho-Corasick ön-filtre hattı.

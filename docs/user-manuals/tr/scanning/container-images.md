@@ -52,7 +52,11 @@ Amazon ECR için, taramadan önce ECR kimlik bilgisi yardımcısını yapıland�
 
 ## Tarama nasıl çalışır
 
-Leakwatch imaj manifestini çeker, her katmanı sırayla işler ve her katmandaki dosyaları çıkarır. Her dosyanın içeriği, dosya sistemi taramasıyla aynı tespit hattından geçirilir. `.leakwatch.yaml` içindeki `filter.exclude-paths` yol dışlamaları burada da geçerlidir ve katmanlar içinde hangi dosya yollarının inceleneceğini sınırlar.
+Leakwatch imaj manifestini çeker, her katmanı sırayla işler ve her katmandaki dosyaları çıkarır. Her dosyanın içeriği, dosya sistemi taramasıyla aynı tespit hattından geçirilir. `.leakwatch.yaml` içindeki `filter.exclude-paths` yol dışlamaları (veya `--exclude`) burada da geçerlidir ve katmanlar içinde hangi dosya yollarının inceleneceğini sınırlar.
+
+:::note
+Sıkıştırma bombası katmanlarına karşı bir savunma olarak Leakwatch, okuyacağı kümülatif sıkıştırması açılmış bayt miktarını sınırlar: katman başına 2 GiB ve tüm imaj genelinde 10 GiB. Bir katman veya imaj bu tavanı aşarsa, sıkıştırma açmanın sınırsız çalışmasına izin vermek yerine etkilenen katmanın taraması kısaltılır (bir uyarı günlüğe kaydedilir).
+:::
 
 ## Bayraklar
 
@@ -60,17 +64,19 @@ Leakwatch imaj manifestini çeker, her katmanı sırayla işler ve her katmandak
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|------------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı çalışan sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Bu boyutu aşan dosyaları atla (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
+| `--exclude` | — | — | Dışlanacak yol kalıbı. Tekrarlanabilir; `filter.exclude-paths` ile birleştirilir. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri. Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
 | `--only-verified` | — | `false` | Yalnızca doğrulama ile aktif olduğu onaylanan bulguları raporla. |
 | `--min-severity` | — | `low` | Raporlanacak minimum önem: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Her bulguya düzeltme rehberi ekle. |
 
-Yol tabanlı dışlamalar `.leakwatch.yaml` dosyasında `filter.exclude-paths` altında yapılandırılır. Ayrıntılar için [Yapılandırma Dosyası](#/configuration/config-file) sayfasına bakın.
+Yol tabanlı dışlamalar `.leakwatch.yaml` dosyasında `filter.exclude-paths` altında ya da her çalıştırma için `--exclude` ile yapılandırılır. Ayrıntılar için [Yapılandırma Dosyası](#/configuration/config-file) sayfasına bakın.
 
 `--config` ve `--log-level` (varsayılan `warn`) kök bayrakları da geçerlidir.
 
@@ -107,7 +113,8 @@ leakwatch scan image myapp:latest --remediation --format json -o image-findings.
 | Alan | Açıklama |
 |------|----------|
 | `image` | Taranan imaj referansı. |
-| `layer` | Bulgunun tespit edildiği katman özeti. |
+| `layer` | Bulgunun tespit edildiği katman özeti (imaj yapılandırmasındaki bir bulgu için `"config"`, katman değil). |
+| `layer_idx` | İmaj manifestindeki katmanın sayısal indeksi (0 tabanlı); imaj yapılandırmasındaki bir bulgu için `-1`. |
 | `file_path` | Katman içindeki dosyanın yolu. |
 
 :::tip
@@ -121,10 +128,11 @@ Gizli bilgilerin bir kayıt sunucusuna push edilmeden önce yakalanması için k
 | `0` | Tarama tamamlandı, bulgu yok. |
 | `1` | Tarama tamamlandı, bulgular raporlandı. |
 | `2` | Tarama başarısız oldu (imaj bulunamadı, kimlik doğrulama hatası, vb.). |
+| `3` | Tarama tamamlanmadan kesildi (`Ctrl+C` / `SIGTERM`) ve hiçbir bulgu raporlanmamıştı. |
 
 Her çalıştırmanın ardından stderr'e bir tarama özeti yazdırılır. Taramalar SIGINT/SIGTERM sinyalinde düzgün biçimde iptal edilir.
 
-## Ayrıca bakınız
+## Ayrıca bakın
 
 - [Hızlı Başlangıç](#/getting-started/quick-start) — ilk taramanızı bir dakikadan kısa sürede çalıştırın.
 - [Dosya Sistemi](#/scanning/filesystem) — yerel bir dizin ağacını tarayın.
