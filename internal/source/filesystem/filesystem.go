@@ -28,9 +28,11 @@ const binaryPeekSize = 8192
 // from every filesystem scan (unless it is the explicit scan root).
 const vcsDirName = ".git"
 
-// FilesystemSource is a filesystem-based scan source.
+// FilesystemSource is a filesystem-based scan source. It scans one or more
+// roots, each of which may be a directory (walked recursively) or a single
+// file (scanned on its own).
 type FilesystemSource struct {
-	root         string
+	roots        []string
 	maxFileSize  int64
 	excludeExts  []string
 	excludePaths []string
@@ -44,17 +46,30 @@ type FilesystemSource struct {
 	err error
 }
 
-// New creates a new FilesystemSource. The root path is cleaned and
-// resolved to an absolute path.
+// New creates a new FilesystemSource for a single root. The root path is
+// cleaned and resolved to an absolute path. The root may be a directory or a
+// single file.
 func New(root string, opts ...Option) *FilesystemSource {
-	cleanRoot := filepath.Clean(root)
-	absRoot, err := filepath.Abs(cleanRoot)
-	if err != nil {
-		absRoot = cleanRoot
+	return NewMulti([]string{root}, opts...)
+}
+
+// NewMulti creates a FilesystemSource that scans several roots in one pass.
+// Each root is cleaned and resolved to an absolute path and may be a directory
+// (walked recursively) or a single file. A file reachable from more than one
+// root is scanned only once.
+func NewMulti(roots []string, opts ...Option) *FilesystemSource {
+	absRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		absRoot, err := filepath.Abs(cleanRoot)
+		if err != nil {
+			absRoot = cleanRoot
+		}
+		absRoots = append(absRoots, absRoot)
 	}
 
 	s := &FilesystemSource{
-		root:        absRoot,
+		roots:       absRoots,
 		maxFileSize: defaultMaxFileSize,
 		bufferSize:  64,
 	}
@@ -69,100 +84,132 @@ func (s *FilesystemSource) Type() string {
 	return "filesystem"
 }
 
-// Validate checks that the root directory exists and is readable.
+// Validate checks that every scan root exists and is accessible. A root may be
+// either a directory or a regular file; only inaccessibility (e.g. a
+// non-existent path or a permission error) is rejected.
 func (s *FilesystemSource) Validate() error {
-	info, err := os.Stat(s.root)
-	if err != nil {
-		return fmt.Errorf("source directory inaccessible %s: %w", s.root, err)
+	if len(s.roots) == 0 {
+		return fmt.Errorf("no scan paths provided")
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("source is not a directory: %s", s.root)
+	for _, root := range s.roots {
+		if _, err := os.Stat(root); err != nil {
+			return fmt.Errorf("source path inaccessible %s: %w", root, err)
+		}
 	}
 	return nil
 }
 
-// Chunks walks the filesystem and sends chunks over a channel.
+// Chunks walks every configured root and sends chunks over a channel.
 func (s *FilesystemSource) Chunks(ctx context.Context) <-chan source.Chunk {
 	ch := make(chan source.Chunk, s.bufferSize)
 	go func() {
 		defer close(ch)
-		err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				// A failure on the root entry itself is fatal: the scan cannot
-				// proceed at all, so propagate it as a terminal error (captured
-				// below) instead of silently producing an empty scan. Errors
-				// deeper in the tree are per-entry and skippable.
-				if path == s.root {
-					return fmt.Errorf("walk root %s: %w", s.root, err)
+		// visited dedups files reachable from more than one root (e.g. a
+		// directory root and a file inside it both passed as arguments) so a
+		// secret is never reported twice for the same file.
+		visited := make(map[string]struct{})
+		for _, root := range s.roots {
+			if err := s.walkRoot(ctx, root, ch, visited); err != nil {
+				if ctx.Err() == nil {
+					slog.Error("filesystem scan failed", "error", err)
+					// Record the terminal walk/setup failure before the deferred
+					// close(ch) runs so the engine can distinguish a failed scan
+					// from a genuinely empty one. Context cancellation is
+					// intentionally not captured (it is reported through the
+					// context, not Err).
+					s.err = fmt.Errorf("filesystem scan failed: %w", err)
 				}
-				slog.Warn("directory read error", "path", path, "error", err)
-				return nil
+				return
 			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			// Skip symlinks to avoid cycles and potential security issues.
-			if d.Type()&fs.ModeSymlink != 0 {
-				return nil
-			}
-
-			if d.IsDir() {
-				// Skip version-control metadata directories by default so the
-				// Git object/pack store is never walked and read as plain files.
-				// The explicit scan root is exempt, so `scan fs .git` still
-				// works if a user genuinely targets it.
-				if d.Name() == vcsDirName && path != s.root {
-					return fs.SkipDir
-				}
-				return nil
-			}
-
-			if s.shouldSkip(path, d) {
-				return nil
-			}
-
-			data, err := readIfNotBinary(path)
-			if err != nil {
-				slog.Warn("file read error", "path", path, "error", err)
-				return nil
-			}
-			if data == nil {
-				// Binary content detected from the leading bytes; skip it.
-				return nil
-			}
-
-			relPath, err := filepath.Rel(s.root, path)
-			if err != nil {
-				relPath = path
-			}
-
-			select {
-			case ch <- source.Chunk{
-				Data: data,
-				SourceMetadata: finding.SourceMetadata{
-					SourceType: "filesystem",
-					FilePath:   relPath,
-				},
-			}:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			return nil
-		})
-		if err != nil && ctx.Err() == nil {
-			slog.Error("filesystem scan failed", "error", err)
-			// Record the terminal walk/setup failure before the deferred
-			// close(ch) runs so the engine can distinguish a failed scan from a
-			// genuinely empty one. Context cancellation is intentionally not
-			// captured (it is reported through the context, not Err).
-			s.err = fmt.Errorf("filesystem scan failed: %w", err)
 		}
 	}()
 	return ch
+}
+
+// walkRoot walks a single root, emitting a chunk for each non-skipped,
+// non-binary file. When the root is a single file, relBase is its parent
+// directory so the emitted FilePath is the file's name (mirroring the
+// directory case, where paths are reported relative to the root). It returns a
+// non-nil error only for a terminal failure (a failed root entry or context
+// cancellation); per-entry errors deeper in the tree are logged and skipped.
+func (s *FilesystemSource) walkRoot(ctx context.Context, root string, ch chan<- source.Chunk, visited map[string]struct{}) error {
+	relBase := root
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		relBase = filepath.Dir(root)
+	}
+
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// A failure on the root entry itself is fatal: the scan cannot
+			// proceed at all, so propagate it as a terminal error (captured
+			// by the caller) instead of silently producing an empty scan.
+			// Errors deeper in the tree are per-entry and skippable.
+			if path == root {
+				return fmt.Errorf("walk root %s: %w", root, err)
+			}
+			slog.Warn("directory read error", "path", path, "error", err)
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Skip symlinks to avoid cycles and potential security issues.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
+		if d.IsDir() {
+			// Skip version-control metadata directories by default so the
+			// Git object/pack store is never walked and read as plain files.
+			// The explicit scan root is exempt, so `scan fs .git` still
+			// works if a user genuinely targets it.
+			if d.Name() == vcsDirName && path != root {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if s.shouldSkip(path, d, relBase) {
+			return nil
+		}
+
+		if _, seen := visited[path]; seen {
+			return nil
+		}
+		visited[path] = struct{}{}
+
+		data, err := readIfNotBinary(path)
+		if err != nil {
+			slog.Warn("file read error", "path", path, "error", err)
+			return nil
+		}
+		if data == nil {
+			// Binary content detected from the leading bytes; skip it.
+			return nil
+		}
+
+		relPath, err := filepath.Rel(relBase, path)
+		if err != nil {
+			relPath = path
+		}
+
+		select {
+		case ch <- source.Chunk{
+			Data: data,
+			SourceMetadata: finding.SourceMetadata{
+				SourceType: "filesystem",
+				FilePath:   relPath,
+			},
+		}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	})
 }
 
 // Err returns the first terminal error that aborted the filesystem walk, or nil
@@ -172,7 +219,7 @@ func (s *FilesystemSource) Err() error {
 	return s.err
 }
 
-func (s *FilesystemSource) shouldSkip(path string, d fs.DirEntry) bool {
+func (s *FilesystemSource) shouldSkip(path string, d fs.DirEntry, relBase string) bool {
 	// Skip auto-generated lock files (contain hashes that trigger false positives).
 	if filter.IsSkippedFilename(path) {
 		return true
@@ -184,7 +231,7 @@ func (s *FilesystemSource) shouldSkip(path string, d fs.DirEntry) bool {
 	}
 
 	// Exclude path patterns
-	relPath, err := filepath.Rel(s.root, path)
+	relPath, err := filepath.Rel(relBase, path)
 	if err == nil && filter.MatchesGlob(relPath, s.excludePaths) {
 		return true
 	}

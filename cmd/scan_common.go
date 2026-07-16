@@ -134,6 +134,7 @@ func addCommonScanFlags(flags *pflag.FlagSet) {
 	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
 	flags.Int64("max-file-size", defaultMaxFileSize, "maximum file size in bytes")
 	flags.Bool(flagShowRaw, false, "show raw secret content in output")
+	flags.StringSlice("exclude-detectors", nil, "detector IDs to exclude (e.g. aws-access-key-id)")
 }
 
 // addExcludePathFlag registers the --exclude path-pattern flag. It is added to
@@ -195,7 +196,7 @@ func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
 		Concurrency:       cfg.Scan.Concurrency,
 		MaxFileSize:       cfg.Scan.MaxFileSize,
 		ExcludePaths:      cfg.Filter.ExcludePaths,
-		ExcludeDetectors:  cfg.Filter.ExcludeDetectors,
+		ExcludeDetectors:  mergedExcludeDetectors(cmd, cfg),
 		EnableEntropy:     cfg.Detection.Entropy.Enabled,
 		EntropyThreshold:  cfg.Detection.Entropy.Threshold,
 		ShowRaw:           showRaw,
@@ -211,6 +212,23 @@ func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
 		VerifyRateLimit:   cfg.Verification.RateLimit,
 		CustomRules:       cfg.CustomRules,
 	}, nil
+}
+
+// mergedExcludeDetectors returns the config-file filter.exclude-detectors
+// combined with any per-invocation --exclude-detectors flag values. Detector
+// exclusion is otherwise config-file-only; wiring the flag here lets an operator
+// suppress a noisy detector for a single run without editing .leakwatch.yaml
+// (resolving the wave-3 carryover where the config key existed but no CLI flag
+// did). The flag augments rather than replaces the config list.
+func mergedExcludeDetectors(cmd *cobra.Command, cfg *config.Config) []string {
+	flagVals := flagStringSlice(cmd, "exclude-detectors")
+	if len(flagVals) == 0 {
+		return cfg.Filter.ExcludeDetectors
+	}
+	merged := make([]string, 0, len(cfg.Filter.ExcludeDetectors)+len(flagVals))
+	merged = append(merged, cfg.Filter.ExcludeDetectors...)
+	merged = append(merged, flagVals...)
+	return merged
 }
 
 // mergedExcludePaths returns the config-file exclude-paths combined with any
@@ -304,6 +322,14 @@ func writeOutput(cfg *scanner.Config, result *engine.ScanResult, sourceType stri
 	colorEnabled := resolveColorEnabled(cfg.Format, outputFile)
 	formatter := selectFormatter(cfg.Format, cfg.ShowRaw, colorEnabled)
 
+	// Auto-suffix a bare --output path (one with no extension) with the
+	// formatter's own extension, so `--format sarif --output results` writes
+	// results.sarif rather than an extension-less file that downstream SARIF
+	// consumers (e.g. GitHub Code Scanning) will not recognize.
+	if outputFile != "" && filepath.Ext(outputFile) == "" {
+		outputFile += formatter.FileExtension()
+	}
+
 	if outputFile != "" {
 		if err := writeOutputFile(outputFile, formatter, findings); err != nil {
 			return err
@@ -345,7 +371,10 @@ func writeOutputFile(path string, formatter output.Formatter, findings []finding
 func selectFormatter(format string, showRaw bool, colorEnabled bool) output.Formatter {
 	switch format {
 	case "sarif":
-		return &sarifout.Formatter{ShowRaw: showRaw}
+		// Version is the real build version (see cmd/root.go buildVersion) so
+		// shipped SARIF documents are traceable to the release that produced
+		// them instead of always reporting "dev".
+		return &sarifout.Formatter{ShowRaw: showRaw, Version: buildVersion}
 	case "csv":
 		return &csvout.Formatter{ShowRaw: showRaw}
 	case "table":

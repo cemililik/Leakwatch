@@ -50,7 +50,8 @@ func TestFilesystemSource_New_CleansPath(t *testing.T) {
 			if err != nil {
 				abs = cleaned
 			}
-			assert.Equal(t, abs, s.root, "root should be cleaned and absolute")
+			require.Len(t, s.roots, 1)
+			assert.Equal(t, abs, s.roots[0], "root should be cleaned and absolute")
 		})
 	}
 }
@@ -69,16 +70,27 @@ func TestFilesystemSource_Validate_NonExistentDir(t *testing.T) {
 	assert.Error(t, s.Validate())
 }
 
-func TestFilesystemSource_Validate_FileNotDir(t *testing.T) {
+func TestFilesystemSource_Validate_SingleFile(t *testing.T) {
 	f, err := os.CreateTemp("", "test")
 	require.NoError(t, err)
 	defer os.Remove(f.Name())
 	f.Close()
 
+	// A single file is now a valid scan root: `scan fs <file>` must work.
 	s := New(f.Name())
-	err = s.Validate()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a directory")
+	assert.NoError(t, s.Validate())
+}
+
+func TestFilesystemSource_Validate_MultipleRoots(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "a.txt")
+	require.NoError(t, os.WriteFile(f, []byte("x"), 0o644))
+
+	s := NewMulti([]string{dir, f})
+	assert.NoError(t, s.Validate())
+
+	bad := NewMulti([]string{dir, "/nonexistent/path"})
+	assert.Error(t, bad.Validate())
 }
 
 // shouldSkip is pure filtering logic over a path string and an fs.DirEntry;
@@ -97,7 +109,7 @@ func TestFilesystemSource_ShouldSkip_ExtensionExclusion(t *testing.T) {
 	s := New("/scan/root")
 	got := map[string]bool{}
 	for _, e := range entries {
-		got[e.Name()] = s.shouldSkip(filepath.Join(s.root, e.Name()), e)
+		got[e.Name()] = s.shouldSkip(filepath.Join(s.roots[0], e.Name()), e, s.roots[0])
 	}
 
 	assert.False(t, got["code.go"], "code.go should not be skipped")
@@ -116,7 +128,7 @@ func TestFilesystemSource_ShouldSkip_MaxFileSize(t *testing.T) {
 	s := New("/scan/root", WithMaxFileSize(512))
 	got := map[string]bool{}
 	for _, e := range entries {
-		got[e.Name()] = s.shouldSkip(filepath.Join(s.root, e.Name()), e)
+		got[e.Name()] = s.shouldSkip(filepath.Join(s.roots[0], e.Name()), e, s.roots[0])
 	}
 
 	assert.False(t, got["small.txt"], "small.txt is under the size cap")
@@ -131,7 +143,7 @@ func TestFilesystemSource_ShouldSkip_EmptyFile(t *testing.T) {
 	require.NoError(t, err)
 
 	s := New("/scan/root")
-	assert.True(t, s.shouldSkip(filepath.Join(s.root, "empty.txt"), entries[0]), "zero-byte files should be skipped")
+	assert.True(t, s.shouldSkip(filepath.Join(s.roots[0], "empty.txt"), entries[0], s.roots[0]), "zero-byte files should be skipped")
 }
 
 func TestFilesystemSource_ShouldSkip_ExcludePaths(t *testing.T) {
@@ -145,7 +157,7 @@ func TestFilesystemSource_ShouldSkip_ExcludePaths(t *testing.T) {
 	s := New("/scan/root", WithExcludePaths([]string{"go.sum"}))
 	got := map[string]bool{}
 	for _, e := range entries {
-		got[e.Name()] = s.shouldSkip(filepath.Join(s.root, e.Name()), e)
+		got[e.Name()] = s.shouldSkip(filepath.Join(s.roots[0], e.Name()), e, s.roots[0])
 	}
 
 	assert.False(t, got["main.go"], "main.go should not be skipped")
@@ -160,7 +172,7 @@ func TestFilesystemSource_ShouldSkip_SkippedLockfile(t *testing.T) {
 	require.NoError(t, err)
 
 	s := New("/scan/root")
-	assert.True(t, s.shouldSkip(filepath.Join(s.root, "yarn.lock"), entries[0]))
+	assert.True(t, s.shouldSkip(filepath.Join(s.roots[0], "yarn.lock"), entries[0], s.roots[0]))
 }
 
 // Chunks() drives filepath.WalkDir/os.Open against the real filesystem (the
@@ -182,6 +194,66 @@ func TestFilesystemSource_Chunks_ReadsFiles(t *testing.T) {
 	}
 
 	assert.Len(t, chunks, 2)
+}
+
+func TestFilesystemSource_Chunks_SingleFileRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret.txt")
+	require.NoError(t, os.WriteFile(target, []byte("AKIAIOSFODNN7EXAMPLE"), 0o644))
+	// A sibling file that must NOT be scanned when only the file is targeted.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("nothing"), 0o644))
+
+	s := New(target)
+	ctx := context.Background()
+
+	var chunks []string
+	for chunk := range s.Chunks(ctx) {
+		chunks = append(chunks, chunk.SourceMetadata.FilePath)
+	}
+
+	require.Len(t, chunks, 1, "only the targeted file should be scanned")
+	// FilePath is reported relative to the file's parent directory (its name).
+	assert.Equal(t, "secret.txt", chunks[0])
+}
+
+func TestFilesystemSource_Chunks_MultipleRoots(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	fileRoot := filepath.Join(dir, "a.txt")
+	require.NoError(t, os.WriteFile(fileRoot, []byte("token one"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "b.txt"), []byte("token two"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "c.txt"), []byte("token three"), 0o644))
+
+	// One file root + one directory root scanned together.
+	s := NewMulti([]string{fileRoot, sub})
+	ctx := context.Background()
+
+	var chunks []string
+	for chunk := range s.Chunks(ctx) {
+		chunks = append(chunks, chunk.SourceMetadata.FilePath)
+	}
+
+	assert.ElementsMatch(t, []string{"a.txt", "b.txt", "c.txt"}, chunks)
+}
+
+func TestFilesystemSource_Chunks_DedupsOverlappingRoots(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "a.txt")
+	require.NoError(t, os.WriteFile(target, []byte("token"), 0o644))
+
+	// The directory and a file inside it are both passed: the file must be
+	// scanned exactly once.
+	s := NewMulti([]string{dir, target})
+	ctx := context.Background()
+
+	var count int
+	for range s.Chunks(ctx) {
+		count++
+	}
+
+	assert.Equal(t, 1, count, "a file reachable from two roots is scanned once")
 }
 
 func TestFilesystemSource_Chunks_SkipsBinaryFiles(t *testing.T) {

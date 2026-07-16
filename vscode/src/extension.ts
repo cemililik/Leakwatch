@@ -180,19 +180,20 @@ async function scanCurrentFile(): Promise<void> {
 }
 
 /**
- * Scans the directory containing the given file (the CLI's filesystem source
- * only accepts a directory target, not a single file), then reports only the
- * findings that belong to that file.
+ * Scans just the given file. The CLI's filesystem source accepts a single file
+ * target and reports its path relative to the file's parent directory, so the
+ * findings are resolved against that directory as the scan root.
  */
 async function scanFile(fileUri: vscode.Uri): Promise<void> {
   const filePath = fileUri.fsPath;
-  // Scan the file's directory; the CLI reports paths relative to this root.
+  // The CLI reports the finding path relative to the file's parent directory.
   const scanRoot = path.dirname(filePath);
 
   statusbar.setScanning();
   const token = beginScan();
 
-  const result = await scan(scanRoot, token);
+  // Scan only this file rather than its whole containing directory.
+  const result = await scan(filePath, token);
 
   if (token.isCancellationRequested) {
     return; // Superseded by a newer scan.

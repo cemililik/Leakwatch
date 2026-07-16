@@ -17,6 +17,13 @@ import (
 // read sites reference a single literal.
 const flagIncludeFiles = "include-files"
 
+// defaultSlackRateLimit is the default for the --rate-limit flag. It mirrors the
+// slack source's own conservative defaultRateLimit (1 req/s): because the flag
+// is always applied when > 0, a mismatched flag default would silently override
+// the source's default and defeat it. Keep this in sync with
+// internal/source/slack defaultRateLimit until that constant is exported.
+const defaultSlackRateLimit = 1.0
+
 var scanSlackCmd = &cobra.Command{
 	Use:   "slack",
 	Short: "Scans a Slack workspace",
@@ -65,7 +72,7 @@ func init() {
 	if err := flags.MarkDeprecated(flagIncludeFiles, "Slack file scanning is not yet implemented; this flag has no effect"); err != nil {
 		slog.Warn("failed to mark include-files deprecated", "error", err)
 	}
-	flags.Float64("rate-limit", 20, "max Slack API requests per second")
+	flags.Float64("rate-limit", defaultSlackRateLimit, "max Slack API requests per second")
 	addCommonScanFlags(flags)
 	addVerifyFlags(flags)
 }

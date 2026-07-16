@@ -15,13 +15,13 @@ type Formatter interface {
 	// Format writes findings to the given writer.
 	Format(w io.Writer, findings []finding.Finding) error
 
-	// FileExtension returns the file extension for this format.
+	// FileExtension returns the file extension for this format (including the
+	// leading dot, e.g. ".sarif").
 	//
-	// NOTE: as of this writing, no cmd/ caller consumes FileExtension() to
-	// auto-suffix a bare --output filename without an extension; wiring that
-	// up (or removing the method if it never gains a caller) is deferred to a
-	// later wave. It remains part of the interface, implemented by every
-	// formatter, so a future caller can rely on it without a breaking change.
+	// The cmd/ output layer uses it to auto-suffix a bare --output path that
+	// has no extension, so `--format sarif --output results` writes
+	// results.sarif. A path that already carries an extension is left
+	// untouched.
 	FileExtension() string
 }
 
