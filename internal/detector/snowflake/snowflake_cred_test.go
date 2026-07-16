@@ -118,6 +118,17 @@ func TestRedactSnowflake_MasksEveryPasswordParam(t *testing.T) {
 	assert.Contains(t, redacted, "password=****")
 }
 
+// TestRedactSnowflake_FailsSafeWhenNoPasswordParamFound exercises the
+// documented fail-safe path directly: if the matched span somehow carries no
+// password/pwd parameter for snowflakePwdRedactPattern to mask (a case the
+// detection regex itself always prevents in practice, since it only matches
+// spans that already contain a password param), redactSnowflake must return
+// a full mask rather than echo the input verbatim.
+func TestRedactSnowflake_FailsSafeWhenNoPasswordParamFound(t *testing.T) {
+	result := redactSnowflake("snowflakecomputing.com/db?user=admin")
+	assert.Equal(t, snowflakeMask, result)
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string

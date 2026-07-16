@@ -269,3 +269,10 @@ func TestAPIKeyDetector_ScanViaMatcher_KeywordRegexAlignment(t *testing.T) {
 	require.Len(t, findings, 1, "realistic api_key assignment must survive the matcher gate")
 	assert.Equal(t, "generic-api-key", findings[0].DetectorID)
 }
+
+func TestAPIKeyDetector_EntropyBased(t *testing.T) {
+	// The generic detector is heuristic (matches arbitrary high-entropy
+	// strings), so it must opt into the engine's entropy floor.
+	assert.True(t, (&APIKeyDetector{}).EntropyBased(),
+		"generic-api-key must be entropy-based so the engine gates it on entropy")
+}

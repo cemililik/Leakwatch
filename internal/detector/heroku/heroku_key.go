@@ -38,11 +38,12 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 
+	// herokuKeyPattern has exactly one mandatory (non-optional) capturing
+	// group, so every entry in allMatches is guaranteed to carry it: there is
+	// no defensive length check to make here (a `len(match) < 2` guard would
+	// be permanently dead code, unreachable by any input).
 	findings := make([]detector.RawFinding, 0, len(allMatches))
 	for _, match := range allMatches {
-		if len(match) < 2 {
-			continue
-		}
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        bytes.Clone(match[1]),

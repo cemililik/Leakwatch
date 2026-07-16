@@ -126,6 +126,48 @@ func TestTestKey_Scan_DoesNotMatchLiveKeys(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
+// TestRedactStripeKey_DefensiveFallbacks exercises redactStripeKey's
+// fallback-to-full-mask branches directly. In practice redactStripeKey is
+// only ever called with a string that already matched liveKeyPattern or
+// testKeyPattern (which guarantees a well-formed "sk_live_..."/"rk_test_..."
+// shape), so these malformed shapes cannot reach it via Scan. Testing the
+// function directly documents and locks in its fail-safe behavior should it
+// ever be reused with untrusted input.
+func TestRedactStripeKey_DefensiveFallbacks(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no underscore at all",
+			input:    "abcdefgh",
+			expected: "****",
+		},
+		{
+			name:     "underscore is the last character",
+			input:    "a_",
+			expected: "****",
+		},
+		{
+			name:     "only one underscore, no second underscore",
+			input:    "sk_liveonly",
+			expected: "****",
+		},
+		{
+			name:     "second underscore is the final character",
+			input:    "sk_live_",
+			expected: "****",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, redactStripeKey(tt.input))
+		})
+	}
+}
+
 func TestKey_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string
