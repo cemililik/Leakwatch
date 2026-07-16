@@ -2,6 +2,7 @@
 package ldap
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 	"regexp"
@@ -10,7 +11,12 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var ldapCredPattern = regexp.MustCompile(`ldaps?://[^\s'"]+:[^\s'"]+@[^\s'"]+`)
+// The scheme portion uses a scoped (?i:...) flag so it also matches uppercase
+// or mixed-case schemes (e.g. "LDAP://"), which some tooling/generators and
+// hand-edited configs emit; the Aho-Corasick pre-filter is already
+// case-insensitive, so without this the regex stage silently missed those
+// variants. Credentials themselves stay case-sensitive.
+var ldapCredPattern = regexp.MustCompile(`(?i:ldaps?)://[^\s'"]+:[^\s'"]+@[^\s'"]+`)
 
 // Detector detects LDAP/LDAPS Bind Credentials in connection URLs.
 type Detector struct{}
@@ -41,7 +47,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   redactPassword(string(match)),
 		})
 	}

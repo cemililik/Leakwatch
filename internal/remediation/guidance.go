@@ -342,6 +342,25 @@ func init() {
 		},
 	})
 
+	Register("discord-webhook-url", finding.Remediation{
+		Title: "Delete and Recreate Discord Webhook",
+		Steps: []string{
+			"Open the Discord server and go to the channel's Integrations settings.",
+			"Locate the exposed webhook under Webhooks.",
+			"Delete the webhook to invalidate the leaked URL immediately.",
+			"Create a new webhook and store its URL in a secret manager.",
+			"Update every integration that posted through the old webhook.",
+		},
+		DocURL:     "https://discord.com/developers/docs/resources/webhook",
+		ConsoleURL: "https://discord.com/developers/applications",
+		Urgency:    "immediate",
+		Checklist: []string{
+			"Review the channel's message history for unauthorized posts.",
+			"Audit which integrations held the old webhook URL.",
+			"Confirm the old webhook URL returns 404 after deletion.",
+		},
+	})
+
 	Register("redis-connection-string", finding.Remediation{
 		Title: "Rotate Redis Credentials",
 		Steps: []string{

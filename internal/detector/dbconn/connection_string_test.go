@@ -111,6 +111,14 @@ func TestConnectionString_Scan_RejectsInvalidInput(t *testing.T) {
 			name:  "empty input",
 			input: "",
 		},
+		{
+			name:  "bare user@host without password is not flagged",
+			input: "postgres://readonly_user@db.internal.example.com:5432/analytics",
+		},
+		{
+			name:  "URI-style placeholder password is skipped",
+			input: "postgres://admin:changeme@localhost:5432/mydb",
+		},
 	}
 
 	d := &ConnectionString{}
@@ -191,6 +199,18 @@ func TestConnectionString_Scan_MatchesADONet(t *testing.T) {
 			expected: 1,
 			contains: "PASSWORD=****",
 		},
+		{
+			name:     "Password field before Data Source (reverse field order)",
+			input:    "Password=hunter2;Persist Security Info=True;User ID=user;Initial Catalog=db;Data Source=server",
+			expected: 1,
+			contains: "Password=****",
+		},
+		{
+			name:     "Pwd field before Server (reverse field order)",
+			input:    "Pwd=S3cr3t!;User Id=sa;Server=db.example.com",
+			expected: 1,
+			contains: "Pwd=****",
+		},
 	}
 
 	d := &ConnectionString{}
@@ -210,6 +230,9 @@ func TestConnectionString_Scan_SkipsADONetPlaceholders(t *testing.T) {
 		"Data Source=sql;Initial Catalog=app;User ID=admin;Password=TODO",
 		"Host=localhost;Database=app;User=admin;Pwd=xxxxxxxx",
 		"Host=localhost;Database=app;User=admin;Password=placeholder",
+		// Reverse field order (Password before the host-ish field) must also
+		// be checked against the placeholder allowlist.
+		"Password=changeme;User Id=sa;Server=db.example.com",
 	}
 
 	d := &ConnectionString{}
@@ -279,4 +302,35 @@ func TestIsPlaceholderPassword(t *testing.T) {
 			assert.False(t, isPlaceholderPassword(s), "%q should NOT be a placeholder", s)
 		})
 	}
+}
+
+// TestConnectionString_Scan_RawIsClonedNotAliased verifies Raw does not alias
+// the scanned chunk buffer, for both the URI and ADO.NET match paths
+// (memory/aliasing hardening).
+func TestConnectionString_Scan_RawIsClonedNotAliased(t *testing.T) {
+	d := &ConnectionString{}
+
+	t.Run("URI-style match", func(t *testing.T) {
+		data := []byte("postgres://admin:TESTPASS@localhost:5432/mydb")
+		findings := d.Scan(context.Background(), data)
+		require.Len(t, findings, 1)
+
+		rawBefore := string(findings[0].Raw)
+		for i := range data {
+			data[i] = 'x'
+		}
+		assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
+	})
+
+	t.Run("ADO.NET-style match", func(t *testing.T) {
+		data := []byte("Host=localhost;Database=mydb;Username=user;Password=secret123")
+		findings := d.Scan(context.Background(), data)
+		require.Len(t, findings, 1)
+
+		rawBefore := string(findings[0].Raw)
+		for i := range data {
+			data[i] = 'x'
+		}
+		assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
+	})
 }

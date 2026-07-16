@@ -2,6 +2,7 @@
 package gcp
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -51,11 +52,16 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 
+	// Computed once per Scan call (not per marker) so brace-scoping for every
+	// marker in this input shares the same quoted-string map instead of
+	// recomputing it per match.
+	quoted := quotedSpans(data)
+
 	findings := make([]detector.RawFinding, 0, len(matches))
 	for _, loc := range matches {
 		// Scope extraction to the JSON object that encloses this marker so each
 		// account contributes its own fields rather than the first account's.
-		block := enclosingObject(data, loc[0], loc[1])
+		block := enclosingObject(data, quoted, loc[0], loc[1])
 
 		raw := extractSubmatch(privateKeyIDPattern, block)
 		email := extractSubmatch(clientEmailPattern, block)
@@ -75,9 +81,15 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 
 		f := detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        raw,
+			// raw is a subslice of block (itself a subslice of data); clone it so
+			// the finding does not alias (and pin in memory) the scanned chunk
+			// buffer.
+			Raw: bytes.Clone(raw),
 			// RawV2 holds only this account's block with the private_key body
 			// stripped, never the whole file and never the PEM material.
+			// redactPrivateKey already returns a freshly allocated slice
+			// (regexp.ReplaceAll never aliases its input), so no separate clone
+			// is needed here.
 			RawV2:     redactPrivateKey(block),
 			Redacted:  redacted,
 			ExtraData: extra,
@@ -94,13 +106,16 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 // enclosingObject returns the smallest brace-balanced JSON object that contains
 // the byte range [start,end). If no balanced object can be determined it falls
 // back to the marker range itself, ensuring a non-nil, account-local slice that
-// never spans the whole input.
-func enclosingObject(data []byte, start, end int) []byte {
-	open := findEnclosingOpenBrace(data, start)
+// never spans the whole input. quoted marks which byte offsets in data lie
+// inside a JSON string literal (see quotedSpans) so that a literal '{' or '}'
+// inside a string value (e.g. a free-text "description" field) is never
+// mistaken for a structural brace.
+func enclosingObject(data []byte, quoted []bool, start, end int) []byte {
+	open := findEnclosingOpenBrace(data, quoted, start)
 	if open == -1 {
 		return data[start:end]
 	}
-	if closeIdx := findMatchingCloseBrace(data, open); closeIdx != -1 {
+	if closeIdx := findMatchingCloseBrace(data, quoted, open); closeIdx != -1 {
 		return data[open : closeIdx+1]
 	}
 	// Unbalanced (truncated) input: return from the opening brace to the end.
@@ -109,10 +124,15 @@ func enclosingObject(data []byte, start, end int) []byte {
 
 // findEnclosingOpenBrace walks backwards from start to the opening brace whose
 // matching close brace would contain the marker, accounting for nested objects.
-// It returns the index of that brace, or -1 if none is found.
-func findEnclosingOpenBrace(data []byte, start int) int {
+// Braces at a quoted[i] offset (inside a JSON string value) are ignored rather
+// than counted, since they are not structural JSON syntax. It returns the
+// index of the brace, or -1 if none is found.
+func findEnclosingOpenBrace(data []byte, quoted []bool, start int) int {
 	depth := 0
 	for i := start; i >= 0; i-- {
+		if quoted[i] {
+			continue
+		}
 		switch data[i] {
 		case '}':
 			depth++
@@ -127,11 +147,15 @@ func findEnclosingOpenBrace(data []byte, start int) int {
 }
 
 // findMatchingCloseBrace walks forwards from the opening brace at open to its
-// matching close brace, accounting for nested objects. It returns the index of
-// that brace, or -1 if the input is unbalanced (truncated).
-func findMatchingCloseBrace(data []byte, open int) int {
+// matching close brace, accounting for nested objects. Braces at a quoted[i]
+// offset (inside a JSON string value) are ignored rather than counted. It
+// returns the index of that brace, or -1 if the input is unbalanced (truncated).
+func findMatchingCloseBrace(data []byte, quoted []bool, open int) int {
 	depth := 0
 	for i := open; i < len(data); i++ {
+		if quoted[i] {
+			continue
+		}
 		switch data[i] {
 		case '{':
 			depth++
@@ -143,6 +167,40 @@ func findMatchingCloseBrace(data []byte, open int) int {
 		}
 	}
 	return -1
+}
+
+// quotedSpans returns, for each byte offset in data, whether that offset lies
+// strictly inside an unescaped JSON string literal (between an opening and
+// closing double quote, exclusive of the quotes themselves). It performs a
+// single linear pass tracking quote and backslash-escape state, so
+// findEnclosingOpenBrace/findMatchingCloseBrace can ignore '{'/'}' characters
+// that appear inside string values (for example a free-text "description"
+// field) instead of mistaking them for structural JSON braces. This is a
+// best-effort lexical scan, not a full JSON parser: it is only asked to
+// distinguish string-literal bytes from structural bytes, which is all
+// brace-depth counting needs.
+func quotedSpans(data []byte) []bool {
+	quoted := make([]bool, len(data))
+	inString := false
+	escaped := false
+	for i, b := range data {
+		if inString {
+			quoted[i] = true
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch b {
+		case '\\':
+			if inString {
+				escaped = true
+			}
+		case '"':
+			inString = !inString
+		}
+	}
+	return quoted
 }
 
 // redactPrivateKey returns a copy of block with any private_key PEM value

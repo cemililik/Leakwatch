@@ -55,6 +55,20 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 			redacted: "****7890",
 		},
 		{
+			name:     "PascalCase key name",
+			input:    "Heroku_Api_Key=" + syntheticUUID,
+			expected: 1,
+			redacted: "****7890",
+			rawUUID:  syntheticUUID,
+		},
+		{
+			name:     "mixed case bare heroku with colon",
+			input:    `Heroku: "` + syntheticUUID + `"`,
+			expected: 1,
+			redacted: "****7890",
+			rawUUID:  syntheticUUID,
+		},
+		{
 			name:     "no match - bare UUID without context",
 			input:    syntheticUUID,
 			expected: 0,
@@ -95,4 +109,23 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDetector_Scan_RawIsClonedNotAliased verifies Raw/RawV2 do not alias the
+// scanned chunk buffer, so the buffer is GC-eligible once Scan returns rather
+// than pinned for the whole scan (memory/aliasing hardening).
+func TestDetector_Scan_RawIsClonedNotAliased(t *testing.T) {
+	syntheticUUID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	data := []byte("HEROKU_API_KEY=" + syntheticUUID)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1)
+
+	rawBefore, rawV2Before := string(findings[0].Raw), string(findings[0].RawV2)
+	for i := range data {
+		data[i] = 'x'
+	}
+	assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
+	assert.Equal(t, rawV2Before, string(findings[0].RawV2), "RawV2 must be a clone, not an alias of the scanned buffer")
 }

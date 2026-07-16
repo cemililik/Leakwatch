@@ -53,6 +53,17 @@ func TestDetector_Scan_MatchesValidStrings(t *testing.T) {
 			input:    "ldap://a:pass1@host1:389/ ldaps://b:pass2@host2:636/",
 			expected: 2,
 		},
+		{
+			name:     "uppercase LDAP scheme",
+			input:    "LDAP://admin:s3cretP4ss@ldap.example.com:389/dc=example,dc=com",
+			expected: 1,
+			redacted: "ldap://admin:****@ldap.example.com:389/dc=example,dc=com",
+		},
+		{
+			name:     "mixed case LDAPS scheme",
+			input:    "LdApS://uid=svc:P@ssw0rd@ldap.example.com:636/ou=users,dc=example,dc=com",
+			expected: 1,
+		},
 	}
 
 	d := &Detector{}
@@ -134,4 +145,20 @@ func TestRedactPassword_VariousFormats(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestDetector_Scan_RawIsClonedNotAliased verifies Raw does not alias the
+// scanned chunk buffer (memory/aliasing hardening).
+func TestDetector_Scan_RawIsClonedNotAliased(t *testing.T) {
+	data := []byte("ldap://cn=admin:s3cretP4ss@ldap.example.com:389/dc=example,dc=com")
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1)
+
+	rawBefore := string(findings[0].Raw)
+	for i := range data {
+		data[i] = 'x'
+	}
+	assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
 }

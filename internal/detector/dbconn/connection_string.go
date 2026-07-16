@@ -2,6 +2,7 @@
 package dbconn
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 	"regexp"
@@ -11,11 +12,29 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var connStringPattern = regexp.MustCompile(`(postgres|mysql|mongodb(\+srv)?|redis)://[^\s'"]+@[^\s'"]+`)
+// connStringPattern requires a colon-delimited password between the username
+// and host (user:pass@host) so that bare, passwordless credentials (common in
+// IAM/passwordless auth, e.g. "postgres://readonly_user@host/db") are not
+// flagged and redactPassword never has to fabricate a redacted password that
+// was never present.
+var connStringPattern = regexp.MustCompile(`(postgres|mysql|mongodb(\+srv)?|redis)://[^\s'"@:]+:[^\s'"@]+@[^\s'"]+`)
 
-// adonetPattern matches ADO.NET style connection strings with password.
-// Example: Host=localhost;Database=mydb;Username=user;Password=secret123
-var adonetPattern = regexp.MustCompile(`(?i)(?:Host|Server|Data Source)=[^;]+;[^'"]*(?:Password|Pwd)=([^;'"\s]+)`)
+// adonetPattern matches ADO.NET style connection strings with a Password/Pwd
+// field, independent of whether it appears before or after the host-ish
+// (Host/Server/Data Source) field — ADO.NET connection strings are unordered
+// key=value pairs, and Password commonly appears first in builder-generated
+// or hand-copied strings. Capture group 1 holds the password when the
+// host-ish field comes first; group 2 holds it when Password/Pwd comes first.
+// Example (host first):     Host=localhost;Database=mydb;Username=user;Password=secret123
+// Example (password first): Password=secret123;Persist Security Info=True;Data Source=server
+var adonetPattern = regexp.MustCompile(
+	`(?i)(?:(?:Host|Server|Data Source)=[^;]+;[^'"]*(?:Password|Pwd)=([^;'"\s]+)` +
+		`|(?:Password|Pwd)=([^;'"\s]+)[^'"]*;[^'"]*(?:Host|Server|Data Source)=)`,
+)
+
+// redactADONetPattern matches Password/Pwd assignments for redaction.
+// Hoisted to package scope so it is compiled once at init, not per call.
+var redactADONetPattern = regexp.MustCompile(`(?i)(Password|Pwd)=([^;'"\s]+)`)
 
 // ConnectionString detects database connection strings containing credentials.
 type ConnectionString struct{}
@@ -44,19 +63,28 @@ func (d *ConnectionString) Scan(_ context.Context, data []byte) []detector.RawFi
 
 	// URI-style connection strings (postgres://user:pass@host)
 	for _, match := range connStringPattern.FindAll(data, -1) {
+		// Skip placeholder passwords, matching the ADO.NET path's behavior.
+		if u, err := url.Parse(string(match)); err == nil && u.User != nil {
+			if pw, ok := u.User.Password(); ok && isPlaceholderPassword(pw) {
+				continue
+			}
+		}
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   redactPassword(string(match)),
 		})
 	}
 
-	// ADO.NET style connection strings (Host=...;Password=...)
+	// ADO.NET style connection strings (Host=...;Password=... in either field order)
 	for _, match := range adonetPattern.FindAllSubmatch(data, -1) {
-		if len(match) < 2 {
+		if len(match) < 3 {
 			continue
 		}
 		password := string(match[1])
+		if password == "" {
+			password = string(match[2])
+		}
 		// Skip placeholder passwords
 		if isPlaceholderPassword(password) {
 			continue
@@ -64,7 +92,7 @@ func (d *ConnectionString) Scan(_ context.Context, data []byte) []detector.RawFi
 		fullMatch := string(match[0])
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match[0],
+			Raw:        bytes.Clone(match[0]),
 			Redacted:   redactADONet(fullMatch),
 		})
 	}
@@ -90,8 +118,7 @@ func redactPassword(raw string) string {
 
 // redactADONet masks the password in an ADO.NET style connection string.
 func redactADONet(raw string) string {
-	re := regexp.MustCompile(`(?i)(Password|Pwd)=([^;'"\s]+)`)
-	return re.ReplaceAllString(raw, "${1}=****")
+	return redactADONetPattern.ReplaceAllString(raw, "${1}=****")
 }
 
 // isPlaceholderPassword checks if a password is a common placeholder value.
