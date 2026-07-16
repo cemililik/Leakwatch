@@ -17,12 +17,8 @@ import (
 func newTestScanCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
 	flags := cmd.Flags()
-	flags.StringP("format", "f", "json", "output format")
-	flags.StringP("output", "o", "", "output file")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "workers")
-	flags.Int64("max-file-size", 10*1024*1024, "max file size")
-	flags.StringSlice("exclude", nil, "exclude patterns")
-	flags.Bool("show-raw", false, "show raw")
+	addCommonScanFlags(flags)
+	addExcludePathFlag(flags)
 	addVerifyFlags(flags)
 	return cmd
 }
@@ -120,7 +116,7 @@ func TestLoadScanConfig_Concurrency_FlagBeatsEnvBeatsConfigBeatsDefault(t *testi
 
 			cfg, err := loadScanConfig(cmd)
 			require.NoError(t, err)
-			assert.Equal(t, tc.expected, cfg.concurrency)
+			assert.Equal(t, tc.expected, cfg.Concurrency)
 		})
 	}
 }
@@ -134,7 +130,7 @@ func TestLoadScanConfig_MaxFileSize_PrecedenceHolds(t *testing.T) {
 	require.NoError(t, cmd.ParseFlags(nil))
 	cfg, err := loadScanConfig(cmd)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1024), cfg.maxFileSize)
+	assert.Equal(t, int64(1024), cfg.MaxFileSize)
 
 	// env beats config
 	t.Setenv("LEAKWATCH_SCAN_MAX_FILE_SIZE", "2048")
@@ -142,14 +138,14 @@ func TestLoadScanConfig_MaxFileSize_PrecedenceHolds(t *testing.T) {
 	require.NoError(t, cmd.ParseFlags(nil))
 	cfg, err = loadScanConfig(cmd)
 	require.NoError(t, err)
-	assert.Equal(t, int64(2048), cfg.maxFileSize)
+	assert.Equal(t, int64(2048), cfg.MaxFileSize)
 
 	// flag beats env
 	cmd = newTestScanCmd()
 	require.NoError(t, cmd.ParseFlags([]string{"--max-file-size", "4096"}))
 	cfg, err = loadScanConfig(cmd)
 	require.NoError(t, err)
-	assert.Equal(t, int64(4096), cfg.maxFileSize)
+	assert.Equal(t, int64(4096), cfg.MaxFileSize)
 }
 
 func TestLoadScanConfig_Format_EnvAndConfigHonoredWhenFlagUnset(t *testing.T) {
@@ -201,7 +197,7 @@ func TestLoadScanConfig_Format_EnvAndConfigHonoredWhenFlagUnset(t *testing.T) {
 
 			cfg, err := loadScanConfig(cmd)
 			require.NoError(t, err)
-			assert.Equal(t, tc.expected, cfg.format)
+			assert.Equal(t, tc.expected, cfg.Format)
 		})
 	}
 }
@@ -215,14 +211,14 @@ func TestLoadScanConfig_ShowRaw_FlagFalseOverridesConfigTrue(t *testing.T) {
 	require.NoError(t, cmd.ParseFlags(nil))
 	cfg, err := loadScanConfig(cmd)
 	require.NoError(t, err)
-	assert.True(t, cfg.showRaw, "config show-raw: true should apply when flag unset")
+	assert.True(t, cfg.ShowRaw, "config show-raw: true should apply when flag unset")
 
 	// Explicit --show-raw=false must override config show-raw: true (OUT-m-04).
 	cmd = newTestScanCmd()
 	require.NoError(t, cmd.ParseFlags([]string{"--show-raw=false"}))
 	cfg, err = loadScanConfig(cmd)
 	require.NoError(t, err)
-	assert.False(t, cfg.showRaw, "--show-raw=false must override config show-raw: true")
+	assert.False(t, cfg.ShowRaw, "--show-raw=false must override config show-raw: true")
 }
 
 func TestLoadScanConfig_IsolatedPerCommand_NoCrossLeak(t *testing.T) {
@@ -237,13 +233,13 @@ func TestLoadScanConfig_IsolatedPerCommand_NoCrossLeak(t *testing.T) {
 	require.NoError(t, cmdA.ParseFlags([]string{"--concurrency", "4"}))
 	cfgA, err := loadScanConfig(cmdA)
 	require.NoError(t, err)
-	assert.Equal(t, 4, cfgA.concurrency)
+	assert.Equal(t, 4, cfgA.Concurrency)
 
 	cmdB := newTestScanCmd()
 	require.NoError(t, cmdB.ParseFlags(nil))
 	cfgB, err := loadScanConfig(cmdB)
 	require.NoError(t, err)
-	assert.Equal(t, runtime.NumCPU(), cfgB.concurrency)
+	assert.Equal(t, runtime.NumCPU(), cfgB.Concurrency)
 }
 
 func TestShouldEnableColor_DecisionTable(t *testing.T) {

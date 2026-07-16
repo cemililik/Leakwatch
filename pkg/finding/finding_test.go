@@ -28,6 +28,33 @@ func TestSeverity_String(t *testing.T) {
 	}
 }
 
+func TestParseSeverity(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected Severity
+		ok       bool
+	}{
+		{"low", SeverityLow, true},
+		{"medium", SeverityMedium, true},
+		{"high", SeverityHigh, true},
+		{"critical", SeverityCritical, true},
+		{"HIGH", SeverityLow, false},   // case-sensitive: not recognized
+		{"crital", SeverityLow, false}, // typo: not recognized
+		{"", SeverityLow, false},       // empty: not recognized
+		{"unknown", SeverityLow, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			sev, ok := ParseSeverity(tt.input)
+			assert.Equal(t, tt.ok, ok)
+			if tt.ok {
+				assert.Equal(t, tt.expected, sev)
+			}
+		})
+	}
+}
+
 func TestVerificationStatus_String(t *testing.T) {
 	tests := []struct {
 		status   VerificationStatus

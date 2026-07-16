@@ -12,59 +12,7 @@ import (
 	jsonout "github.com/HodeTech/leakwatch/internal/output/json"
 	sarifout "github.com/HodeTech/leakwatch/internal/output/sarif"
 	tableout "github.com/HodeTech/leakwatch/internal/output/table"
-	"github.com/HodeTech/leakwatch/pkg/finding"
 )
-
-func TestParseSeverity_ValidInputs_ReturnsCorrectSeverity(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected finding.Severity
-	}{
-		{
-			name:     "low",
-			input:    "low",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "medium",
-			input:    "medium",
-			expected: finding.SeverityMedium,
-		},
-		{
-			name:     "high",
-			input:    "high",
-			expected: finding.SeverityHigh,
-		},
-		{
-			name:     "critical",
-			input:    "critical",
-			expected: finding.SeverityCritical,
-		},
-		{
-			name:     "unknown defaults to low",
-			input:    "unknown",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "empty string defaults to low",
-			input:    "",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "uppercase defaults to low",
-			input:    "HIGH",
-			expected: finding.SeverityLow,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := parseSeverity(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
 
 func TestSelectFormatter_AllFormats_ReturnsCorrectType(t *testing.T) {
 	tests := []struct {

@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 
@@ -40,13 +39,8 @@ func init() {
 	scanCmd.AddCommand(scanFsCmd)
 
 	flags := scanFsCmd.Flags()
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
-	flags.StringP("output", "o", "", "output file (default: stdout)")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
-	flags.Int64("max-file-size", 10*1024*1024, "maximum file size in bytes")
-	flags.StringSlice("exclude", nil, "path patterns to exclude")
-	flags.Bool(flagShowRaw, false, "show raw secret content in output")
-
+	addCommonScanFlags(flags)
+	addExcludePathFlag(flags)
 	addVerifyFlags(flags)
 }
 
@@ -65,16 +59,14 @@ func runScanFs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg.scanRoot = absPath
-	cfg.scanTarget = absPath
-
-	excludePaths, _ := cmd.Flags().GetStringSlice("exclude")
+	cfg.ScanRoot = absPath
+	cfg.ScanTarget = absPath
 
 	src := filesystem.New(
 		absPath,
-		filesystem.WithMaxFileSize(cfg.maxFileSize),
-		filesystem.WithExcludePaths(append(cfg.excludePaths, excludePaths...)),
+		filesystem.WithMaxFileSize(cfg.MaxFileSize),
+		filesystem.WithExcludePaths(mergedExcludePaths(cmd, cfg)),
 	)
 
-	return executeScan(cmd.Context(), cfg, src, nil)
+	return runScan(cmd, cfg, src, nil)
 }

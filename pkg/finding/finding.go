@@ -42,6 +42,17 @@ func (s Severity) String() string {
 	return "unknown"
 }
 
+// ParseSeverity converts a severity name to its Severity value. Matching is
+// case-sensitive against the four canonical names ("low", "medium", "high",
+// "critical"). The boolean is false when s is not one of them, so callers can
+// decide their own fallback or reject the value explicitly instead of silently
+// downgrading an unrecognized string. It is the single source of truth shared by
+// the CLI (--min-severity) and custom-rule severity parsing.
+func ParseSeverity(s string) (Severity, bool) {
+	sev, ok := stringToSeverity[s]
+	return sev, ok
+}
+
 // MarshalJSON serializes Severity as a JSON string.
 func (s Severity) MarshalJSON() ([]byte, error) {
 	str := s.String()

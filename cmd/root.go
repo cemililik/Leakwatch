@@ -33,7 +33,17 @@ type FindingsExitError struct {
 }
 
 func (e *FindingsExitError) Error() string {
-	return "secrets found"
+	return fmt.Sprintf("%d secret(s) found", e.Count)
+}
+
+// InterruptedExitError indicates the scan was interrupted (SIGINT/SIGTERM) before
+// completing, so its partial results must not be trusted as a clean pass. It maps
+// to exit code 3, distinct from findings (1) and generic errors (2), so a CI
+// pipeline can never observe a clean exit 0 for a scan that did not finish.
+type InterruptedExitError struct{}
+
+func (e *InterruptedExitError) Error() string {
+	return "scan interrupted before completion"
 }
 
 var rootCmd = &cobra.Command{
@@ -70,20 +80,37 @@ Features:
 	SilenceErrors: true,
 }
 
-// Execute runs the root command and returns the exit code.
+// Execute runs the root command and returns the process exit code:
+//
+//	0  clean, completed scan with no findings
+//	1  findings were reported (FindingsExitError)
+//	2  a generic error (bad flags, config parse failure, scan failure)
+//	3  the scan was interrupted before completing (InterruptedExitError)
 func Execute() int {
-	if err := rootCmd.Execute(); err != nil {
-		var fErr *FindingsExitError
-		if errors.As(err, &fErr) {
-			return 1
-		}
-		// Print user-friendly error with suggestion.
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-		fmt.Fprintf(os.Stderr, "\nRun 'leakwatch --help' for usage information.\n")
-		slog.Debug("command failed", "error", err)
-		return 2
+	// ExecuteC returns the command that actually ran/failed so the error hint can
+	// point at that subcommand's own --help rather than the top-level one.
+	cmd, err := rootCmd.ExecuteC()
+	if err == nil {
+		return 0
 	}
-	return 0
+
+	var fErr *FindingsExitError
+	if errors.As(err, &fErr) {
+		return 1
+	}
+
+	var iErr *InterruptedExitError
+	if errors.As(err, &iErr) {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		slog.Debug("scan interrupted", "error", err)
+		return 3
+	}
+
+	// Print user-friendly error pointing at the failing command's own help.
+	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+	fmt.Fprintf(os.Stderr, "\nRun '%s --help' for usage information.\n", cmd.CommandPath())
+	slog.Debug("command failed", "error", err)
+	return 2
 }
 
 func init() {

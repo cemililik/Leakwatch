@@ -6,7 +6,7 @@ import (
 	"github.com/HodeTech/leakwatch/cmd"
 )
 
-// Build bilgileri (ldflags ile enjekte edilir).
+// Build information (injected via ldflags).
 var (
 	version = "dev"
 	commit  = "none"
