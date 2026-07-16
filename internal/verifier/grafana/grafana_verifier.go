@@ -1,5 +1,5 @@
 // Package grafana provides a verifier for Grafana API keys.
-// It uses the Grafana Cloud API GET /api/viewer endpoint to check key validity.
+// It uses the Grafana HTTP API GET /api/user endpoint to check key validity.
 package grafana
 
 import (
@@ -37,6 +37,15 @@ func (v *Verifier) Type() string {
 
 // Verify checks if the detected Grafana API key is valid/active.
 // Raw contains the key value.
+//
+// This calls GET /api/user, matching docs/architecture/05-VERIFIER-ANALYSIS.md
+// and docs/guides/secret-verification.md (the code previously called the
+// nonexistent /api/viewer path). Note the caveat those docs already record:
+// glsa_ tokens are Grafana Cloud service-account tokens scoped to the stack
+// that issued them, so a token minted on a self-hosted or per-stack instance
+// will not authenticate against the central grafana.com host used here —
+// there is currently no per-instance URL captured for this detector to
+// verify against, the same limitation documented for Okta.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
 	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
@@ -44,7 +53,7 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "grafana",
 		Request: httpx.Request{
-			URL:    apiURL + "/api/viewer",
+			URL:    apiURL + "/api/user",
 			Header: map[string]string{"Authorization": "Bearer " + token},
 		},
 		ActiveMessage:   "Grafana API key is active",

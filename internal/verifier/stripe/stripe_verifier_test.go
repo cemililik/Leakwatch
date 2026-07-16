@@ -104,6 +104,35 @@ func TestLiveKeyVerifier_InvalidKey_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "Stripe live API key is invalid or revoked", result.Message)
 }
 
+func TestLiveKeyVerifier_RestrictedKeyWithoutBalanceScope_ReturnsActive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/balance", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"This API Key does not have permissions to perform this request","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	v := &LiveKeyVerifier{
+		apiURL:     server.URL,
+		httpClient: server.Client(),
+	}
+
+	raw := detector.RawFinding{
+		DetectorID: liveDetectorID,
+		Raw:        []byte("rk_live_restrictedkey1234567890abcd"),
+		Redacted:   "rk_live_****abcd",
+	}
+
+	result := v.Verify(context.Background(), raw)
+
+	require.Equal(t, finding.StatusVerifiedActive, result.Status,
+		"a 403 from a restricted key means it authenticated, just lacks scope; it must not be a hard verify error")
+	assert.Equal(t, "Stripe live API key is active", result.Message)
+	assert.Equal(t, "restricted", result.ExtraData["scope"])
+	assert.Equal(t, "live", result.ExtraData["key_type"])
+}
+
 func TestLiveKeyVerifier_ServerError_ReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

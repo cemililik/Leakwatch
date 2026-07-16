@@ -59,6 +59,13 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 }
 
 // decodeUser parses the GitHub API response for a valid token.
+//
+// Enhancement note: a classic PAT's granted scopes are exposed by GitHub in
+// the X-OAuth-Scopes response header, not the body, and would be valuable
+// triage signal (a repo-scoped token is materially more critical than a
+// read:user-scoped one). Surfacing it requires httpx.DecodeFunc to receive
+// the response headers, which it currently does not (body-only) — that is a
+// change to internal/verifier/internal/httpx, outside this package.
 func decodeUser(body io.Reader) (map[string]string, string, error) {
 	var user struct {
 		Login string `json:"login"`
