@@ -1,0 +1,46 @@
+version: 2
+
+updates:
+  # Root Go module.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Isolated site-build tool module (docs/user-manuals -> site/js compiler);
+  # deliberately not part of the root Go module, so it needs its own entry.
+  - package-ecosystem: "gomod"
+    directory: "/tools/site-build"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # VS Code extension.
+  - package-ecosystem: "npm"
+    directory: "/vscode"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions used across all workflows (this repo SHA-pins every
+  # third-party action; Dependabot opens the version-bump PR with the new
+  # SHA + comment already updated).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Dockerfile / Dockerfile.goreleaser base images (both digest-pinned; keeps
+  # the pinned digests current).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"

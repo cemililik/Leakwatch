@@ -1,0 +1,55 @@
+name: VS Code Extension CI
+
+# Lints, compiles, and tests the vscode/ extension. Nothing else in this repo's
+# CI touches it (it has its own package.json/lockfile, entirely separate from
+# the root Go module), so a regression here would otherwise go unnoticed until
+# a user hit it after a Marketplace publish.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vscode/**'
+      - '.github/workflows/vscode-ci.yml'
+  pull_request:
+    paths:
+      - 'vscode/**'
+      - '.github/workflows/vscode-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: vscode
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: vscode/package-lock.json
+
+      - name: Install dependencies (lockfile-pinned)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Compile (production webpack build)
+        run: npm run compile
+
+      - name: Test
+        run: npm test

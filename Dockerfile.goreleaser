@@ -1,6 +1,9 @@
-FROM alpine:3.20
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
-RUN apk add --no-cache ca-certificates git && \
+# ADR-0003: Leakwatch uses go-git (pure Go), so the runtime image never shells
+# out to a git binary; only ca-certificates is needed for outbound TLS (e.g.
+# verifier API calls).
+RUN apk add --no-cache ca-certificates && \
     adduser -D -h /home/leakwatch leakwatch
 
 COPY leakwatch /usr/local/bin/leakwatch

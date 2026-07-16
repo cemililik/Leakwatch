@@ -12,7 +12,7 @@ test:
 	go test -race -coverprofile=coverage.out ./...
 
 lint:
-	golangci-lint run ./...
+	golangci-lint run ./... --config .golangci.yml
 
 cover: test
 	go tool cover -html=coverage.out -o coverage.html
