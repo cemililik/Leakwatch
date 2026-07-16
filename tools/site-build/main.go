@@ -162,7 +162,7 @@ func run() error {
 
 	// Compile the in-browser playground detector set from internal/detector.
 	jsDir := filepath.Join(root, "site", "js")
-	nDet, err := buildDetectors(root, jsDir)
+	nDet, err := buildDetectors(root, jsDir, *strict)
 	if err != nil {
 		return err
 	}
@@ -201,19 +201,31 @@ func newMarkdown() goldmark.Markdown {
 }
 
 // splitFrontMatter separates an optional leading YAML front-matter block from
-// the Markdown body.
+// the Markdown body. The closing delimiter must be a line containing exactly
+// "---" (ignoring surrounding whitespace) — a substring match would also
+// accept a longer dash rule (e.g. "----------") or a line like "---some-text"
+// that merely starts with the same three characters, truncating the front
+// matter prematurely.
 func splitFrontMatter(b []byte) (frontMatter, string, error) {
 	var fm frontMatter
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
 	if !strings.HasPrefix(s, "---\n") {
 		return fm, s, nil
 	}
-	end := strings.Index(s[4:], "\n---")
+	lines := strings.Split(s, "\n")
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+	}
 	if end < 0 {
 		return fm, s, nil
 	}
-	header := s[4 : 4+end]
-	body := strings.TrimPrefix(s[4+end+4:], "\n")
+	header := strings.Join(lines[1:end], "\n")
+	body := strings.Join(lines[end+1:], "\n")
+	body = strings.TrimPrefix(body, "\n")
 	if err := yaml.Unmarshal([]byte(header), &fm); err != nil {
 		return fm, "", err
 	}
@@ -238,11 +250,18 @@ func renderMarkdown(md goldmark.Markdown, source, lang string) (string, error) {
 		trimmed := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(trimmed, ":::") && len(trimmed) > 3 {
 			typ := strings.ToLower(strings.TrimSpace(trimmed[3:]))
+			startLine := i + 1 // 1-based, for error messages
 			var body []string
 			i++
 			for i < len(lines) && strings.TrimSpace(lines[i]) != ":::" {
 				body = append(body, lines[i])
 				i++
+			}
+			if i >= len(lines) {
+				// Ran off the end of the page without finding the closing
+				// fence: failing loudly here beats silently absorbing the
+				// rest of the page into one callout box on the live site.
+				return "", fmt.Errorf("unterminated ::: callout (type %q) opened at line %d: no closing ::: found", typ, startLine)
 			}
 			inner, err := toHTML(md, strings.Join(body, "\n"))
 			if err != nil {

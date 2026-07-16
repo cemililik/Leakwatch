@@ -160,6 +160,10 @@ window.LW_DETECTORS = [
     "patterns": [
       {
         "src": "(postgres|mysql|mongodb(\\+srv)?|redis)://[^\\s'\"@:]+:[^\\s'\"@]+@[^\\s'\"]+"
+      },
+      {
+        "src": "(?:(?:Host|Server|Data Source)=[^;]+;[^'\"]*(?:Password|Pwd)=([^;'\"\\s]+)|(?:Password|Pwd)=([^;'\"\\s]+)[^'\"]*;[^'\"]*(?:Host|Server|Data Source)=)",
+        "flags": "i"
       }
     ]
   },
@@ -302,12 +306,6 @@ window.LW_DETECTORS = [
     "patterns": [
       {
         "src": "\"type\"\\s*:\\s*\"service_account\""
-      },
-      {
-        "src": "\"private_key_id\"\\s*:\\s*\"([^\"]+)\""
-      },
-      {
-        "src": "\"client_email\"\\s*:\\s*\"([^\"]+)\""
       }
     ]
   },
@@ -488,10 +486,6 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "mailgun",
-        "flags": "i"
-      },
-      {
         "src": "key-[a-f0-9]{32}"
       }
     ]
@@ -518,9 +512,6 @@ window.LW_DETECTORS = [
     "patterns": [
       {
         "src": "ntn_[A-Za-z0-9]{43,}"
-      },
-      {
-        "src": "secret_[A-Za-z0-9]{43,}"
       }
     ]
   },
@@ -545,10 +536,6 @@ window.LW_DETECTORS = [
       "SSWS"
     ],
     "patterns": [
-      {
-        "src": "(?:okta|SSWS)",
-        "flags": "i"
-      },
       {
         "src": "00[A-Za-z0-9_-]{40}"
       },
