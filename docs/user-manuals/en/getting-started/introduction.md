@@ -13,10 +13,10 @@ It is written in Go, ships as a single static binary with no runtime dependencie
 
 A leaked credential in a single commit — even one later deleted — can stay reachable in Git history forever and be exploited within minutes of being pushed. Leakwatch is designed to catch those secrets early and tell you which ones are *actually dangerous*:
 
-- **Broad detection** — 63 built-in detectors covering cloud providers, AI APIs, payment platforms, databases, messaging tools, and more, plus your own YAML custom rules.
+- **Broad detection** — 64 built-in detectors covering cloud providers, AI APIs, payment platforms, databases, messaging tools, and more, plus your own YAML custom rules.
 - **Verification, not just detection** — for 54 detector types Leakwatch can confirm whether a found secret is *still live* by making a controlled, read-only call to the provider. A verified-active key is an incident; an inactive one is noise.
 - **Many sources** — scan a local filesystem, a full Git history, an OCI/Docker image, AWS S3, Google Cloud Storage, and Slack messages.
-- **CI-native output** — JSON, SARIF (for GitHub Code Scanning), CSV, and a colorized terminal table.
+- **CI-native output** — JSON, SARIF (for GitHub Code Scanning), CSV, a colorized terminal table, and inline GitHub Actions annotations.
 - **Secret-safe by design** — discovered secrets are redacted by default and are never logged, cached, or written to disk.
 
 ## What it scans
@@ -37,7 +37,7 @@ Leakwatch uses a layered pipeline so it stays fast even on large inputs:
 
 1. **Aho-Corasick keyword pre-filter** — a single multi-pattern automaton quickly decides which detectors *could* match a chunk, so most detectors never run their regex.
 2. **Regex validation** — only the shortlisted detectors run their precise patterns.
-3. **Entropy** — Shannon entropy is computed for display (and used by custom rules to drop low-randomness matches).
+3. **Entropy** — Shannon entropy is computed for display, and gates the built-in `generic-api-key` detector plus any custom rule with its own entropy threshold, dropping low-randomness placeholder matches. Every other (structural) built-in detector is never gated by entropy.
 4. **Verification** — eligible findings are checked against the live provider API.
 
 :::tip
@@ -50,7 +50,7 @@ To set expectations accurately:
 
 - It does **not** rewrite Git history or remove secrets for you — it finds and reports them, and (with `--remediation`) tells you how to rotate them.
 - Slack scanning covers **message text only**; scanning the *contents* of uploaded files is not implemented.
-- Verification is available for many but not all secret types — 9 detector types (such as JWTs and generic API keys) cannot be safely verified and are always reported as unverified.
+- Verification is available for many but not all secret types — 10 detector types (such as JWTs and generic API keys) cannot be safely verified and are always reported as unverified.
 
 ## Next steps
 

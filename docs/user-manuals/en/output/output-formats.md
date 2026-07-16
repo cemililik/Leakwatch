@@ -33,7 +33,7 @@ leakwatch scan fs ./src --format json --output findings.json
 
 ```json
 {
-  "id": "a3f9c12d-8e4b-4c7a-9f2e-1b5d3a7c9e0f",
+  "id": "447b5d2846d08ce25dd3d638cfe911ad",
   "detector_id": "github-token",
   "severity": "critical",
   "redacted": "ghp_****************************Xk9R",
@@ -49,6 +49,8 @@ leakwatch scan fs ./src --format json --output findings.json
   "detected_at": "2026-05-23T10:15:30Z"
 }
 ```
+
+`id` is a deterministic, truncated SHA-256 rendered as a flat 32-character lowercase hex string — it is **not** a UUID and never contains dashes. See [How It Works](#/getting-started/how-it-works) for how it is computed.
 
 When `--remediation` is also set, a `"remediation"` object is nested inside each finding. See [Remediation Guidance](#/output/remediation).
 
@@ -83,8 +85,10 @@ The `csv` format writes a header row followed by one row per finding, using stan
 **Columns (default):**
 
 ```text
-id,detector_id,severity,redacted,file_path,commit,verification_status,remediation
+id,detector_id,severity,redacted,source,file_path,line,commit,verification_status,remediation
 ```
+
+`source` is a human-readable label identifying the origin repository, container image, or Slack channel a finding came from (useful when a `scan repos` run combines findings from several repositories into one CSV); it is empty for a plain filesystem scan of a single directory. `line` is the line number, empty when not applicable.
 
 When `--show-raw` is set, a trailing `raw` column is appended.
 
@@ -99,9 +103,9 @@ leakwatch scan git . --format csv --output findings.csv
 ### Example output
 
 ```csv
-id,detector_id,severity,redacted,file_path,commit,verification_status,remediation
-a3f9c12d-...,github-token,critical,ghp_****Xk9R,scripts/deploy.sh,7d3e1f2,verified_active,Revoke GitHub Token
-b7d2e45a-...,aws-access-key-id,high,AKIA****K7NP,config/aws.yml,7d3e1f2,unverified,Rotate AWS Access Key
+id,detector_id,severity,redacted,source,file_path,line,commit,verification_status,remediation
+447b5d2846d08ce25dd3d638cfe911ad,github-token,critical,ghp_****Xk9R,,scripts/deploy.sh,14,7d3e1f2,verified_active,Revoke GitHub Token
+e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws.yml,3,7d3e1f2,unverified,Rotate AWS Access Key
 ```
 
 ## Table
@@ -111,10 +115,12 @@ The `table` format writes a human-readable tab-aligned table, best suited for in
 **Columns:**
 
 ```text
-SEVERITY | DETECTOR | FILE | REDACTED | STATUS | REMEDIATION
+SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
 ```
 
-When `--show-raw` is set, a trailing `RAW` column is appended. A summary line is printed at the bottom of the table (e.g. `Found 3 secrets (1 critical, 2 high).`).
+The `LINE` column shows `-` when no line number is available (for example a Slack or container-image finding). The `REMEDIATION` column is always present and shows `-` unless `--remediation` is set. When `--show-raw` is also set, a trailing `RAW` column is appended. A summary line is printed at the bottom of the table (e.g. `Found 3 secrets (1 critical, 2 high).`).
+
+Attacker-influenced fields (detector ID, file path, redacted value) are stripped of control characters and ANSI escape sequences before being written to the terminal, so a maliciously crafted file name or custom-rule match cannot inject escape sequences into your terminal session.
 
 **ANSI color** is applied to the `SEVERITY` column automatically, but only when all four conditions are met:
 
@@ -139,10 +145,10 @@ leakwatch scan fs . --format table --min-severity high
 ### Example output
 
 ```text
-SEVERITY   DETECTOR          FILE                  REDACTED               STATUS            REMEDIATION
---------   --------          ----                  --------               ------            -----------
-CRITICAL   github-token      scripts/deploy.sh     ghp_****Xk9R           verified_active   Revoke GitHub Token
-HIGH       aws-access-key-id config/aws.yml        AKIA****K7NP           unverified        Rotate AWS Access Key
+SEVERITY  DETECTOR           FILE                LINE  REDACTED      STATUS           REMEDIATION
+--------  --------           ----                ----  --------      ------           -----------
+CRITICAL  github-token       scripts/deploy.sh   14    ghp_****Xk9R  verified_active  Revoke GitHub Token
+HIGH      aws-access-key-id  config/aws.yml      3     AKIA****K7NP  unverified       Rotate AWS Access Key
 
 Found 2 secrets (1 critical, 1 high).
 ```

@@ -1,11 +1,11 @@
 ---
 title: "Custom Rules"
-description: "How to define your own secret detection patterns in YAML and add them to a Leakwatch scan alongside the 63 built-in detectors."
+description: "How to define your own secret detection patterns in YAML and add them to a Leakwatch scan alongside the 64 built-in detectors."
 ---
 
 # Custom Rules
 
-The 63 built-in detectors cover widely used credential formats, but every organisation has internal tokens, proprietary service keys, or environment-specific patterns that no generic tool can anticipate. Custom rules let you extend Leakwatch with your own patterns — defined in plain YAML, loaded at runtime — without modifying source code or rebuilding the binary.
+The 64 built-in detectors cover widely used credential formats, but every organisation has internal tokens, proprietary service keys, or environment-specific patterns that no generic tool can anticipate. Custom rules let you extend Leakwatch with your own patterns — defined in plain YAML, loaded at runtime — without modifying source code or rebuilding the binary.
 
 ## Where custom rules live
 
@@ -78,22 +78,29 @@ Run a scan with this config:
 leakwatch scan fs . --config .leakwatch.yaml
 ```
 
-Sample JSON output for a custom-rule finding (secret value redacted):
+Sample JSON output for a custom-rule finding (secret value redacted) — a custom-rule finding uses exactly the same `Finding` schema as every built-in detector (see [Output Formats](#/output/output-formats)); there is no separate schema for custom rules:
 
 ```json
 {
+  "id": "8a403a46336fc6ffdc847d202b74536c",
   "detector_id": "acme-internal-token",
-  "description": "ACME Corp internal service token (format: acme_ + 32 hex chars)",
   "severity": "critical",
-  "verification_status": "unverified",
-  "file": "config/production.env",
-  "line": 14,
-  "raw_redacted": "acme_********************************"
+  "redacted": "****cdef",
+  "source": {
+    "source_type": "filesystem",
+    "file_path": "config/production.env",
+    "line": 14
+  },
+  "verification": {
+    "status": "unverified"
+  },
+  "detected_at": "2026-05-23T10:15:30Z",
+  "entropy": 4.12
 }
 ```
 
 :::note
-The `raw_redacted` field always masks the actual secret. The raw value is never written to output unless you explicitly pass `--show-raw` (not recommended outside controlled environments).
+The `redacted` field always masks the actual secret (by default, `****` followed by at most the last 4 characters). The raw value is never written to output unless you explicitly pass `--show-raw` (not recommended outside controlled environments). Custom rules have no verifier, so `verification.status` is always `unverified`.
 :::
 
 ## Excluding a custom rule
@@ -109,5 +116,5 @@ filter:
 ## See also
 
 - [Configuration: Config File](#/configuration/config-file) — full reference for `.leakwatch.yaml`, including where `custom-rules:` sits in the document structure.
-- [Detector Catalog](#/detectors/detector-catalog) — the 63 built-in detectors, to check for ID conflicts before naming your custom rule.
+- [Detector Catalog](#/detectors/detector-catalog) — the 64 built-in detectors, to check for ID conflicts before naming your custom rule.
 - [How It Works](#/getting-started/how-it-works) — the Aho-Corasick pre-filter pipeline that `keywords` plugs into.

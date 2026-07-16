@@ -41,7 +41,7 @@ output:
 
 ## `--only-verified`: confirmed active secrets only
 
-Pass `--only-verified` to keep only findings whose verification status is `verified_active` — secrets that Leakwatch confirmed are still valid by making a controlled read-only call to the provider API. All other findings (unverified, verified-inactive, or verify-error) are dropped.
+Pass `--only-verified` to keep only findings whose verification status is `verified_active` — secrets that Leakwatch confirmed are still valid by making a controlled read-only call to the provider API. All other findings (`unverified`, `verified_inactive`, or `verify_error`) are dropped.
 
 ```bash
 leakwatch scan fs . --only-verified
@@ -64,6 +64,8 @@ filter:
 
 Detector IDs are listed in the [Detector Catalog](#/detectors/detector-catalog). Use this setting when a detector consistently produces false positives for your codebase and other suppression mechanisms (inline ignores or `.leakwatchignore`) are not granular enough.
 
+To silence a detector for a single run without editing the config file, pass `--exclude-detectors <id>[,<id>...]` (repeatable) on any scan subcommand. It adds to `filter.exclude-detectors` rather than replacing it.
+
 ## `filter.exclude-paths`: skip paths before scanning
 
 To exclude paths before the scan engine reads them, use `filter.exclude-paths` in the config file. The patterns use the same glob syntax as `.leakwatchignore` (standard globs, `**` double-star, and trailing-slash directory patterns), and apply to **all scan sources**:
@@ -79,7 +81,7 @@ filter:
 ```
 
 :::note
-On the `scan fs` command, the `--exclude <pattern>` flag is the command-line equivalent of `filter.exclude-paths`. The `--exclude` flag exists **only** on `scan fs` — for all other sources, use the config file setting.
+The `--exclude <pattern>` flag is the command-line equivalent of `filter.exclude-paths`, and is available on every scan subcommand **except** `scan slack` (which excludes by `--exclude-channels` instead). It is repeatable and adds to `filter.exclude-paths` rather than replacing it.
 :::
 
 ## Combining filters in CI

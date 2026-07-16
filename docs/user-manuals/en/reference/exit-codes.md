@@ -5,15 +5,16 @@ description: "Leakwatch exit code reference and how to use them in scripts and C
 
 # Exit Codes
 
-Leakwatch uses a small, well-defined set of exit codes so that CI pipelines and shell scripts can act on scan results without parsing output. Every scan subcommand exits with one of three codes.
+Leakwatch uses a small, well-defined set of exit codes so that CI pipelines and shell scripts can act on scan results without parsing output. Every scan subcommand exits with one of four codes.
 
 ## Code reference
 
 | Code | Name | Meaning |
 |------|------|---------|
 | `0` | Clean | The scan completed successfully and no findings passed the active filters. |
-| `1` | Findings | The scan completed and one or more secrets were found (and passed the active filters). |
+| `1` | Findings | The scan completed and one or more secrets were found (and passed the active filters). This takes precedence over every other outcome: if findings were reported, exit code `1` is returned even if the scan was later interrupted or a repository in a multi-repo scan failed. |
 | `2` | Error | A hard error occurred — for example, an invalid flag, an unreadable path, or an authentication failure. An `Error: ...` message and a usage hint are printed to stderr. |
+| `3` | Interrupted | The scan received `SIGINT` (`Ctrl+C`) or `SIGTERM` before it completed, and it had reported **no** findings at the point of interruption. Partial results (if any survived filtering) are still written to the configured output before the process exits. A CI pipeline can therefore never observe a clean exit `0` for a scan that did not run to completion. |
 
 ## How filters affect exit code 1
 
@@ -25,7 +26,7 @@ Exit code `1` is only emitted when at least one finding survives all active outp
 This means exit code `0` means "no findings matched your current filter settings" — not necessarily that the codebase contains no secrets at all.
 
 :::warn
-A clean `0` exit under `--only-verified` does not guarantee the codebase is secret-free. Secrets for which verification is unavailable (9 detector types) are always reported as unverified and are suppressed by `--only-verified`. Pair `--only-verified` with a separate unfiltered scan if you need full coverage.
+A clean `0` exit under `--only-verified` does not guarantee the codebase is secret-free. Secrets for which verification is unavailable (10 detector types) are always reported as unverified and are suppressed by `--only-verified`. Pair `--only-verified` with a separate unfiltered scan if you need full coverage.
 :::
 
 ## Using exit codes in shell scripts
@@ -44,6 +45,10 @@ case "$EXIT_CODE" in
   1)
     echo "Secrets found — review leakwatch.json and remediate before merging."
     exit 1
+    ;;
+  3)
+    echo "Scan was interrupted before it completed — treat as untrusted, do not merge."
+    exit 3
     ;;
   *)
     echo "Leakwatch encountered an error (exit $EXIT_CODE)."
@@ -81,11 +86,15 @@ Exit code `2` indicates a configuration or runtime error that prevented the scan
 - A missing required argument (for example, `scan git` with no URL).
 - An authentication error when connecting to a cloud source.
 
-The error message is printed to stderr and includes context to help diagnose the problem:
+The error message is printed to stderr and includes context to help diagnose the problem. For example, an invalid `--format` value produces:
 
 ```text
-Error: unknown format "xlsx"; valid values: json, sarif, csv, table
+Error: failed to load configuration: unsupported output format: xlsx
+
+Run 'leakwatch scan fs --help' for usage information.
 ```
+
+Valid `--format` values are `json`, `sarif`, `csv`, `table`, and `github`.
 
 ## See also
 

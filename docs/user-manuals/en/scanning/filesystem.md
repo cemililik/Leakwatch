@@ -10,10 +10,10 @@ Local source code is where secrets most often appear first. The `leakwatch scan 
 ## Basic usage
 
 ```bash
-leakwatch scan fs [path]
+leakwatch scan fs [path...]
 ```
 
-`path` is optional. When omitted, Leakwatch scans the current working directory (`.`). Only one path argument is accepted.
+`path` accepts **zero or more** arguments; when omitted, Leakwatch scans the current working directory (`.`). Each path may be a directory (walked recursively) or a single file — you can mix files and directories, and pass several of each, in one invocation.
 
 ```bash
 # Scan the current directory
@@ -21,6 +21,12 @@ leakwatch scan fs
 
 # Scan a specific project folder
 leakwatch scan fs ./my-project
+
+# Scan a single file
+leakwatch scan fs cmd/main.go
+
+# Scan several files and directories together
+leakwatch scan fs cmd/ main.go internal/config
 ```
 
 ## What the filesystem source skips automatically
@@ -30,6 +36,7 @@ To keep scans fast and noise-free, the filesystem source skips the following wit
 - **Binary files** — detected by the presence of a null byte in the first 8 KB of the file.
 - **Known binary extensions** — common compiled, image, audio, video, and archive formats.
 - **Lock files** — `package-lock.json`, `yarn.lock`, `Pipfile.lock`, and similar.
+- **`.git` directories** — the Git object/pack store is never walked or read as plain files, since `scan git` is the dedicated way to scan commit history. This applies to any `.git` directory encountered while walking; if you explicitly pass `.git` itself as the scan path, that exemption does not apply and it is scanned normally. Also unaffected: symlinks are always skipped to avoid cycles.
 
 ## Flags
 
@@ -43,11 +50,12 @@ To keep scans fast and noise-free, the filesystem source skips the following wit
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Write results to this file instead of stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent workers. |
 | `--max-file-size` | — | `10485760` (10 MB) | Skip files larger than this value (bytes). |
 | `--show-raw` | — | `false` | Include the raw secret value in output. |
+| `--exclude-detectors` | — | — | Detector IDs to exclude for this run. Repeatable; combined with `filter.exclude-detectors`. |
 | `--no-verify` | — | `false` | Disable secret verification. |
 | `--only-verified` | — | `false` | Report only findings confirmed active by verification. |
 | `--min-severity` | — | `low` | Minimum severity to report: `low`, `medium`, `high`, `critical`. |
@@ -106,6 +114,7 @@ For permanent exclusion rules shared across your team, add them to `.leakwatch.y
 | `0` | Scan completed, no findings. |
 | `1` | Scan completed, findings reported. |
 | `2` | Scan failed (configuration error, unreadable path, etc.). |
+| `3` | Scan was interrupted (`Ctrl+C` / `SIGTERM`) before completing, and no findings had been reported. |
 
 A scan summary (source type, target, file count, duration, and finding count) is printed to stderr after every run. Scans cancel gracefully on SIGINT/SIGTERM.
 

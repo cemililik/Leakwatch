@@ -18,7 +18,7 @@ Create a `.leakwatchignore` file in your repository root (or in the current dire
 
 ### Loading order
 
-Leakwatch loads `.leakwatchignore` from the scan root first, then from the current working directory. If both exist and contain patterns for the same path, the current-directory file's patterns take precedence because they are evaluated last.
+Leakwatch loads the **first** `.leakwatchignore` it finds, checking the scan root first, then the current working directory as a fallback. Only one file is ever used per scan — if a `.leakwatchignore` exists at the scan root, the current-directory file (if any) is never opened, let alone merged. There is no cross-file precedence or merging: place your rules in a single `.leakwatchignore` at the scan root for predictable behavior.
 
 ### Glob syntax
 
@@ -116,7 +116,9 @@ filter:
     - "third-party/"
 ```
 
-This setting applies to **all scan sources** (filesystem, Git history, container images, cloud storage, Slack). On the `scan fs` command you can also pass `--exclude <pattern>` on the command line, which is the flag-equivalent of `filter.exclude-paths`.
+This setting applies to **all scan sources** (filesystem, Git history, container images, cloud storage, Slack). On every `scan` subcommand that scans paths (`fs`, `git`, `image`, `s3`, `gcs`, `repos` — all except `slack`, which excludes by `--exclude-channels` instead) you can also pass `--exclude <pattern>` on the command line, repeatable, which is combined with (not a replacement for) `filter.exclude-paths`.
+
+To silence a noisy detector for a single run without editing the config file, pass `--exclude-detectors <id>[,<id>...]` (repeatable) on any scan subcommand — see [Detector Catalog](#/detectors/detector-catalog).
 
 See [Configuration File](#/configuration/config-file) for the full config schema and [Severity & Filtering](#/configuration/severity-and-filtering) for detector-level and severity-level filtering.
 

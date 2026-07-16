@@ -43,17 +43,19 @@ All findings from all repositories are collected and written as a single output,
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Write results to this file instead of stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent workers **per repository**. |
 | `--max-file-size` | — | `10485760` (10 MB) | Skip blobs larger than this value (bytes). |
 | `--show-raw` | — | `false` | Include the raw secret value in output. |
+| `--exclude` | — | — | Path pattern to exclude from every repository's scan. Repeatable; combined with `filter.exclude-paths`. |
+| `--exclude-detectors` | — | — | Detector IDs to exclude for this run (e.g. `aws-access-key-id`). Repeatable; combined with `filter.exclude-detectors`. |
 | `--no-verify` | — | `false` | Disable secret verification. |
 | `--only-verified` | — | `false` | Report only findings confirmed active by verification. |
 | `--min-severity` | — | `low` | Minimum severity to report: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Attach remediation guidance to each finding. |
 
-Path exclusions from `filter.exclude-paths` in `.leakwatch.yaml` apply to all repositories. Root-level flags `--config` and `--log-level` (default `warn`) also apply.
+Path exclusions from `filter.exclude-paths` in `.leakwatch.yaml` (or `--exclude`) apply to all repositories. Root-level flags `--config` and `--log-level` (default `warn`) also apply.
 
 ## Examples
 
@@ -102,7 +104,7 @@ Two knobs control throughput:
 Total concurrent operations at peak = `--parallel` × `--concurrency`.
 
 :::note
-If one or more repository scans fail (for example, due to a network error or authentication failure), Leakwatch logs the error and continues scanning the remaining repositories. The exit code will be `2` if any individual repo scan failed, even if other repos produced findings.
+If one or more repository scans fail (for example, due to a network error or authentication failure), Leakwatch logs the error and continues scanning the remaining repositories. **Findings take precedence**: if any finding survives filtering across the whole run, the exit code is `1` even though some repositories failed to scan. Exit code `2` (repository scan failure) is only returned when zero findings were reported overall.
 :::
 
 ## Credential safety
@@ -113,9 +115,10 @@ Any embedded credentials in repository URLs (e.g. `https://user:TOKEN@host/repo.
 
 | Code | Meaning |
 |------|---------|
-| `0` | All scans completed, no findings. |
-| `1` | All scans completed, findings reported. |
-| `2` | One or more repository scans failed, or a configuration error occurred. |
+| `0` | All repository scans completed, no findings. |
+| `1` | One or more findings survived filtering — returned even if some repositories failed to scan or the run was interrupted, so a "secrets found" signal is never masked by an unrelated failure. |
+| `2` | Zero findings were reported and one or more repository scans failed, or a configuration error occurred. |
+| `3` | The run was interrupted (`Ctrl+C` / `SIGTERM`) before completing and zero findings had been reported. |
 
 A scan summary is printed to stderr after every run. Scans cancel gracefully on SIGINT/SIGTERM.
 

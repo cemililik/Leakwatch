@@ -39,13 +39,14 @@ sudo mv leakwatch /usr/local/bin/leakwatch
 
 ## Exit codes
 
-Leakwatch exits with one of three codes, which is the primary mechanism for failing a CI build:
+Leakwatch exits with one of four codes, which is the primary mechanism for failing a CI build:
 
 | Code | Meaning | Recommended CI action |
 |------|---------|----------------------|
 | `0` | No findings | Pass the pipeline stage |
 | `1` | Secrets found | Fail the pipeline stage |
 | `2` | Hard error (bad config, unreadable path, etc.) | Fail the pipeline stage |
+| `3` | Interrupted (`Ctrl+C` / `SIGTERM`) before completing, with no findings reported | Fail the pipeline stage — the scan did not run to completion, so a clean result cannot be trusted |
 
 A generic shell snippet that branches on the exit code:
 
@@ -61,7 +62,7 @@ elif [ "$EXIT_CODE" -eq 1 ]; then
   echo "Secrets found — failing build."
   exit 1
 else
-  echo "Scan error (exit $EXIT_CODE) — failing build."
+  echo "Scan error or interruption (exit $EXIT_CODE) — failing build."
   exit "$EXIT_CODE"
 fi
 ```
@@ -134,6 +135,6 @@ stage('Secret scan') {
 ## See also
 
 - [Exit Codes](#/reference/exit-codes) — full reference for all exit code meanings.
-- [Output Formats](#/output/output-formats) — JSON, SARIF, CSV, and table output.
+- [Output Formats](#/output/output-formats) — JSON, SARIF, CSV, table, and GitHub annotation output.
 - [Docker Usage](#/ci-cd/docker-usage) — use the container image instead of installing the binary.
 - [GitHub Action](#/ci-cd/github-action) — the official action for GitHub workflows.

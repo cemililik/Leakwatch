@@ -71,6 +71,10 @@ sudo mv leakwatch /usr/local/bin/leakwatch
 
 Platform naming follows the pattern `leakwatch_<OS>_<ARCH>.tar.gz` where `<OS>` is `Linux`, `Darwin`, or `Windows` and `<ARCH>` is `amd64` or `arm64`.
 
+:::tip
+Every release also publishes a Software Bill of Materials (SBOM) for each archive and a [Sigstore/cosign](https://github.com/sigstore/cosign) keyless signature (`checksums.txt.sig` / `checksums.txt.pem`) over the release's checksums file, so the provenance of a downloaded binary can be verified in supply-chain-sensitive environments.
+:::
+
 ## Verifying your installation
 
 After any installation method, confirm the binary is reachable and check the version:
