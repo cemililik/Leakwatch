@@ -21,6 +21,10 @@ import (
 
 type mockSource struct {
 	chunks []source.Chunk
+	// err is the terminal error reported via Err() after Chunks is drained. It
+	// models a source that aborted (clone/list/walk failure) rather than one that
+	// streamed to clean completion.
+	err error
 }
 
 func (m *mockSource) Type() string    { return "mock" }
@@ -33,6 +37,10 @@ func (m *mockSource) Chunks(_ context.Context) <-chan source.Chunk {
 	close(ch)
 	return ch
 }
+
+// Err returns the source's terminal error. It is set before the channel closes
+// (here, synchronously in Chunks), so it is safe to read after draining.
+func (m *mockSource) Err() error { return m.err }
 
 // --- Mock Detector ---
 
@@ -95,6 +103,62 @@ func TestScan_EmptySource_ReturnsNoFindings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, result.Findings)
 	assert.Equal(t, 0, result.ScannedChunks)
+}
+
+func TestScan_SourceErr_SurfacedAsScanError(t *testing.T) {
+	// A source that aborts (e.g. clone/list failure) produces zero chunks and
+	// reports the failure via Err(). The engine must surface it as an error
+	// instead of returning a clean, empty success — the core of the reported bug.
+	tests := []struct {
+		name       string
+		chunks     []source.Chunk
+		srcErr     error
+		wantErr    bool
+		wantErrSub string
+	}{
+		{
+			name:       "terminal error with zero chunks is an error, not clean-empty",
+			chunks:     nil,
+			srcErr:     fmt.Errorf("clone failed: connection refused"),
+			wantErr:    true,
+			wantErrSub: "scan source failed",
+		},
+		{
+			name: "terminal error after some chunks still surfaces",
+			chunks: []source.Chunk{
+				{Data: []byte("data"), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+			},
+			srcErr:     fmt.Errorf("history walk failed midway"),
+			wantErr:    true,
+			wantErrSub: "scan source failed",
+		},
+		{
+			name: "no terminal error is a clean success",
+			chunks: []source.Chunk{
+				{Data: []byte("data"), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+			},
+			srcErr:  nil,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &mockSource{chunks: tc.chunks, err: tc.srcErr}
+			det := &mockDetector{id: "det", findings: nil}
+			eng := New(Config{Concurrency: 2, Detectors: []detector.Detector{det}, Clock: fixedClock})
+
+			result, err := eng.Scan(context.Background(), src)
+			require.NotNil(t, result, "a result is always returned alongside the error")
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrSub)
+				assert.ErrorIs(t, err, tc.srcErr, "the source error must be wrapped, not discarded")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestScan_ShowRawEnabled_IncludesRawContent(t *testing.T) {

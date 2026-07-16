@@ -59,6 +59,14 @@ type ContainerSource struct {
 	// daemon-less remote pull and is overridable in tests to drive the
 	// orchestration path against an in-memory image without any network.
 	loadImage func(ctx context.Context, ref name.Reference) (v1.Image, error)
+
+	// err records the first terminal failure that aborted image scanning (a
+	// reference parse error, a pull failure, a layer-list failure, or a
+	// decompression-limit trip). It is written only by the Chunks goroutine,
+	// before it closes the chunks channel, and read only via Err after that
+	// channel has been drained; the channel close/drain is the happens-before
+	// edge, so no extra synchronization is needed.
+	err error
 }
 
 // New creates a new ContainerSource for the given image reference.
@@ -91,6 +99,28 @@ func (s *ContainerSource) Type() string {
 	return "container"
 }
 
+// Err returns the first terminal error that aborted image scanning, or nil if it
+// completed normally. It must only be called after the channel returned by Chunks
+// has been fully drained (closed).
+func (s *ContainerSource) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine (directly or via scanImage /
+// scanTarLayer), before close(ch), so a plain field write is safe: the channel
+// close/drain publishes it to Err's reader. Context cancellation is never
+// recorded because it is reported through the context, not Err.
+func (s *ContainerSource) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	s.err = err
+}
+
 // Validate checks that the image reference is parseable and accessible.
 func (s *ContainerSource) Validate() error {
 	_, err := name.ParseReference(s.imageRef)
@@ -109,12 +139,14 @@ func (s *ContainerSource) Chunks(ctx context.Context) <-chan source.Chunk {
 		ref, err := name.ParseReference(s.imageRef)
 		if err != nil {
 			slog.Error("failed to parse image reference", "image", s.imageRef, "error", err)
+			s.captureErr(fmt.Errorf("invalid image reference %q: %w", s.imageRef, err))
 			return
 		}
 
 		img, err := s.loadImage(ctx, ref)
 		if err != nil {
 			slog.Error("failed to pull image", "image", s.imageRef, "error", err)
+			s.captureErr(fmt.Errorf("failed to pull image %q: %w", s.imageRef, err))
 			return
 		}
 
@@ -134,6 +166,7 @@ func (s *ContainerSource) scanImage(ctx context.Context, ch chan<- source.Chunk,
 	layers, err := img.Layers()
 	if err != nil {
 		slog.Error("failed to get image layers", "image", s.imageRef, "error", err)
+		s.captureErr(fmt.Errorf("failed to read image layers for %q: %w", s.imageRef, err))
 		return
 	}
 
@@ -153,6 +186,10 @@ func (s *ContainerSource) scanImage(ctx context.Context, ch chan<- source.Chunk,
 		if imageDecompressed > s.maxImageSize {
 			slog.Warn("image decompression ceiling exceeded, aborting remaining layers",
 				"image", s.imageRef, "limit_bytes", s.maxImageSize)
+			// The scan is truncated by the anti-decompression-bomb ceiling, so it
+			// did not cover the whole image; record it as terminal so an empty or
+			// partial result is not mistaken for a clean scan.
+			s.captureErr(fmt.Errorf("container image scan truncated: %w", errDecompressionLimit))
 			return
 		}
 
@@ -260,6 +297,7 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 		if errors.Is(err, errDecompressionLimit) {
 			slog.Warn("layer decompression ceiling exceeded, aborting layer",
 				"layer", layerIdx, "limit_bytes", s.maxLayerSize)
+			s.captureErr(fmt.Errorf("container layer %d scan truncated: %w", layerIdx, errDecompressionLimit))
 			break
 		}
 		if err != nil {
@@ -308,6 +346,7 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 			if errors.Is(err, errDecompressionLimit) {
 				slog.Warn("layer decompression ceiling exceeded, aborting layer",
 					"layer", layerIdx, "limit_bytes", s.maxLayerSize)
+				s.captureErr(fmt.Errorf("container layer %d scan truncated: %w", layerIdx, errDecompressionLimit))
 				break
 			}
 			slog.Warn("failed to read file from layer", "file", header.Name, "layer", layerIdx, "error", err)

@@ -35,6 +35,13 @@ type FilesystemSource struct {
 	excludeExts  []string
 	excludePaths []string
 	bufferSize   int
+
+	// err records the first terminal failure that aborted the walk. It is
+	// written only by the Chunks goroutine, before it closes the chunks channel,
+	// and read only via Err after that channel has been drained; the channel
+	// close/drain is the happens-before edge, so no extra synchronization is
+	// needed.
+	err error
 }
 
 // New creates a new FilesystemSource. The root path is cleaned and
@@ -81,6 +88,13 @@ func (s *FilesystemSource) Chunks(ctx context.Context) <-chan source.Chunk {
 		defer close(ch)
 		err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
+				// A failure on the root entry itself is fatal: the scan cannot
+				// proceed at all, so propagate it as a terminal error (captured
+				// below) instead of silently producing an empty scan. Errors
+				// deeper in the tree are per-entry and skippable.
+				if path == s.root {
+					return fmt.Errorf("walk root %s: %w", s.root, err)
+				}
 				slog.Warn("directory read error", "path", path, "error", err)
 				return nil
 			}
@@ -141,9 +155,21 @@ func (s *FilesystemSource) Chunks(ctx context.Context) <-chan source.Chunk {
 		})
 		if err != nil && ctx.Err() == nil {
 			slog.Error("filesystem scan failed", "error", err)
+			// Record the terminal walk/setup failure before the deferred
+			// close(ch) runs so the engine can distinguish a failed scan from a
+			// genuinely empty one. Context cancellation is intentionally not
+			// captured (it is reported through the context, not Err).
+			s.err = fmt.Errorf("filesystem scan failed: %w", err)
 		}
 	}()
 	return ch
+}
+
+// Err returns the first terminal error that aborted the filesystem walk, or nil
+// if it completed normally. It must only be called after the channel returned by
+// Chunks has been fully drained (closed).
+func (s *FilesystemSource) Err() error {
+	return s.err
 }
 
 func (s *FilesystemSource) shouldSkip(path string, d fs.DirEntry) bool {

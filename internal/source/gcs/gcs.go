@@ -6,6 +6,7 @@ package gcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -102,6 +103,13 @@ type GCSSource struct {
 	bufferSize   int
 	excludePaths []string
 	client       gcsClient
+
+	// err records the first terminal failure that aborted listing (client
+	// initialization or an object-listing failure). It is written only by the
+	// Chunks goroutine, before it closes the chunks channel, and read only via
+	// Err after that channel has been drained; the channel close/drain is the
+	// happens-before edge, so no extra synchronization is needed.
+	err error
 }
 
 // New creates a new GCSSource for the given bucket.
@@ -121,6 +129,29 @@ func New(bucket string, opts ...Option) *GCSSource {
 // Type returns the source type identifier.
 func (s *GCSSource) Type() string {
 	return "gcs"
+}
+
+// Err returns the first terminal error that aborted GCS listing, or nil if it
+// completed normally. It must only be called after the channel returned by Chunks
+// has been fully drained (closed).
+func (s *GCSSource) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine, before close(ch), so a plain
+// field write is safe (the channel close/drain publishes it to Err's reader).
+// Context cancellation is never recorded because it is reported through the
+// context, not Err. GCS API errors carry no credential material, so no additional
+// sanitization is required here.
+func (s *GCSSource) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	s.err = err
 }
 
 // Validate checks that the GCS bucket is accessible.
@@ -154,6 +185,7 @@ func (s *GCSSource) Chunks(ctx context.Context) <-chan source.Chunk {
 
 		if err := s.ensureClient(ctx); err != nil {
 			slog.Error("gcs client initialization failed", "error", err)
+			s.captureErr(fmt.Errorf("gcs client initialization failed: %w", err))
 			return
 		}
 		defer func() {
@@ -208,6 +240,7 @@ func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chun
 		}
 		if err != nil {
 			slog.Error("gcs list objects failed", "bucket", s.bucket, "error", err)
+			s.captureErr(fmt.Errorf("gcs list objects failed for bucket %q: %w", s.bucket, err))
 			return
 		}
 

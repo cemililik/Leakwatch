@@ -332,6 +332,65 @@ func TestGitSource_Chunks_WithSince(t *testing.T) {
 	assert.Contains(t, files, "new.txt")
 }
 
+func TestGitSource_Err_SuccessfulChunks_ReturnsNil(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"README.md": "hello"})
+
+	s := New(dir)
+	require.NoError(t, s.Validate())
+
+	for range s.Chunks(context.Background()) {
+	}
+
+	assert.NoError(t, s.Err(), "a fully-streamed history must report no terminal error")
+}
+
+func TestGitSource_Err_HistoryWalkFailure_ReturnsError(t *testing.T) {
+	// A freshly-initialized repository has no commits, so HEAD does not resolve.
+	// Validate() succeeds (the repo opens), but the history walk in Chunks fails
+	// to resolve a start commit — a terminal error that must be reported via Err
+	// rather than silently yielding a clean, empty scan.
+	dir := t.TempDir()
+	_, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	s := New(dir)
+	require.NoError(t, s.Validate())
+
+	var count int
+	for range s.Chunks(context.Background()) {
+		count++
+	}
+
+	assert.Zero(t, count, "an unborn-HEAD repo produces no chunks")
+	require.Error(t, s.Err(), "the failed history walk must be reported via Err")
+	assert.Contains(t, s.Err().Error(), "resolve start commit")
+}
+
+func TestGitSource_Err_CapturedErrorIsCredentialSanitized(t *testing.T) {
+	// fakeToken is a non-secret placeholder used only to prove redaction.
+	const fakeToken = "ghp_FAKEtoken1234567890"
+	credentialedURL := "https://user:" + fakeToken + "@github.com/org/repo.git"
+
+	// captureErr is the single choke point every terminal git error flows
+	// through; it must strip any embedded clone credential (and drop it from the
+	// unwrap chain) before the error becomes visible via Err. A go-git error that
+	// re-embeds the credentialed clone URL is the worst case this guards against.
+	s := New(credentialedURL)
+	underlying := fmt.Errorf("git log failed: unable to reach %s", credentialedURL)
+	s.captureErr(underlying)
+
+	require.Error(t, s.Err())
+	assert.NotContains(t, s.Err().Error(), fakeToken,
+		"a captured git error must never contain the raw credential")
+	assert.NotContains(t, s.Err().Error(), "user:", "userinfo must not survive")
+	assert.NotErrorIs(t, s.Err(), underlying,
+		"the raw (credentialed) error must not remain reachable via the unwrap chain")
+
+	// First-error-wins: a later terminal error must not overwrite the first.
+	s.captureErr(fmt.Errorf("second error"))
+	assert.NotContains(t, s.Err().Error(), "second error")
+}
+
 func TestGitSource_Chunks_ContextCancellation(t *testing.T) {
 	dir, _ := initTestRepo(t, map[string]string{
 		"file.txt": "content",

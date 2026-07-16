@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -52,6 +53,14 @@ type SlackSource struct {
 	bufferSize   int
 	client       slackClient
 	newClient    func(token string) slackClient
+
+	// err records the first terminal failure that aborted scanning (channel
+	// listing / auth / pagination). It is written only by the Chunks goroutine,
+	// before it closes the chunks channel, and read only via Err after that
+	// channel has been drained; the channel close/drain is the happens-before
+	// edge, so no extra synchronization is needed. Any value stored here has the
+	// workspace token redacted (see captureErr).
+	err error
 }
 
 // defaultNewClient creates a real Slack API client.
@@ -81,6 +90,36 @@ func New(token string, opts ...Option) *SlackSource {
 // Type returns the source type identifier.
 func (s *SlackSource) Type() string {
 	return "slack"
+}
+
+// Err returns the first terminal error that aborted the Slack scan, or nil if it
+// completed normally. Any error stored here has the workspace token redacted, so
+// it can never leak the credential. It must only be called after the channel
+// returned by Chunks has been fully drained (closed).
+func (s *SlackSource) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine, before close(ch), so a plain
+// field write is safe (the channel close/drain publishes it to Err's reader).
+// As defense-in-depth against a client library that echoes the token, any
+// occurrence of the workspace token is stripped from the stored message (and,
+// when present, the error is flattened so the token cannot survive in the unwrap
+// chain either). Context cancellation is never recorded because it is reported
+// through the context, not Err.
+func (s *SlackSource) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if s.token != "" && strings.Contains(err.Error(), s.token) {
+		s.err = errors.New(strings.ReplaceAll(err.Error(), s.token, "***"))
+		return
+	}
+	s.err = err
 }
 
 // Validate checks that the Slack token is valid by calling AuthTest.
@@ -120,6 +159,7 @@ func (s *SlackSource) Chunks(ctx context.Context) <-chan source.Chunk {
 		channels, err := s.listChannels(ctx, limiter)
 		if err != nil {
 			slog.Error("slack channel listing failed", "error", err)
+			s.captureErr(fmt.Errorf("slack channel listing failed: %w", err))
 			return
 		}
 

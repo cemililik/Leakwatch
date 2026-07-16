@@ -228,6 +228,56 @@ func TestFilesystemSource_Chunks_ContextCancellation(t *testing.T) {
 	assert.Less(t, count, 100)
 }
 
+func TestFilesystemSource_Err(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) *FilesystemSource
+		wantErr bool
+	}{
+		{
+			name: "successful walk reports no error",
+			setup: func(t *testing.T) *FilesystemSource {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world"), 0o644))
+				return New(dir)
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty directory reports no error",
+			setup: func(t *testing.T) *FilesystemSource {
+				return New(t.TempDir())
+			},
+			wantErr: false,
+		},
+		{
+			name: "inaccessible root reports a terminal error",
+			setup: func(_ *testing.T) *FilesystemSource {
+				// A non-existent root makes the very first (root) walk step fail,
+				// which is a fatal walk error rather than a per-entry skip.
+				return New("/nonexistent/leakwatch/root")
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.setup(t)
+
+			// Fully drain the channel before reading Err().
+			for range s.Chunks(context.Background()) {
+			}
+
+			if tc.wantErr {
+				require.Error(t, s.Err())
+			} else {
+				require.NoError(t, s.Err())
+			}
+		})
+	}
+}
+
 func TestFilesystemSource_Chunks_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 

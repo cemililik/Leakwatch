@@ -21,9 +21,13 @@ type mockS3Client struct {
 	objects []types.Object
 	data    map[string]string
 	headErr error
+	listErr error
 }
 
 func (m *mockS3Client) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	var filtered []types.Object
 	for _, obj := range m.objects {
 		if input.Prefix != nil && obj.Key != nil && !strings.HasPrefix(*obj.Key, *input.Prefix) {
@@ -208,6 +212,50 @@ func TestS3Source_Chunks_SkipsBinaryContent(t *testing.T) {
 
 	assert.Len(t, chunks, 1)
 	assert.Equal(t, "my-bucket/text.txt", chunks[0])
+}
+
+func TestS3Source_Err(t *testing.T) {
+	listFailure := fmt.Errorf("AccessDenied: bucket listing forbidden")
+
+	tests := []struct {
+		name    string
+		client  *mockS3Client
+		wantErr error
+	}{
+		{
+			name: "successful listing reports no error",
+			client: &mockS3Client{
+				objects: []types.Object{{Key: ptr("a.txt"), Size: ptr(int64(5))}},
+				data:    map[string]string{"a.txt": "hello"},
+			},
+			wantErr: nil,
+		},
+		{
+			name:    "list failure is captured as a terminal error",
+			client:  &mockS3Client{listErr: listFailure},
+			wantErr: listFailure,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New("my-bucket")
+			s.client = tc.client
+
+			var count int
+			for range s.Chunks(context.Background()) {
+				count++
+			}
+
+			if tc.wantErr != nil {
+				require.Error(t, s.Err())
+				assert.ErrorIs(t, s.Err(), tc.wantErr, "the underlying list error must be wrapped")
+				assert.Zero(t, count, "a failed listing produces no chunks")
+			} else {
+				assert.NoError(t, s.Err())
+			}
+		})
+	}
 }
 
 func TestS3Source_Chunks_ContextCancellation(t *testing.T) {

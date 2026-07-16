@@ -6,6 +6,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,6 +47,13 @@ type S3Source struct {
 	bufferSize   int
 	excludePaths []string
 	client       s3Client
+
+	// err records the first terminal failure that aborted listing (client
+	// initialization or a ListObjectsV2 failure). It is written only by the
+	// Chunks goroutine, before it closes the chunks channel, and read only via
+	// Err after that channel has been drained; the channel close/drain is the
+	// happens-before edge, so no extra synchronization is needed.
+	err error
 }
 
 // New creates a new S3Source for the given bucket.
@@ -65,6 +73,29 @@ func New(bucket string, opts ...Option) *S3Source {
 // Type returns the source type identifier.
 func (s *S3Source) Type() string {
 	return "s3"
+}
+
+// Err returns the first terminal error that aborted S3 listing, or nil if it
+// completed normally. It must only be called after the channel returned by Chunks
+// has been fully drained (closed).
+func (s *S3Source) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine, before close(ch), so a plain
+// field write is safe (the channel close/drain publishes it to Err's reader).
+// Context cancellation is never recorded because it is reported through the
+// context, not Err. AWS SDK errors carry no credential material, so no additional
+// sanitization is required here.
+func (s *S3Source) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	s.err = err
 }
 
 // Validate checks that the S3 bucket is accessible.
@@ -100,6 +131,7 @@ func (s *S3Source) Chunks(ctx context.Context) <-chan source.Chunk {
 
 		if err := s.ensureClient(ctx); err != nil {
 			slog.Error("s3 client initialization failed", "error", err)
+			s.captureErr(fmt.Errorf("s3 client initialization failed: %w", err))
 			return
 		}
 
@@ -152,6 +184,7 @@ func (s *S3Source) listAndSendChunks(ctx context.Context, ch chan<- source.Chunk
 		page, err := s.client.ListObjectsV2(ctx, input)
 		if err != nil {
 			slog.Error("s3 list objects failed", "bucket", s.bucket, "error", err)
+			s.captureErr(fmt.Errorf("s3 list objects failed for bucket %q: %w", s.bucket, err))
 			return
 		}
 

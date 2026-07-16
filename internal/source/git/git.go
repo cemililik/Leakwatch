@@ -53,6 +53,14 @@ type GitSource struct {
 	excludePaths   []string
 	tmpDir         string // Temporary directory for cloned repos
 	resolvedBranch string // Cached branch resolution
+
+	// err records the first terminal failure that aborted history production
+	// (start-commit resolution, git log, or the history walk). It is written
+	// only by the Chunks goroutine, before it closes the chunks channel, and
+	// read only via Err after that channel has been drained; the channel
+	// close/drain is the happens-before edge, so no extra synchronization is
+	// needed. Every value stored here is credential-sanitized (see captureErr).
+	err error
 }
 
 // New creates a new GitSource.
@@ -285,6 +293,30 @@ func (s *GitSource) cloneRemote() error {
 	return nil
 }
 
+// Err returns the first terminal error that aborted Git history production, or
+// nil if it completed normally. Any error stored here has been run through
+// sanitizeCloneError, so it can never carry raw clone credentials. It must only
+// be called after the channel returned by Chunks has been fully drained (closed).
+func (s *GitSource) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine, before close(ch), so a plain
+// field write is safe (the channel close/drain publishes it to Err's reader).
+// The error is always sanitized so no clone credential can enter Err's message
+// or its unwrap chain; context cancellation is never recorded because it is
+// reported through the context, not Err.
+func (s *GitSource) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	s.err = sanitizeCloneError(err, s.target, s.displayTarget)
+}
+
 // sanitizeCloneError returns a new, flat error whose message has any embedded
 // clone credentials stripped. It first replaces the verbatim credentialed
 // target with its safe form, then strips any remaining "scheme://userinfo@"
@@ -367,6 +399,7 @@ func (s *GitSource) chunksFullHistory(ctx context.Context, ch chan<- source.Chun
 	startHash, err := s.resolveStartHash()
 	if err != nil {
 		slog.Error("failed to resolve start commit", "error", err)
+		s.captureErr(fmt.Errorf("failed to resolve start commit: %w", err))
 		return
 	}
 	s.walkCommits(ctx, ch, startHash, plumbing.ZeroHash)
@@ -379,12 +412,14 @@ func (s *GitSource) chunksSinceCommit(ctx context.Context, ch chan<- source.Chun
 	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
 	if err != nil {
 		slog.Error("since-commit resolution failed", "commit", s.sinceCommit, "error", err)
+		s.captureErr(fmt.Errorf("since-commit resolution failed: %w", err))
 		return
 	}
 
 	startHash, err := s.resolveStartHash()
 	if err != nil {
 		slog.Error("failed to resolve start commit", "error", err)
+		s.captureErr(fmt.Errorf("failed to resolve start commit: %w", err))
 		return
 	}
 
@@ -404,6 +439,7 @@ func (s *GitSource) walkCommits(ctx context.Context, ch chan<- source.Chunk, fro
 	})
 	if err != nil {
 		slog.Error("git log failed", "error", err)
+		s.captureErr(fmt.Errorf("git log failed: %w", err))
 		return
 	}
 	defer iter.Close()
@@ -429,6 +465,7 @@ func (s *GitSource) walkCommits(ctx context.Context, ch chan<- source.Chunk, fro
 
 	if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 		slog.Error("commit history scan failed", "error", err)
+		s.captureErr(fmt.Errorf("commit history scan failed: %w", err))
 	}
 
 	slog.Info("git scan completed", "commits", commitCount, "blobs", len(seen))

@@ -169,16 +169,39 @@ func (e *Engine) Scan(ctx context.Context, src source.Source) (*ScanResult, erro
 	// closing its Chunks channel promptly when ctx is cancelled. If a source blocks
 	// indefinitely on send, this loop may not exit until the source returns.
 	scannedChunks := 0
+	// fullyDrained is true only when the range below exits because the source
+	// closed its chunks channel (normal completion), false when we break out
+	// early on cancellation. It gates the src.Err() read below: reading the
+	// source's terminal error is only race-free once its channel is closed.
+	fullyDrained := true
 loop:
 	for chunk := range src.Chunks(ctx) {
 		select {
 		case <-ctx.Done():
+			fullyDrained = false
 			break loop
 		case jobs <- chunk:
 			scannedChunks++
 		}
 	}
 	close(jobs)
+
+	// Surface the source's terminal outcome. src.Err() is only valid to read
+	// after the source's chunks channel is fully drained (closed); that close is
+	// the happens-before edge publishing the error the source recorded before
+	// closing. On the cancellation break path the source goroutine may still be
+	// running, so we skip the read and let the interrupt path below report the
+	// outcome instead.
+	var srcErr error
+	if fullyDrained {
+		srcErr = src.Err()
+		if srcErr == nil && scannedChunks == 0 {
+			// A clean scan that produced nothing: make the silently-empty result
+			// visible so "0 findings, nothing scanned" is not mistaken for a
+			// verified-clean target.
+			slog.Warn("scan target yielded no scannable content", "source", src.Type())
+		}
+	}
 
 	// Wait for workers to finish
 	wg.Wait()
@@ -210,6 +233,13 @@ loop:
 
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("scan interrupted: %w", ctx.Err())
+	}
+
+	// A terminal source failure must not be reported as a clean, empty scan: the
+	// engine surfaces it as an error even though a (possibly partial) result is
+	// still returned alongside it.
+	if srcErr != nil {
+		return result, fmt.Errorf("scan source failed: %w", srcErr)
 	}
 
 	return result, nil
