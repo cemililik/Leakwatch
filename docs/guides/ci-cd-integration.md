@@ -57,26 +57,33 @@ flowchart LR
 
 ### 2.1 Leakwatch GitHub Action
 
-Leakwatch provides a ready-to-use GitHub Action. The parameters supported by the Action:
+Leakwatch provides a ready-to-use GitHub Action (root `action.yml`, published on the Marketplace). The parameters supported by the Action:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `scan-type` | `fs` | Scan type: `fs`, `git`, or `image` |
-| `path` | `.` | Path or image reference to scan |
-| `format` | `sarif` | Output format: `json`, `sarif`, `csv`, `table` |
-| `only-verified` | `false` | Report only verified active secrets. Has no effect when `no-verify: true` (the default) — set `no-verify: false` to enable verification first |
-| `no-verify` | `true` | Disable secret verification. Default is `true` (verification off) |
-| `min-severity` | `low` | Minimum severity level: `low`, `medium`, `high`, `critical` |
-| `sarif-upload` | `false` | Upload SARIF results to GitHub Code Scanning |
-| `fail-on-findings` | `true` | Fail the workflow step when secrets are found (exit code 1). When `false`, a `::warning::` annotation is emitted but the step still succeeds. Hard errors (exit code >= 2) always fail the step |
-| `version` | `latest` | Leakwatch version to use |
+| `scan-type` | `fs` | What to scan: `fs` (filesystem), `git` (repository history), or `image` (container image) |
+| `path` | `.` | Path to scan (for `fs`/`git`) or image reference (for `image`) |
+| `format` | `sarif` | Output format: `sarif`, `json`, `csv`, `table`, or `github` (inline pull-request annotations) |
+| `output` | `` (empty) | Write formatted output to this file (relative to `working-directory`). Ignored for `format: github`. When empty and `format: sarif`, defaults to `results.sarif` |
+| `only-verified` | `false` | Report only findings confirmed active by live verification. Has no effect when `no-verify: true` (the default) — set `no-verify: false` to enable verification first |
+| `no-verify` | `true` | Disable live verification (no outbound calls to provider APIs). Recommended in CI |
+| `min-severity` | `low` | Minimum severity level to report: `low`, `medium`, `high`, `critical` |
+| `remediation` | `false` | Include remediation guidance (rotation steps, doc links) in the output |
+| `config` | `` (empty) | Path to a `.leakwatch.yaml` configuration file |
+| `scan-diff` | `auto` | For `git` scans, scan only commits new to the event instead of full history. `auto` enables this on `pull_request`/`push` events, `true` forces it, `false` always scans full history. Requires a checkout with `fetch-depth: 0` |
+| `extra-args` | `` (empty) | Additional raw arguments appended to the `leakwatch scan` command (space-separated) |
+| `working-directory` | `.` | Directory to run the scan from |
+| `sarif-upload` | `false` | Upload SARIF results to GitHub Code Scanning. Requires `format: sarif` and `permissions: security-events: write` |
+| `fail-on-findings` | `true` | Fail the workflow step when Leakwatch reports findings (exit code 1). When `false`, a `::warning::` annotation is emitted instead so the scan does not block the pipeline. Hard errors (exit code >= 2) always fail the step regardless of this setting |
+| `version` | `latest` | Leakwatch version to install: `latest` or a release tag such as `v1.6.0` |
+| `release-repo` | `HodeTech/Leakwatch` | GitHub repository (`owner/name`) to download the release binary from. Override only for forks or self-hosted mirrors |
 
 **Outputs:**
 
 | Output | Description |
 |--------|-------------|
-| `findings-count` | Exit-code mirror: `0` when no secrets found, `1` when secrets were found. This is not a raw count of findings |
-| `sarif-file` | Path to the SARIF output file |
+| `findings-count` | Whether secrets were reported: `1` if any finding was reported, else `0` (mirrors the `leakwatch` exit code; not a raw count of findings) |
+| `sarif-file` | Path to the SARIF output file relative to the repository root (set when `format: sarif`) |
 
 ### 2.2 Basic Usage
 
@@ -278,7 +285,7 @@ permissions:
   pull-requests: read
 
 env:
-  LEAKWATCH_VERSION: 'v1.5.0'
+  LEAKWATCH_VERSION: 'v1.6.0'
 
 jobs:
   # On PRs, scan only the changed files
@@ -579,7 +586,7 @@ Create a `.pre-commit-config.yaml` file in your project root:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/HodeTech/Leakwatch
-    rev: v1.5.0
+    rev: v1.6.0
     hooks:
       - id: leakwatch
 ```
@@ -728,7 +735,7 @@ leakwatch scan fs . --min-severity critical
 
 ### 7.2 Reducing False Positives with `--only-verified`
 
-Leakwatch ships with 54 verifiers (51 packages) covering 85.7% of all detector types, confirming whether discovered secrets are still active via API calls. With the `--only-verified` parameter, you can report only verified (active) secrets:
+Leakwatch ships with 54 verifiers (51 packages) covering 84.4% of all detector types, confirming whether discovered secrets are still active via API calls. With the `--only-verified` parameter, you can report only verified (active) secrets:
 
 ```bash
 # Report only verified secrets
@@ -738,7 +745,7 @@ leakwatch scan git . --only-verified
 leakwatch scan git . --since-commit HEAD~1 --only-verified --min-severity medium
 ```
 
-**Note:** With 54 verifiers (51 packages) and 85.7% coverage, `--only-verified` is effective for most secret types. However, the remaining ~14% of detectors (e.g., generic private keys) do not have verifiers, so those findings will not be reported. For full coverage, periodically run a full scan without `--only-verified`.
+**Note:** With 54 verifiers (51 packages) and 84.4% coverage, `--only-verified` is effective for most secret types. However, the remaining ~16% of detectors (e.g., generic private keys) do not have verifiers, so those findings will not be reported. For full coverage, periodically run a full scan without `--only-verified`.
 
 > **Important:** `--only-verified` has **no effect** when `--no-verify` is also set (or when `verification.enabled: false` in config), because verification is disabled and all findings remain in the `unverified` state. To use `--only-verified` meaningfully, ensure verification is enabled by omitting `--no-verify` and setting `verification.enabled: true` in your config.
 

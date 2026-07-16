@@ -508,7 +508,11 @@ The default value is the number of CPU cores on the system (`runtime.NumCPU()`).
 
 ## 9. Security Best Practices
 
-### 9.1 Image Creation
+### 9.1 Decompression-Bomb Protection
+
+A malicious or misconfigured image layer could declare an extreme compression ratio (a "zip bomb") to exhaust scanner memory. Leakwatch caps decompressed bytes read from each layer at **2 GiB**; a layer that exceeds the cap stops being read for that layer rather than consuming unbounded memory. This limit is internal (not exposed as a flag) and is independent of `--max-file-size`, which bounds individual file reads within a layer.
+
+### 9.2 Image Creation
 
 | Practice | Description |
 |----------|-------------|
@@ -518,7 +522,7 @@ The default value is the number of CPU cores on the system (`runtime.NumCPU()`).
 | **Use `.dockerignore`** | Exclude files like `.env`, `credentials.json`, `*.pem` |
 | **Prefer small base images** | `alpine` or `distroless` images offer a smaller attack surface |
 
-### 9.2 Multi-Stage Build Example
+### 9.3 Multi-Stage Build Example
 
 ```dockerfile
 # Build stage — secrets may remain here but do not pass to the final image
@@ -539,7 +543,7 @@ Build command:
 docker build --secret id=github_token,env=GITHUB_TOKEN -t myapp:latest .
 ```
 
-### 9.3 CI/CD Security Recommendations
+### 9.4 CI/CD Security Recommendations
 
 - **Pre-push scanning:** Always scan images before pushing them to the registry.
 - **Focus on verified secrets:** Reduce false positives with the `--only-verified` flag.
@@ -547,7 +551,7 @@ docker build --secret id=github_token,env=GITHUB_TOKEN -t myapp:latest .
 - **SARIF integration:** Upload results to GitHub Security tab or a similar platform.
 - **Periodic scanning:** Periodically re-scan images in existing registries; old secrets may surface as new rules are added.
 
-### 9.4 What to Do When a Secret Is Found?
+### 9.5 What to Do When a Secret Is Found?
 
 1. **Revoke the secret immediately:** Invalidate the API key, token, or certificate from the respective provider.
 2. **Rebuild the image:** Build the image from scratch to remove the layer containing the secret. Simply deleting from the upper layer is not sufficient.

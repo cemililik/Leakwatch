@@ -187,7 +187,7 @@ While existing open-source tools (TruffleHog, Gitleaks) are strong in certain ar
 | **Filesystem** | Yes | Yes | Yes | No | Yes | **Yes** |
 | **Container Images** | Yes | No | No | No | Yes | **Yes** |
 | **Cloud Sources** | Yes (S3, GCS) | No | No | No | No | **Yes (Phase 5)** |
-| **SaaS Scanning** | Yes (Slack, Jira) | No | No | No | Public monitoring | **Planned** |
+| **SaaS Scanning** | Yes (Slack, Jira) | No | No | No | Public monitoring | **Yes (Slack, shipped `v1.2.0`; message text only — file-attachment scanning still planned)** |
 | **Aho-Corasick** | Yes | Yes | No | Unknown | Unknown | **Yes** |
 | **Entropy Analysis** | Yes | As filter | Yes | No | With ML | **Yes (hybrid)** |
 | **SARIF Output** | No | Yes | No | Native | Yes | **Yes** |
@@ -196,7 +196,7 @@ While existing open-source tools (TruffleHog, Gitleaks) are strong in certain ar
 | **Allowlist/Ignore** | Basic | Advanced | Baseline | None | Yes | **Advanced** |
 | **License** | AGPL-3.0 | MIT* | Apache 2.0 | Commercial | Commercial | **MIT** |
 | **Single Binary** | Yes | Yes | No (Python) | N/A | No (Python) | **Yes** |
-| **Remediation** | No | No | No | Partner revoke | Dashboard | **Planned** |
+| **Remediation** | No | No | No | Partner revoke | Dashboard | **Yes (shipped `v1.1.0`)** |
 
 > \* The Gitleaks CLI is MIT-licensed; the official `gitleaks-action` runs under a commercial EULA and requires a free license key for **organization** accounts (personal accounts are exempt).
 >

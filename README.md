@@ -23,23 +23,41 @@ Leaked API keys, tokens, and passwords are one of the most common causes of brea
 
 ```console
 $ leakwatch scan fs .
+[
+  {
+    "id": "0fc548d39e866fc47779ed3bdee3caf5",
+    "detector_id": "github-token",
+    "severity": "critical",
+    "redacted": "****cdEF",
+    "source": { "source_type": "filesystem", "file_path": "config.env", "line": 1 },
+    "verification": { "status": "unverified" },
+    "detected_at": "2026-07-16T05:20:12.397435+03:00",
+    "entropy": 4.52
+  },
+  {
+    "id": "adb4fe5fa4583bc9a37656e21522de8a",
+    "detector_id": "database-connection-string",
+    "severity": "critical",
+    "redacted": "postgres://admin:****@db.prod.internal:5432/app",
+    "source": { "source_type": "filesystem", "file_path": "config.env", "line": 2 },
+    "verification": { "status": "unverified" },
+    "detected_at": "2026-07-16T05:20:12.397452+03:00",
+    "entropy": 4.39
+  }
+]
 
-SEVERITY  DETECTOR                    FILE        REDACTED                                         STATUS      REMEDIATION
---------  --------                    ----        --------                                         ------      -----------
-CRITICAL  github-token                config.env  ****cdEF                                         unverified  -
-CRITICAL  database-connection-string  config.env  postgres://admin:****@db.prod.internal:5432/app  unverified  -
-CRITICAL  aws-access-key-id           config.env  ****MPLE                                         unverified  -
-
-Found 3 secrets (3 critical).
+── Scan Summary ─────────────────────────────────
+  Findings:        2
+─────────────────────────────────────────────────
 ```
 
-> Secret values are **redacted by default** and never written to disk or logs. See [Security](#security).
+> Output is **JSON by default** — pipe it to `jq`, or add `--format table` for a human-readable terminal view. Secret values are **redacted by default** and never written to disk or logs. See [Security](#security) and [Output formats](#output-formats).
 
 ## Features
 
 - **6 scan sources** — filesystem, Git history (every commit), container images, AWS S3, Google Cloud Storage, Slack
-- **63 built-in detectors** + **YAML custom rules** (no Go code needed)
-- **54 live verifiers (85.7%)** — confirms whether a secret is *still active*, not just present
+- **64 built-in detectors** + **YAML custom rules** (no Go code needed)
+- **54 live verifiers (84.4%)** — confirms whether a secret is *still active*, not just present
 - **5 output formats** — JSON, SARIF, CSV, terminal table, and **GitHub inline annotations**
 - **Drop-in distribution** — GitHub Action (Marketplace), Docker image, Homebrew, `go install`, single static binary
 - **Secret-safe** — redacted output by default; secrets are never logged or stored
@@ -98,7 +116,7 @@ Add secret scanning to any workflow in one line — published on the [GitHub Mar
 - **`format: sarif` + `sarif-upload: true`** → findings show up as **Code Scanning alerts** (needs `permissions: security-events: write`).
 - **`scan-diff: auto`** (git scans) → scans only the commits a PR/push introduces.
 
-Exit codes (used for CI gating): **`0`** no findings · **`1`** findings reported · **`2`** error.
+Exit codes (used for CI gating): **`0`** no findings · **`1`** findings reported · **`2`** error · **`3`** interrupted (Ctrl-C/SIGTERM).
 
 Full inputs and recipes: **[CI/CD Integration guide](docs/guides/ci-cd-integration.md)**.
 
@@ -108,18 +126,18 @@ Detection is only half the job — a key that was already rotated isn't an incid
 
 | Tier | What it means | Coverage |
 |------|---------------|----------|
-| **Live verified** | Read-only API call confirms the key is active / inactive | ~49 detectors |
-| **Format checked** | Structurally validated where no safe live check exists | 5 detectors |
-| **Not verifiable** | No public API (e.g. JWTs, private keys) — detected & triaged manually | 9 detectors |
+| **Live verified** | Read-only API call confirms the key is active / inactive | ~48 detectors |
+| **Format checked** | Structurally validated where no safe live check exists | 6 detectors |
+| **Not verifiable** | No public API (e.g. JWTs, private keys) — detected & triaged manually | 10 detectors |
 
-That's **54 of 63 detectors (85.7%)** with verification. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
+That's **54 of 64 detectors (84.4%)** with verification. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
 
 ## Why Leakwatch?
 
 | | **Leakwatch** | TruffleHog | Gitleaks |
 |---|---|---|---|
 | License | **MIT** | AGPL-3.0 | MIT [^gl] |
-| Live secret verification | **Yes (54 verifiers)** | Yes | No |
+| Live secret verification | **Yes (54 verifiers, 84.4%)** | Yes | No |
 | Container image scanning | **Yes** | Yes | No |
 | Cloud sources (S3 / GCS / Slack) | **Yes** | No | No |
 | SARIF output | **Yes** | No [^th] | Yes |
@@ -133,7 +151,7 @@ That's **54 of 63 detectors (85.7%)** with verification. Verification is on by d
 
 ## Detectors
 
-**63 built-in detectors** across these categories, plus your own [YAML custom rules](docs/guides/custom-rules.md):
+**64 built-in detectors** across these categories, plus your own [YAML custom rules](docs/guides/custom-rules.md):
 
 | Category | Examples |
 |----------|----------|
@@ -149,7 +167,7 @@ That's **54 of 63 detectors (85.7%)** with verification. Verification is on by d
 | **Generic & Custom** | high-entropy generic keys · LaunchDarkly · SonarCloud · your YAML rules |
 
 <details>
-<summary><b>Full detector catalog (63) with IDs, severity &amp; verification</b></summary>
+<summary><b>Full detector catalog (64) with IDs, severity &amp; verification</b></summary>
 
 | Category | Detector | ID | Severity |
 |----------|----------|----|----------|
@@ -178,6 +196,7 @@ That's **54 of 63 detectors (85.7%)** with verification. Verification is on by d
 | Communication | Slack Bot Token | `slack-token` | Critical |
 | Communication | Slack Webhook | `slack-webhook` | High |
 | Communication | Discord Bot Token | `discord-bot-token` | Critical |
+| Communication | Discord Webhook URL | `discord-webhook-url` | Critical |
 | Communication | Telegram Bot Token | `telegram-bot-token` | High |
 | Communication | MS Teams Webhook | `teams-webhook` | High |
 | Email | SendGrid API Key | `sendgrid-api-key` | Critical |

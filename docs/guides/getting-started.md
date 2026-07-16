@@ -12,9 +12,9 @@ Leakwatch is a high-performance, open source (MIT) security tool that detects, v
 
 **Key features:**
 
-- **63 detectors (60 packages) + unlimited YAML custom rules** -- Covers major cloud providers, AI platforms, CI/CD tools, databases, and SaaS services out of the box, with YAML custom rules for anything else
+- **64 detectors (60 packages) + unlimited YAML custom rules** -- Covers major cloud providers, AI platforms, CI/CD tools, databases, and SaaS services out of the box, with YAML custom rules for anything else
 - **Hybrid detection engine** -- Aho-Corasick pre-filter, regex validation, and Shannon entropy analysis for a low false positive rate
-- **Secret verification** -- 54 verifiers (51 packages) with 85.7% verification coverage confirm whether discovered secrets are still active via API calls (AWS, GitHub, Slack, Stripe, and more)
+- **Secret verification** -- 54 verifiers (51 packages) with 84.4% verification coverage confirm whether discovered secrets are still active via API calls (AWS, GitHub, Slack, Stripe, and more)
 - **Multi-source support** -- Filesystem, Git repository, container images, S3, GCS, parallel multi-repo, and Slack
 - **Flexible output** -- JSON, SARIF, CSV, and table formats
 - **Single binary, zero dependencies** -- Runs on every platform, no Docker daemon required
@@ -36,7 +36,7 @@ flowchart LR
         E3["Entropy\nAnalysis"]
     end
 
-    subgraph Verification["Secret Verification\n(54 verifiers (51 packages), 85.7% coverage)"]
+    subgraph Verification["Secret Verification\n(54 verifiers (51 packages), 84.4% coverage)"]
         V1["AWS STS"]
         V2["GitHub API"]
         V3["Slack API"]
@@ -77,18 +77,18 @@ brew install HodeTech/tap/leakwatch
 You can download the binary suitable for your platform from the GitHub Releases page:
 
 ```bash
-# Release archives follow the naming pattern:
-#   leakwatch_<version>_<Os>_<Arch>.tar.gz
+# Release archives follow the naming pattern (no "v" prefix, lowercase OS/arch):
+#   leakwatch_<version>_<os>_<arch>.tar.gz
 # Examples:
-#   leakwatch_v1.5.0_Linux_x86_64.tar.gz
-#   leakwatch_v1.5.0_Darwin_arm64.tar.gz
-#   leakwatch_v1.5.0_Windows_x86_64.zip
+#   leakwatch_1.6.0_linux_amd64.tar.gz
+#   leakwatch_1.6.0_darwin_arm64.tar.gz
+#   leakwatch_1.6.0_windows_amd64.zip
 #
 # Download the archive for your platform from the Releases page:
 # https://github.com/HodeTech/Leakwatch/releases/latest
 #
-# Example for Linux x86_64 (replace v1.5.0 with the current release version):
-curl -sSfL https://github.com/HodeTech/Leakwatch/releases/latest/download/leakwatch_v1.5.0_Linux_x86_64.tar.gz | tar xz
+# Example for Linux amd64 (replace 1.6.0 with the current release version, no "v" prefix):
+curl -sSfL https://github.com/HodeTech/Leakwatch/releases/latest/download/leakwatch_1.6.0_linux_amd64.tar.gz | tar xz
 
 # Move binary to PATH
 sudo mv leakwatch /usr/local/bin/
@@ -115,7 +115,7 @@ leakwatch version
 Expected output:
 
 ```
-leakwatch version v1.5.0 (commit: abc1234, built: 2026-04-09)
+leakwatch 1.6.0 (commit: abc1234, built: 2026-05-25)
 ```
 
 ---
@@ -141,7 +141,7 @@ Every scan prints a **summary to stderr** at the end, showing the date, source t
 
 ### 4.1 Filesystem Scan (`scan fs`)
 
-Scans all files in a directory. Does not examine Git history, only checks current file contents. When no path is given, it defaults to the current directory.
+Scans one or more filesystem paths. Each path may be a directory (walked recursively) or a single file. Does not examine Git history, only checks current file contents. When no path is given, it defaults to the current directory. The `.git/` directory itself is excluded by default (unless it is the explicit scan root); use `scan git` to examine commit history.
 
 ```bash
 # Scan current directory (path is optional, defaults to CWD)
@@ -149,6 +149,12 @@ leakwatch scan fs
 
 # Scan a specific project directory
 leakwatch scan fs /path/to/project
+
+# Scan a single file
+leakwatch scan fs cmd/main.go
+
+# Scan several files and directories in one run
+leakwatch scan fs cmd/ main.go internal/config
 
 # Save results to a file
 leakwatch scan fs /path/to/project --output results.json
@@ -378,9 +384,11 @@ The following flags are shared across all scan commands (`scan fs`, `scan git`, 
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table` |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github` (inline PR annotations) |
 | `--output` | `-o` | stdout | File path to write results to |
 | `--show-raw` | -- | `false` | Show unmasked secret content |
+
+> Files written with `--output` are created with **`0600`** permissions (owner read/write only) and, if the path is missing the format's extension, it is **auto-appended** (e.g. `--output results --format sarif` writes `results.sarif`; a path that already ends in the right extension, like `myresults.csv`, is left unchanged).
 
 ```bash
 # Save in SARIF format to a file
@@ -416,7 +424,7 @@ leakwatch scan fs . --max-file-size 52428800
 |------|---------|-------------|
 | `--no-verify` | `false` | Disable secret verification |
 | `--only-verified` | `false` | Show only verified active findings |
-| `--min-severity` | `low` | Minimum severity level to report |
+| `--min-severity` | `low` | Minimum severity level to report: `low`, `medium`, `high`, `critical` (an unrecognized value is rejected with an error rather than silently falling back to `low`) |
 | `--remediation` | `false` | Include remediation guidance (rotation steps, doc links) |
 
 ```bash
@@ -436,7 +444,24 @@ leakwatch scan git . --only-verified --min-severity critical
 leakwatch scan fs . --remediation
 ```
 
-### 6.4 Git-Specific Flags
+### 6.4 Filtering Flags
+
+These flags are available on every scan command:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--exclude` | none | Path patterns to exclude (repeatable) |
+| `--exclude-detectors` | none | Comma-separated detector IDs to disable for this run only (e.g. `aws-access-key-id,generic-api-key`) |
+
+```bash
+# Exclude generated files from the scan
+leakwatch scan fs . --exclude "**/*_test.go" --exclude "dist/**"
+
+# Silence a noisy detector for a single run without editing .leakwatch.yaml
+leakwatch scan fs . --exclude-detectors aws-access-key-id,generic-api-key
+```
+
+### 6.5 Git-Specific Flags
 
 These flags can only be used with the `scan git` command:
 
@@ -458,7 +483,7 @@ leakwatch scan git . --since-commit HEAD~1
 leakwatch scan git https://github.com/org/repo.git --branch main --depth 100
 ```
 
-### 6.5 General Flags
+### 6.6 General Flags
 
 These flags apply to all commands:
 
@@ -486,6 +511,7 @@ Leakwatch returns meaningful exit codes for easy use in CI/CD pipelines:
 | `0` | Clean | No secrets found |
 | `1` | Findings | One or more secrets detected |
 | `2` | Error | An error occurred during scanning |
+| `3` | Interrupted | The scan was interrupted (Ctrl-C / SIGTERM) before completing |
 
 ### CI/CD Usage Example
 
@@ -502,6 +528,9 @@ elif [ $EXIT_CODE -eq 1 ]; then
 elif [ $EXIT_CODE -eq 2 ]; then
     echo "ERROR: A problem occurred during scanning."
     exit 2
+elif [ $EXIT_CODE -eq 3 ]; then
+    echo "INTERRUPTED: Scan was interrupted before completing."
+    exit 3
 fi
 ```
 
@@ -511,9 +540,11 @@ flowchart TD
     B -->|0| C["Clean\nNo secrets found"]
     B -->|1| D["Findings\nSecrets detected"]
     B -->|2| E["Error\nScan failed"]
+    B -->|3| I["Interrupted\nCtrl-C / SIGTERM"]
     C --> F["Pipeline continues"]
     D --> G["Pipeline stops\nImmediate action"]
     E --> H["Error investigated\nRetry"]
+    I --> H
 ```
 
 ---
@@ -574,12 +605,12 @@ sequenceDiagram
 
 ---
 
-### What's New in v1.5.0
+### What's New in v1.6.0
 
-- **ADO.NET connection string support** -- Microsoft SQL Server ADO.NET-style connection strings (`Server=...;Database=...;User Id=...;Password=...`) are now detected by the `dbconn` detector.
-- **Lock file false positives reduced** -- `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile.lock`, and other lock files are now intelligently filtered to reduce noise.
-- **Placeholder pattern detection** -- common placeholder values (e.g. `your-token-here`, `xxxxxxxx`) are recognized as test fixtures and ignored.
-- **Context-aware PagerDuty detection** -- PagerDuty integration keys are now matched with surrounding context to reduce false positives.
+- **GitHub Marketplace Action** -- `uses: HodeTech/Leakwatch@v1` installs a prebuilt, checksum-verified binary (no Go toolchain needed), runs a scan, maps exit codes, writes a job summary, and supports PR-diff scanning (`scan-diff`).
+- **`github` output format** -- `--format github` emits GitHub Actions workflow commands so findings appear as inline annotations on pull requests.
+- **Config keys now take effect** -- `custom-rules`, `verification.*`, `filter.exclude-detectors`, and `output.severity-threshold` from `.leakwatch.yaml` are wired into every scan command, including `scan repos`.
+- **Accurate locations & inline ignore** -- findings report real line numbers; `# leakwatch:ignore[:<detector-id>]` markers are honored during scanning.
 
 ---
 
@@ -590,8 +621,8 @@ Check out the following resources to use Leakwatch more effectively:
 | Topic | Document |
 |-------|----------|
 | Configuration file and options | [Configuration Guide](./configuration.md) |
-| CI/CD integration (GitHub Actions, pre-commit) | [README - CI/CD Integration](../../README.md#cicd-integration) |
-| Supported secret types | [README - Supported Secret Types](../../README.md#supported-secret-types) |
+| CI/CD integration (GitHub Actions, pre-commit) | [CI/CD Integration Guide](./ci-cd-integration.md) · [README - GitHub Action](../../README.md#github-action) |
+| Supported secret types | [README - Detectors](../../README.md#detectors) |
 | Architecture design | [Architecture Document](../architecture/03-ARCHITECTURE.md) |
 | Roadmap | [Roadmap](../05-ROADMAP.md) |
 | Contribution guide | [CONTRIBUTING.md](../../CONTRIBUTING.md) |

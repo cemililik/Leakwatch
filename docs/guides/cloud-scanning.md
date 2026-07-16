@@ -493,6 +493,7 @@ leakwatch scan gcs my-bucket --min-severity critical
 | **SARIF** | `--format sarif` | GitHub Security, IDE integration |
 | **CSV** | `--format csv` | Spreadsheet tools, Excel |
 | **Table** | `--format table` | Human-readable output in the terminal |
+| **GitHub** | `--format github` | Inline pull-request annotations in GitHub Actions |
 
 ### 6.2 Results in SARIF Format
 

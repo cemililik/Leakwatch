@@ -114,10 +114,14 @@ flowchart TD
 - The `v1` tag must be maintained automatically (handled in the release
   workflow) and consumers who want strict reproducibility should pin a full
   release tag or commit SHA.
-- **No cryptographic provenance yet.** The checksum step only detects a
-  corrupted/truncated download, not a malicious release. A future enhancement
-  should add signed artifacts (cosign/minisign) and/or SLSA build provenance,
-  with the action verifying the signature before running.
+- **The Action's install step does not yet verify cryptographic provenance.**
+  It checks the archive's SHA-256 against `checksums.txt`, which detects a
+  corrupted/truncated download but not a malicious release (an attacker who
+  can replace the archive can replace the checksum file too). Releases already
+  publish a signed SBOM and a keyless cosign signature over `checksums.txt`
+  (`.goreleaser.yml`'s `sboms`/`signs` blocks, verifiable with
+  `cosign verify-blob`); wiring the Action's install script to verify that
+  signature before extracting is a future enhancement.
 
 ## Publishing to the Marketplace (maintainer runbook)
 

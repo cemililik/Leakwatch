@@ -31,25 +31,11 @@ Verify the CLI is available:
 leakwatch version
 ```
 
-### 2.2 Install from VSIX
+### 2.2 Install from Marketplace / GitHub Releases (Not Yet Available)
 
-Download the `.vsix` package from the [GitHub Releases](https://github.com/HodeTech/Leakwatch/releases) page, then install it in VS Code:
+The extension is not yet published to the VS Code Marketplace, and no CI workflow packages or uploads a `.vsix` to GitHub Releases today — `.github/workflows/vscode-ci.yml` only lints, compiles, and tests `vscode/` on every push/PR; it does not run `vsce package` or attach an artifact. Until one of those ships, build the `.vsix` yourself with [§2.3 Build from Source](#23-build-from-source) below.
 
-```bash
-code --install-extension leakwatch-0.1.0.vsix
-```
-
-Alternatively, open VS Code, press `Ctrl+Shift+P` (or `Cmd+Shift+P` on macOS), type **Extensions: Install from VSIX...**, and select the downloaded file.
-
-### 2.3 Install from Marketplace (Future)
-
-Once published, the extension will be available on the VS Code Marketplace:
-
-1. Open the Extensions sidebar (`Ctrl+Shift+X`)
-2. Search for **Leakwatch**
-3. Click **Install**
-
-### 2.4 Build from Source
+### 2.3 Build from Source
 
 ```bash
 # Clone the repository

@@ -28,7 +28,7 @@ flowchart LR
         E4[Custom Rules]
     end
 
-    subgraph Verifiers["Verifiers (54 verifiers, 51 packages, 85.7% coverage)"]
+    subgraph Verifiers["Verifiers (54 verifiers, 51 packages, 84.4% coverage)"]
         V1[AWS STS]
         V2[GitHub API]
         V3[Slack API]
@@ -690,7 +690,11 @@ type VerificationEngine struct {
 // 2. Rate limiting is mandatory — to avoid overloading APIs
 // 3. Timeout is mandatory — to avoid waiting on unresponsive APIs
 // 4. Can be disabled by the user (--no-verify)
-// 5. Verification results can be cached (same secret is not re-verified)
+//
+// Verification-result caching (re-verifying the same secret would be
+// skipped) is NOT implemented today — the engine holds no cache field, so
+// every finding triggers its own live API call. This is planned for
+// Phase 11 (see docs/05-ROADMAP.md).
 ```
 
 ### 7.2 AWS Verification Example
@@ -769,22 +773,19 @@ Configuration managed by Viper is applied according to the following priority or
 scan:
   concurrency: 8              # Number of workers
   max-file-size: 10485760     # 10MB
-  chunk-size: 1024            # Chunk buffer size
 
 # Detection configuration
 detection:
   entropy:
     enabled: true
     threshold: 4.0
-  detectors:
-    enabled: ["*"]             # All active
-    disabled: []               # Disabled ones
 
 # Verification configuration
 verification:
   enabled: true
   timeout: 10s
   concurrency: 4
+  rate-limit: 10.0
 
 # Filtering
 filter:
@@ -794,11 +795,10 @@ filter:
     - "**/*.lock"
     - "go.sum"
   exclude-detectors: []
-  only-verified: false
 
 # Output configuration
 output:
-  format: json                 # json, sarif, csv, table
+  format: json                 # json, sarif, csv, table, github
   file: ""                     # If empty, write to stdout
   show-raw: false              # Show secret content
   severity-threshold: low      # Minimum severity level
@@ -812,6 +812,8 @@ custom-rules:
     severity: high
     entropy: 3.5
 ```
+
+> This example is bound field-for-field against `internal/config/config.go`. There is no `scan.chunk-size`, `detection.detectors.{enabled,disabled}`, or `filter.only-verified` key in the current schema — `--only-verified` and `--exclude-detectors` are scan-command flags, not `.leakwatch.yaml` keys (`filter.exclude-detectors` is the YAML equivalent of `--exclude-detectors`). See [Configuration Guide](../guides/configuration.md) for the authoritative schema reference.
 
 ---
 

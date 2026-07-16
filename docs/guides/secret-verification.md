@@ -8,11 +8,11 @@
 
 ## 1. What is Secret Verification?
 
-Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **54 verifiers (51 packages)** covering **85.7% of its 63 detectors (60 packages)**, making it one of the most comprehensive verification systems available under an MIT license.
+Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **54 verifiers (51 packages)** covering **84.4% of its 64 detectors (60 packages)**, making it one of the most comprehensive verification systems available under an MIT license.
 
 Verification is performed through two methods:
-- **Live API verification** (49 detectors) -- controlled, non-destructive API calls to the service that issued the credential
-- **Format validation** (5 detectors) -- structural checks (decode, parse, validate format) without network calls
+- **Live API verification** (48 detectors) -- controlled, non-destructive API calls to the service that issued the credential
+- **Format validation** (6 detectors) -- structural checks (decode, parse, validate format) without network calls
 
 **Why it matters:**
 
@@ -70,7 +70,7 @@ stateDiagram-v2
 
 Leakwatch provides 54 verifiers (51 packages) across three verification types. The following table shows all verified detectors grouped by verification method.
 
-### Live API Verification (49 detectors)
+### Live API Verification (48 detectors)
 
 These verifiers make a controlled, non-destructive API call to the provider to confirm whether the secret is active or inactive. The majority use HTTP GET; a small number (e.g., the Teams webhook verifier) use a non-destructive POST to a validation endpoint.
 
@@ -87,46 +87,45 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **AI/ML** | DeepSeek API Key | `deepseek-api-key` | `api.deepseek.com/models` |
 | **DevTools** | GitHub PAT | `github-token` | `api.github.com/user` |
 | **DevTools** | GitHub OAuth Token | `github-oauth-token` | `api.github.com/user` |
-| **DevTools** | GitLab PAT | `gitlab-pat` | `gitlab.com/api/v4/user` |
+| **DevTools** | GitLab PAT | `gitlab-pat` | `{host}/api/v4/user` (defaults to `gitlab.com`; honors a co-located self-hosted instance host) |
 | **DevTools** | Bitbucket App Password | `bitbucket-app-password` | `api.bitbucket.org/2.0/user` |
 | **DevTools** | NPM Token | `npm-token` | `registry.npmjs.org/-/npm/v1/user` |
 | **DevTools** | PyPI Token | `pypi-api-token` | `upload.pypi.org/legacy/` |
 | **DevTools** | RubyGems Key | `rubygems-api-key` | `rubygems.org/api/v1/api_key.json` |
-| **DevTools** | Docker Hub PAT | `dockerhub-pat` | `hub.docker.com/v2/user/login` |
+| **DevTools** | Docker Hub PAT | `dockerhub-pat` | `hub.docker.com/v2/user/` (direct Bearer auth; no login/JWT-exchange step) |
 | **CI/CD** | CircleCI Token | `circleci-token` | `circleci.com/api/v2/me` |
 | **CI/CD** | Terraform Cloud Token | `terraform-cloud-token` | `app.terraform.io/api/v2/account/details` |
 | **Communication** | Slack Bot Token | `slack-token` | `slack.com/api/auth.test` |
 | **Communication** | Discord Bot Token | `discord-bot-token` | `discord.com/api/v10/users/@me` |
 | **Communication** | Telegram Bot Token | `telegram-bot-token` | `api.telegram.org/bot{token}/getMe` |
 | **Communication** | MS Teams Webhook | `teams-webhook` | `{webhook-url}` (non-destructive empty `{}` POST; 400 = active, 404 = inactive) |
-| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/user/profile` |
-| **Email** | Mailgun API Key | `mailgun-api-key` | `api.mailgun.net/v3/domains` |
+| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/scopes` (needs no specific scope, so a restricted-permission key is not misread as revoked) |
+| **Email** | Mailgun API Key | `mailgun-api-key` | `api.mailgun.net/v3/domains`, retrying `api.eu.mailgun.net/v3/domains` if the US host reports inactive (US/EU are separate tenants) |
 | **Email** | Postmark Server Token | `postmark-server-token` | `api.postmarkapp.com/server` |
 | **Payment** | Stripe Live Key | `stripe-api-key-live` | `api.stripe.com/v1/charges?limit=1` |
 | **Payment** | Stripe Test Key | `stripe-api-key-test` | `api.stripe.com/v1/charges?limit=1` |
-| **Payment** | Coinbase API Key | `coinbase-api-key` | `api.coinbase.com/v2/user` |
-| **Database** | Supabase Service Key | `supabase-service-key` | `{project-ref}.supabase.co/rest/v1/` |
-| **Infrastructure** | Databricks PAT | `databricks-token` | `{workspace}.cloud.databricks.com/api/2.0/clusters/list` |
-| **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` |
-| **Identity** | Auth0 Management Token | `auth0-management-token` | `{domain}/api/v2/users?per_page=1` |
+| **Database** | Supabase Service Key | `supabase-service-key` | `api.supabase.com/v1/projects` (Bearer token only; no project ref or `apikey` header) |
+| **Infrastructure** | Databricks PAT | `databricks-token` | `{workspace-host}/api/2.0/preview/scim/v2/Me` (workspace host captured alongside the token; no host means unverified) |
+| **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
+| **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
 | **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
-| **Monitoring** | Grafana API Key | `grafana-api-key` | `grafana.com/api/user` |
+| **Monitoring** | Grafana API Key | `grafana-api-key` | `grafana.com/api/user` -- self-hosted/per-stack tokens are not verifiable against this central host (no per-instance URL is captured) |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
 | **Monitoring** | New Relic API Key | `newrelic-api-key` | `api.newrelic.com/v2/users.json` |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
 | **Security** | Snyk API Key | `snyk-api-key` | `api.snyk.io/rest/self` |
-| **Security** | Twilio API Key | `twilio-api-key` | `api.twilio.com/2010-04-01/Accounts.json` |
+| **Security** | Twilio API Key | `twilio-api-key` | `api.twilio.com/2010-04-01/Accounts.json` (Basic auth paired as API Key SID + API Key Secret, not Account SID + Auth Token) |
 | **Secrets Mgmt** | Doppler Service Token | `doppler-token` | `api.doppler.com/v3/me` |
 | **Feature Flags** | LaunchDarkly SDK Key | `launchdarkly-sdk-key` | `app.launchdarkly.com/api/v2/caller-identity` |
 | **Code Quality** | SonarCloud Token | `sonarcloud-token` | `sonarcloud.io/api/authentication/validate` |
-| **SaaS** | Shopify Access Token | `shopify-access-token` | `{shop}.myshopify.com/admin/api/2024-01/shop.json` |
+| **SaaS** | Shopify Access Token | `shopify-access-token` | `{shop}.myshopify.com/admin/api/2024-01/shop.json` -- requires a store domain the detector does not currently capture, so findings resolve to `unverified` until this wiring lands (see [ROADMAP](../05-ROADMAP.md)) |
 | **SaaS** | Notion Token | `notion-token` | `api.notion.com/v1/users/me` |
 | **SaaS** | Linear API Key | `linear-api-key` | `api.linear.app/graphql` |
 | **SaaS** | Figma PAT | `figma-pat` | `api.figma.com/v1/me` |
 | **SaaS** | Airtable PAT | `airtable-pat` | `api.airtable.com/v0/meta/whoami` |
 | **Blockchain** | Infura API Key | `infura-api-key` | `mainnet.infura.io/v3/{key}` |
 
-### Format Validation (5 detectors)
+### Format Validation (6 detectors)
 
 These verifiers perform structural validation without making network calls. They check format and decode tokens without contacting the provider.
 
@@ -137,8 +136,9 @@ These verifiers perform structural validation without making network calls. They
 | GCP Service Account | `gcp-service-account` | JSON key file structure and private key parsing |
 | RabbitMQ Connection | `rabbitmq-connection-string` | AMQP URL format validation (scheme, credentials, host) |
 | Snowflake Credentials | `snowflake-credentials` | Connection string format and credential structure validation |
+| Coinbase API Key | `coinbase-api-key` | Key-shape validation only; live verification needs HMAC-SHA256 request signing with the paired secret, which the detector cannot reliably supply, so the result is always `unverified` -- never a false active/inactive |
 
-### Not Verifiable (9 detectors)
+### Not Verifiable (10 detectors)
 
 These detectors have no registered verifier, so their findings are always reported as `unverified`.
 
@@ -153,6 +153,7 @@ These detectors have no registered verifier, so their findings are always report
 | FTP/SFTP Credentials | `ftp-credentials` | Requires direct connection to potentially internal FTP servers |
 | LDAP Credentials | `ldap-credentials` | Requires direct connection to LDAP directory server |
 | Slack Webhook | `slack-webhook` | Verification would send a message (side effect) |
+| Discord Webhook URL | `discord-webhook-url` | Verification would post a message (side effect) |
 
 ---
 
