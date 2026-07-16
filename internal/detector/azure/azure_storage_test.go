@@ -33,21 +33,21 @@ func TestStorageDetector_Scan_MatchesValidConnectionString(t *testing.T) {
 			name:        "valid https connection string",
 			input:       "DefaultEndpointsProtocol=https;AccountName=mystorageacct;AccountKey=" + accountKey88 + ";",
 			expected:    1,
-			redacted:    "AccountName=mystorageacct;AccountKey=****",
+			redacted:    "AccountName=mystorageacct;AccountKey=****EfGh",
 			accountName: "mystorageacct",
 		},
 		{
 			name:        "valid http connection string",
 			input:       "DefaultEndpointsProtocol=http;AccountName=devaccount;AccountKey=" + accountKey88 + ";",
 			expected:    1,
-			redacted:    "AccountName=devaccount;AccountKey=****",
+			redacted:    "AccountName=devaccount;AccountKey=****EfGh",
 			accountName: "devaccount",
 		},
 		{
 			name:        "connection string embedded in config",
 			input:       `connection_string = "DefaultEndpointsProtocol=https;AccountName=testacct;AccountKey=` + accountKey88 + `;"`,
 			expected:    1,
-			redacted:    "AccountName=testacct;AccountKey=****",
+			redacted:    "AccountName=testacct;AccountKey=****EfGh",
 			accountName: "testacct",
 		},
 		{
@@ -69,6 +69,26 @@ func TestStorageDetector_Scan_MatchesValidConnectionString(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStorageDetector_Scan_Raw_DoesNotAliasInputBuffer(t *testing.T) {
+	accountKey88 := strings.Repeat("AbCdEfGh", 11)
+	input := []byte("DefaultEndpointsProtocol=https;AccountName=mystorageacct;AccountKey=" + accountKey88 + ";")
+
+	d := &StorageDetector{}
+	findings := d.Scan(context.Background(), input)
+	require.Len(t, findings, 1)
+
+	raw := findings[0].Raw
+	original := string(raw)
+
+	// Mutate the caller's buffer after Scan returns; a cloned Raw must be
+	// unaffected, proving it does not alias the scanned chunk's backing array.
+	for i := range input {
+		input[i] = 'x'
+	}
+
+	assert.Equal(t, original, string(raw))
 }
 
 func TestStorageDetector_Scan_RejectsInvalidInput(t *testing.T) {

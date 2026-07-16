@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -42,8 +43,8 @@ func (d *EntraDetector) Scan(_ context.Context, data []byte) []detector.RawFindi
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        secretValue,
-			RawV2:      fullMatch,
+			Raw:        bytes.Clone(secretValue),
+			RawV2:      bytes.Clone(fullMatch),
 			Redacted:   detector.RedactBytes(secretValue),
 		})
 	}

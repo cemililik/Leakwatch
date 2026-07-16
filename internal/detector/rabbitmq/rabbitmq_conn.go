@@ -2,8 +2,8 @@
 package rabbitmq
 
 import (
+	"bytes"
 	"context"
-	"net/url"
 	"regexp"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
@@ -30,7 +30,8 @@ func (d *Detector) Keywords() []string {
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
 // Scan searches the data for RabbitMQ Connection String patterns.
-// The password portion of the URL is redacted in the finding output.
+// The password portion of the URL is redacted in the finding output via the
+// shared, fail-safe detector.RedactURLPassword helper.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	matches := rabbitmqConnPattern.FindAll(data, -1)
 	if len(matches) == 0 {
@@ -41,35 +42,11 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
-			Redacted:   redactPassword(string(match)),
+			Raw:        bytes.Clone(match),
+			Redacted:   detector.RedactURLPassword(string(match)),
 		})
 	}
 	return findings
-}
-
-// redactPassword masks the password portion in a RabbitMQ connection URL.
-// Uses net/url.Parse for proper parsing, then reconstructs with masked password.
-//
-// It is fail-safe: it NEVER returns the raw input. If the URL cannot be parsed,
-// or net/url finds no userinfo component in the authority (in which case a
-// credential may still be embedded elsewhere in the match, e.g. in the path or
-// query, because the detector regex only excludes whitespace and quotes), the
-// entire value is masked so no cleartext credential can escape.
-func redactPassword(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "****"
-	}
-	if u.User == nil {
-		if u.Scheme == "" {
-			return "****"
-		}
-		return u.Scheme + "://****"
-	}
-	username := u.User.Username()
-	u.User = nil
-	return u.Scheme + "://" + username + ":****@" + u.Host + u.RequestURI()
 }
 
 func init() {

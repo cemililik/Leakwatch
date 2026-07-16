@@ -35,8 +35,10 @@ func (d *Detector) ID() string { return "cloudflare-api-token" }
 func (d *Detector) Description() string { return "Cloudflare API Token" }
 
 // Keywords returns the Aho-Corasick pre-filter keywords for Cloudflare API Token detection.
+// The matcher lowercases every keyword before indexing, so only one casing of
+// each distinct keyword is needed here; case-variant duplicates are omitted.
 func (d *Detector) Keywords() []string {
-	return []string{"cloudflare", "CLOUDFLARE", "CF_API_TOKEN", "cf_api_token", "cf_api_key"}
+	return []string{"cloudflare", "cf_api_token", "cf_api_key"}
 }
 
 // Severity returns the default severity level for Cloudflare API Token findings.
@@ -62,8 +64,8 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        token,
-			RawV2:      fullMatch,
+			Raw:        bytes.Clone(token),
+			RawV2:      bytes.Clone(fullMatch),
 			Redacted:   detector.RedactBytes(token),
 		})
 	}
