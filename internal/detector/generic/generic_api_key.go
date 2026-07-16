@@ -36,6 +36,13 @@ func (d *APIKeyDetector) Keywords() []string {
 }
 func (d *APIKeyDetector) Severity() finding.Severity { return finding.SeverityMedium }
 
+// EntropyBased marks this as a heuristic detector: it matches arbitrary
+// high-entropy strings rather than a fixed credential format, so it opts into
+// the engine's Shannon-entropy floor (config entropy.threshold) in addition to
+// its own baseline filter. Structural detectors do not implement this and are
+// never entropy-gated.
+func (d *APIKeyDetector) EntropyBased() bool { return true }
+
 // minEntropy is the Shannon entropy floor a candidate value must clear to be
 // considered plausibly random secret material rather than an ordinary
 // identifier or human-readable placeholder. Raised from the original 3.0,

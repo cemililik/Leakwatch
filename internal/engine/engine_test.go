@@ -45,10 +45,11 @@ func (m *mockSource) Err() error { return m.err }
 // --- Mock Detector ---
 
 type mockDetector struct {
-	id       string
-	keywords []string
-	findings []detector.RawFinding
-	severity finding.Severity
+	id           string
+	keywords     []string
+	findings     []detector.RawFinding
+	severity     finding.Severity
+	entropyBased bool
 }
 
 func (m *mockDetector) ID() string                                             { return m.id }
@@ -56,6 +57,7 @@ func (m *mockDetector) Description() string                                    {
 func (m *mockDetector) Keywords() []string                                     { return m.keywords }
 func (m *mockDetector) Severity() finding.Severity                             { return m.severity }
 func (m *mockDetector) Scan(_ context.Context, _ []byte) []detector.RawFinding { return m.findings }
+func (m *mockDetector) EntropyBased() bool                                     { return m.entropyBased }
 
 var fixedClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
@@ -727,8 +729,9 @@ func TestScan_EntropyGating(t *testing.T) {
 				},
 			}
 			det := &mockDetector{
-				id:       "det",
-				findings: []detector.RawFinding{{DetectorID: "det", Raw: []byte(tc.raw), Redacted: "r***"}},
+				id:           "det",
+				findings:     []detector.RawFinding{{DetectorID: "det", Raw: []byte(tc.raw), Redacted: "r***"}},
+				entropyBased: true, // only heuristic detectors are entropy-gated
 			}
 			eng := New(Config{
 				Concurrency:      1,
@@ -742,6 +745,35 @@ func TestScan_EntropyGating(t *testing.T) {
 			assert.Len(t, result.Findings, tc.wantCount)
 		})
 	}
+}
+
+func TestScan_EntropyGating_StructuralDetectorNeverGated(t *testing.T) {
+	// A structural detector (one that does NOT declare itself entropy-based)
+	// must never be dropped on entropy, even for a low-entropy match well below
+	// the threshold. This guards the regression where a valid but low-entropy
+	// key (e.g. an AWS access-key ID ~3.9 bits) was silently dropped by a global
+	// entropy gate.
+	low := "AKIAIOSFODNN7REALKEY"
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: []byte(low), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	det := &mockDetector{
+		id:           "structural",
+		findings:     []detector.RawFinding{{DetectorID: "structural", Raw: []byte(low), Redacted: "r***"}},
+		entropyBased: false, // structural: not subject to the entropy floor
+	}
+	eng := New(Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{det},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+		Clock:            fixedClock,
+	})
+	result, err := eng.Scan(context.Background(), src)
+	require.NoError(t, err)
+	assert.Len(t, result.Findings, 1, "structural detectors must never be entropy-gated")
 }
 
 func TestScan_EntropyDisabled_NoGating(t *testing.T) {
