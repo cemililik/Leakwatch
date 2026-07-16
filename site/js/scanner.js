@@ -132,7 +132,7 @@
           '<div class="pf-top"><span class="sev ' + f.sev + '">' + f.sev.toUpperCase() + "</span>" +
           '<span class="pf-det">' + esc(f.id) + "</span>" +
           '<span class="pf-loc">' + t("play.f.line", "line") + " " + f.line + "</span></div>" +
-          '<div class="pf-val"><code class="pf-secret" title="' + esc(f.val) + '">' + esc(redact(f.val)) + "</code></div>" +
+          '<div class="pf-val"><code class="pf-secret">' + esc(redact(f.val)) + "</code></div>" +
           '<div class="pf-meta"><span>' + t("play.f.entropy", "entropy") + " " + entropy(f.val) + "</span>" +
           "<span>" + f.val.length + " " + t("play.f.chars", "chars") + "</span>" +
           '<span class="pf-status">' + t("play.f.detected", "detected · verify in CLI") + "</span></div>" +

@@ -76,18 +76,48 @@
     if (toggle) toggle.setAttribute("aria-expanded", "false");
   }
 
+  // Implements the WAI-ARIA menu-button pattern's keyboard model for the
+  // role="menu"/"menuitemradio" markup: roving tabindex across the items,
+  // Up/Down/Home/End navigation, and Escape/outside-click to close and
+  // return focus to the toggle.
   function wireSwitcher() {
     var toggle = document.getElementById("langToggle");
     var menu = document.getElementById("langMenu");
     if (!toggle || !menu) return;
+    var items = [].slice.call(menu.querySelectorAll("[data-lang]"));
+
+    function focusItem(idx) {
+      items.forEach(function (b, i) { b.setAttribute("tabindex", i === idx ? "0" : "-1"); });
+      if (items[idx]) items[idx].focus();
+    }
+    function openMenu() {
+      menu.classList.add("open");
+      toggle.setAttribute("aria-expanded", "true");
+      var idx = items.findIndex(function (b) { return b.getAttribute("data-lang") === current; });
+      focusItem(idx > -1 ? idx : 0);
+    }
+
+    items.forEach(function (b) { b.setAttribute("tabindex", "-1"); });
 
     toggle.addEventListener("click", function (e) {
       e.stopPropagation();
-      var open = menu.classList.toggle("open");
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (menu.classList.contains("open")) closeMenu(); else openMenu();
     });
-    menu.querySelectorAll("[data-lang]").forEach(function (btn) {
+    toggle.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault(); openMenu();
+      }
+    });
+    items.forEach(function (btn, i) {
       btn.addEventListener("click", function () { setLang(btn.getAttribute("data-lang")); });
+      btn.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowDown") { e.preventDefault(); focusItem((i + 1) % items.length); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); focusItem((i - 1 + items.length) % items.length); }
+        else if (e.key === "Home") { e.preventDefault(); focusItem(0); }
+        else if (e.key === "End") { e.preventDefault(); focusItem(items.length - 1); }
+        else if (e.key === "Escape") { closeMenu(); toggle.focus(); }
+        else if (e.key === "Tab") { closeMenu(); }
+      });
     });
     document.addEventListener("click", function (e) {
       if (!menu.contains(e.target) && e.target !== toggle) closeMenu();

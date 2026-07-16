@@ -6,12 +6,31 @@
 <title data-i18n="meta.play.title">Playground — scan in your browser · Leakwatch</title>
 <meta name="description" data-i18n-attr="content:meta.play.desc" content="Try Leakwatch in your browser. Paste a file and its real detection patterns run client-side — nothing is uploaded." />
 <meta name="theme-color" content="#0a0b0d" />
+<link rel="canonical" href="https://hodetech.github.io/Leakwatch/playground.html" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://hodetech.github.io/Leakwatch/playground.html" />
+<meta property="og:title" content="Playground — scan in your browser · Leakwatch" />
+<meta property="og:description" content="Try Leakwatch in your browser. Paste a file and its real detection patterns run client-side — nothing is uploaded." />
+<meta property="og:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Playground — scan in your browser · Leakwatch" />
+<meta name="twitter:description" content="Try Leakwatch in your browser. Paste a file and its real detection patterns run client-side — nothing is uploaded." />
+<meta name="twitter:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
 <link rel="stylesheet" href="css/fonts.css" />
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
 <a class="skip-link" href="#play" data-i18n="a11y.skip">Skip to content</a>
+
+<noscript>
+  <div class="wrap" style="padding:16px 0 0">
+    <div class="callout callout-warn">
+      <div class="callout-label">JavaScript required</div>
+      <div class="callout-body"><p>The playground runs Leakwatch's detection patterns entirely in your browser, so it needs JavaScript enabled to work. Read the docs or browse the source on <a href="https://github.com/HodeTech/Leakwatch">GitHub</a> instead.</p></div>
+    </div>
+  </div>
+</noscript>
 
 <div class="classbar"><div class="wrap"><span data-i18n="classbar.left">⬤ Classified — Leakwatch field report</span><span data-i18n="play.classbar">Client-side · nothing uploaded</span></div></div>
 
@@ -38,10 +57,10 @@
       </div>
     </div>
     <a class="btn btn-sm" href="https://github.com/HodeTech/Leakwatch" target="_blank" rel="noopener">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"/></svg>
       <span>GitHub</span>
     </a>
-    <button class="icon-btn nav-burger" id="navBurger" aria-label="Menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/></svg></button>
+    <button class="icon-btn nav-burger" id="navBurger" aria-label="Menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/></svg></button>
   </div>
 </nav></header>
 
@@ -50,7 +69,7 @@
     <div class="eyebrow mono-label" style="color:var(--alert-2)" data-i18n="play.eyebrow">▸ Try it</div>
     <h1 style="font-size:clamp(30px,4.6vw,48px);letter-spacing:-.025em;margin:14px 0 12px" data-i18n="play.title">Scan it yourself.</h1>
     <p class="sec-intro" data-i18n="play.lede">Paste a config file, an .env, a diff — anything. Leakwatch's real detection patterns run right here in your browser. No upload, no server.</p>
-    <div class="play-privacy">🔒 <span id="detCount">—</span> <span data-i18n="play.detsuffix">of 63 detectors run in your browser · your input is never sent anywhere</span></div>
+    <div class="play-privacy">🔒 <span id="detCount">—</span> <span data-i18n="play.detsuffix">of 64 detectors run in your browser · your input is never sent anywhere</span></div>
   </section>
 
   <section class="section no-rule" style="padding:0 0 24px">
@@ -74,8 +93,8 @@
 
       <!-- RESULTS -->
       <div class="frame play-card">
-        <div class="play-head"><span class="file" data-i18n="play.results.title">Findings</span><span class="play-count" id="count">—</span></div>
-        <div class="play-out" id="out"><div class="play-empty" data-i18n="play.empty">Hit Run scan to scan the text on the left.</div></div>
+        <div class="play-head"><span class="file" data-i18n="play.results.title">Findings</span><span class="play-count" id="count" role="status" aria-live="polite">—</span></div>
+        <div class="play-out" id="out" role="status" aria-live="polite"><div class="play-empty" data-i18n="play.empty">Hit Run scan to scan the text on the left.</div></div>
       </div>
     </div>
 
@@ -111,7 +130,7 @@
       <li><a href="https://github.com/HodeTech/Leakwatch/blob/main/LICENSE" target="_blank" rel="noopener" data-i18n="footer.license">License (MIT)</a></li>
     </ul></div>
   </div>
-  <div class="footer-bottom"><span data-i18n="footer.copyright">© 2026 HodeTech · Leakwatch is open source under the MIT License.</span><span class="mono-label">v1.5.0 · concept: redacted</span></div>
+  <div class="footer-bottom"><span data-i18n="footer.copyright">© 2026 HodeTech · Leakwatch is open source under the MIT License.</span><span class="mono-label">v1.6.0 · concept: redacted</span></div>
 </div></footer>
 
 <script src="js/translations.js"></script>

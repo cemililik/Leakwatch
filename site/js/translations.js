@@ -28,7 +28,7 @@ window.LW_T = {
     "hero.lede": "Detect, verify, and report leaked API keys, tokens, and credentials across code, Git history, containers, and the cloud — then watch the redactions lift.",
     "hero.cta.run": "▸ Run the scan",
     "hero.cta.docs": "Read the docs",
-    "hero.kv": "63 detectors · 54 live verifiers · 6 sources · exit-code aware",
+    "hero.kv": "64 detectors · 54 live verifiers · 6 sources · exit-code aware",
     "hero.doc.redacted": "3 REDACTED",
     "hero.doc.hint": "Leakwatch finds the secrets that shouldn't be visible.",
 
@@ -89,7 +89,7 @@ window.LW_T = {
     "formats.csv": "Spreadsheet-ready, sanitized against formula injection.",
     "formats.table": "Colorized terminal output for local triage.",
 
-    "index.title": "Redacted index — 63 detectors",
+    "index.title": "Redacted index — 64 detectors",
     "index.intro": "A sample of the catalog. 54 of these can be verified against the live provider. Add your own with YAML custom rules.",
     "index.more": "+ 44 more · view full catalog →",
 
@@ -154,7 +154,7 @@ window.LW_T = {
     "play.eyebrow": "▸ Try it",
     "play.title": "Scan it yourself.",
     "play.lede": "Paste a config file, an .env, a diff — anything. Leakwatch's real detection patterns run right here in your browser. No upload, no server.",
-    "play.detsuffix": "of 63 detectors run in your browser · your input is never sent anywhere",
+    "play.detsuffix": "of 64 detectors run in your browser · your input is never sent anywhere",
     "play.editor.file": "paste-here.txt",
     "play.sample.env": ".env",
     "play.sample.code": "source",
