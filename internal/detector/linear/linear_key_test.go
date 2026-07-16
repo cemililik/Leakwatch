@@ -66,6 +66,30 @@ func TestDetector_Scan_MatchesValidKeys(t *testing.T) {
 	}
 }
 
+// TestDetector_Scan_RawIsIndependentOfInputBuffer is a memory-hygiene
+// regression test proving Raw is an independent copy (via bytes.Clone)
+// rather than a subslice aliasing the scanned chunk buffer. Without
+// cloning, mutating the caller's buffer after Scan returns would also
+// mutate the reported finding, and the finding would keep the whole chunk
+// buffer alive for the rest of the scan.
+// See review section 04-detectors-d3.md MEDIUM finding on Raw aliasing.
+func TestDetector_Scan_RawIsIndependentOfInputBuffer(t *testing.T) {
+	suffix40 := strings.Repeat("Ab1Cd2Ef", 5)
+	data := []byte("lin_api_" + suffix40)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1)
+
+	rawCopy := append([]byte(nil), findings[0].Raw...)
+
+	for i := range data {
+		data[i] = 'X'
+	}
+
+	assert.Equal(t, rawCopy, findings[0].Raw, "Raw must not alias the mutated input buffer")
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string

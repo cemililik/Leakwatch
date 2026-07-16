@@ -2,6 +2,7 @@
 package newrelic
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -34,7 +35,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		s := string(match)
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   "NRAK-****" + s[len(s)-4:],
 		})
 	}

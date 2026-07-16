@@ -2,6 +2,7 @@
 package postmark
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -39,7 +40,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match[1],
+			Raw:        bytes.Clone(match[1]),
 			Redacted:   detector.RedactBytes(match[1]),
 		})
 	}
