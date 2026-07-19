@@ -282,6 +282,10 @@ func renderConfigBlob(cfg v1.Config) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
+// scanTarLayer walks one layer's decompressed tar stream and emits a chunk for
+// every entry that survives the per-entry filters. It returns as soon as the
+// archive ends, the context is cancelled, the tar stream fails, or a
+// decompression ceiling trips.
 func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chunk, tr *tar.Reader, layerIdx int, layerID string) {
 	for {
 		select {
@@ -290,88 +294,138 @@ func (s *ContainerSource) scanTarLayer(ctx context.Context, ch chan<- source.Chu
 		default:
 		}
 
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if errors.Is(err, errDecompressionLimit) {
-			slog.Warn("layer decompression ceiling exceeded, aborting layer",
-				"layer", layerIdx, "limit_bytes", s.maxLayerSize)
-			s.captureErr(fmt.Errorf("container layer %d scan truncated: %w", layerIdx, errDecompressionLimit))
-			break
-		}
-		if err != nil {
-			slog.Warn("failed to read tar entry", "layer", layerIdx, "error", err)
-			break
-		}
-
-		// Skip directories and non-regular files.
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-
-		// Skip files that are empty or exceed the size limit.
-		if header.Size > s.maxFileSize || header.Size == 0 {
-			continue
-		}
-
-		// Skip auto-generated lock files.
-		if filter.IsSkippedFilename(header.Name) {
-			continue
-		}
-
-		// Skip binary extensions.
-		if filter.IsExcludedExtension(header.Name, nil) {
-			continue
-		}
-
-		// Skip common non-secret paths.
-		if shouldSkipContainerPath(header.Name) {
-			continue
-		}
-
-		cleanPath, ok := sanitizeTarPath(header.Name)
+		header, ok := s.nextTarHeader(tr, layerIdx)
 		if !ok {
-			slog.Warn("skipping tar entry with unsafe path", "path", header.Name)
+			return
+		}
+
+		cleanPath, ok := s.scannableTarPath(header)
+		if !ok {
 			continue
 		}
 
-		// Skip files matching exclude-path globs (relative cleaned path).
-		if filter.MatchesGlob(cleanPath, s.excludePaths) {
-			continue
-		}
-
-		data, err := io.ReadAll(io.LimitReader(tr, s.maxFileSize))
-		if err != nil {
-			if errors.Is(err, errDecompressionLimit) {
-				slog.Warn("layer decompression ceiling exceeded, aborting layer",
-					"layer", layerIdx, "limit_bytes", s.maxLayerSize)
-				s.captureErr(fmt.Errorf("container layer %d scan truncated: %w", layerIdx, errDecompressionLimit))
-				break
-			}
-			slog.Warn("failed to read file from layer", "file", header.Name, "layer", layerIdx, "error", err)
-			continue
-		}
-
-		if filter.IsBinaryFile(data) {
-			continue
-		}
-
-		select {
-		case ch <- source.Chunk{
-			Data: data,
-			SourceMetadata: finding.SourceMetadata{
-				SourceType: "container",
-				Image:      s.imageRef,
-				Layer:      layerID,
-				LayerIdx:   layerIdx,
-				FilePath:   cleanPath,
-			},
-		}:
-		case <-ctx.Done():
+		if !s.emitTarEntry(ctx, ch, tr, header, cleanPath, layerIdx, layerID) {
 			return
 		}
 	}
+}
+
+// nextTarHeader advances to the next tar entry. ok is false when the layer scan
+// must stop: at end of archive, when the decompression ceiling trips (recorded
+// as a terminal truncation), or on any other tar read failure.
+func (s *ContainerSource) nextTarHeader(tr *tar.Reader, layerIdx int) (*tar.Header, bool) {
+	header, err := tr.Next()
+	if err == io.EOF {
+		return nil, false
+	}
+	if errors.Is(err, errDecompressionLimit) {
+		s.reportLayerTruncated(layerIdx)
+		return nil, false
+	}
+	if err != nil {
+		slog.Warn("failed to read tar entry", "layer", layerIdx, "error", err)
+		return nil, false
+	}
+	return header, true
+}
+
+// reportLayerTruncated logs an anti-decompression-bomb ceiling trip and records
+// it as terminal. The layer was only partially read, so the truncation must not
+// be mistaken for a clean scan of the layer.
+func (s *ContainerSource) reportLayerTruncated(layerIdx int) {
+	slog.Warn("layer decompression ceiling exceeded, aborting layer",
+		"layer", layerIdx, "limit_bytes", s.maxLayerSize)
+	s.captureErr(fmt.Errorf("container layer %d scan truncated: %w", layerIdx, errDecompressionLimit))
+}
+
+// scannableTarPath applies the per-entry filters to a tar header and returns the
+// sanitized, archive-relative path to report for it. ok is false when the entry
+// must be skipped: a directory or other non-regular entry, an empty or oversized
+// file, a generated lock file, an excluded extension, a well-known non-secret
+// system path, an unsafe (absolute or traversing) archive path, or a match
+// against the configured exclude-path globs.
+func (s *ContainerSource) scannableTarPath(header *tar.Header) (string, bool) {
+	// Skip directories and non-regular files.
+	if header.Typeflag != tar.TypeReg {
+		return "", false
+	}
+
+	// Skip files that are empty or exceed the size limit.
+	if header.Size > s.maxFileSize || header.Size == 0 {
+		return "", false
+	}
+
+	// Skip auto-generated lock files.
+	if filter.IsSkippedFilename(header.Name) {
+		return "", false
+	}
+
+	// Skip binary extensions.
+	if filter.IsExcludedExtension(header.Name, nil) {
+		return "", false
+	}
+
+	// Skip common non-secret paths.
+	if shouldSkipContainerPath(header.Name) {
+		return "", false
+	}
+
+	cleanPath, ok := sanitizeTarPath(header.Name)
+	if !ok {
+		slog.Warn("skipping tar entry with unsafe path", "path", header.Name)
+		return "", false
+	}
+
+	// Skip files matching exclude-path globs (relative cleaned path).
+	if filter.MatchesGlob(cleanPath, s.excludePaths) {
+		return "", false
+	}
+
+	return cleanPath, true
+}
+
+// emitTarEntry reads one tar entry's contents and sends it as a chunk. It
+// returns false when the whole layer scan must stop — the decompression ceiling
+// tripped mid-read, or the context was cancelled during the send. A per-file
+// read failure or binary content only skips that entry, so true is returned.
+func (s *ContainerSource) emitTarEntry(
+	ctx context.Context,
+	ch chan<- source.Chunk,
+	tr *tar.Reader,
+	header *tar.Header,
+	cleanPath string,
+	layerIdx int,
+	layerID string,
+) bool {
+	data, err := io.ReadAll(io.LimitReader(tr, s.maxFileSize))
+	if err != nil {
+		if errors.Is(err, errDecompressionLimit) {
+			s.reportLayerTruncated(layerIdx)
+			return false
+		}
+		slog.Warn("failed to read file from layer", "file", header.Name, "layer", layerIdx, "error", err)
+		return true
+	}
+
+	if filter.IsBinaryFile(data) {
+		return true
+	}
+
+	select {
+	case ch <- source.Chunk{
+		Data: data,
+		SourceMetadata: finding.SourceMetadata{
+			SourceType: "container",
+			Image:      s.imageRef,
+			Layer:      layerID,
+			LayerIdx:   layerIdx,
+			FilePath:   cleanPath,
+		},
+	}:
+	case <-ctx.Done():
+		return false
+	}
+	return true
 }
 
 // limitedCountingReader enforces a per-layer decompressed-byte ceiling while

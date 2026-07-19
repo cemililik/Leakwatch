@@ -488,10 +488,61 @@ func (s *GitSource) emitCommitChanges(
 	seen map[string]bool,
 	seenFull *bool,
 ) error {
+	commitTree, changes, ok := commitDiff(c)
+	if !ok {
+		return nil
+	}
+
+	cs := &commitScan{
+		tree: commitTree,
+		meta: finding.SourceMetadata{
+			SourceType: "git",
+			Repository: s.displayTarget,
+			Commit:     c.Hash.String(),
+			Author:     c.Author.Name,
+			Email:      c.Author.Email,
+			Date:       c.Author.When,
+			Branch:     s.resolveBranch(),
+		},
+		seen:     seen,
+		seenFull: seenFull,
+	}
+
+	for _, change := range changes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := s.emitChangedFile(ctx, ch, cs, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// commitScan carries the state every changed file of a single commit shares:
+// the commit's tree, the finding metadata template (every field but FilePath),
+// and the cross-commit blob deduplication state.
+type commitScan struct {
+	tree     *object.Tree
+	meta     finding.SourceMetadata
+	seen     map[string]bool
+	seenFull *bool
+}
+
+// commitDiff resolves a commit's tree and the changes it introduced relative to
+// its first parent. The root commit is diffed against an empty tree so its files
+// are reported as introduced, and an unreadable parent degrades to that same
+// empty-tree diff rather than dropping the commit. ok is false only when the
+// commit's own tree or the diff itself cannot be produced; the failure has
+// already been logged and the commit is skipped.
+func commitDiff(c *object.Commit) (*object.Tree, object.Changes, bool) {
 	commitTree, err := c.Tree()
 	if err != nil {
 		slog.Warn("failed to get commit tree", "commit", shortHash(c.Hash), "error", err)
-		return nil
+		return nil, nil, false
 	}
 
 	// Diff against the first parent; the root commit diffs against an empty tree
@@ -511,92 +562,114 @@ func (s *GitSource) emitCommitChanges(
 	changes, err := parentTree.Diff(commitTree)
 	if err != nil {
 		slog.Warn("failed to diff commit against parent", "commit", shortHash(c.Hash), "error", err)
+		return nil, nil, false
+	}
+
+	return commitTree, changes, true
+}
+
+// emitChangedFile emits a chunk for one changed file of a commit. A deletion,
+// an unresolvable blob, oversized or binary content, a filtered path, and an
+// already-scanned blob are all skipped without error. The only error returned is
+// the context's, when cancellation interrupts the send.
+func (s *GitSource) emitChangedFile(
+	ctx context.Context,
+	ch chan<- source.Chunk,
+	cs *commitScan,
+	change *object.Change,
+) error {
+	file, ok := s.scannableBlob(cs.tree, change)
+	if !ok {
 		return nil
 	}
 
-	branch := s.resolveBranch()
+	if !markBlobSeen(change, cs.seen, cs.seenFull) {
+		return nil
+	}
 
-	for _, change := range changes {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	content, err := readBlob(file, s.maxFileSize)
+	if err != nil {
+		slog.Warn("failed to read file contents", "file", change.To.Name, "error", err)
+		return nil
+	}
 
-		// Only scan added/modified files.
-		if change.To.Name == "" {
-			continue // Deleted file.
-		}
+	meta := cs.meta
+	meta.FilePath = change.To.Name
 
-		file, err := commitTree.File(change.To.Name)
-		if err != nil {
-			continue
-		}
-
-		if file.Size > s.maxFileSize {
-			continue
-		}
-
-		isBinary, err := file.IsBinary()
-		if err != nil {
-			slog.Debug("binary check failed", "file", change.To.Name, "error", err)
-		}
-		if isBinary {
-			continue
-		}
-
-		// Skip auto-generated lock files.
-		if filter.IsSkippedFilename(change.To.Name) {
-			continue
-		}
-
-		// Skip files matching exclude-path globs (relative path).
-		if filter.MatchesGlob(change.To.Name, s.excludePaths) {
-			continue
-		}
-
-		// Deduplicate only blobs that would actually be emitted. Keying on
-		// content+path ensures two distinct files with identical content are
-		// both reported, while a re-added identical blob at the same path is
-		// scanned once.
-		blobKey := change.To.TreeEntry.Hash.String() + "\x00" + change.To.Name
-		if !*seenFull {
-			if seen[blobKey] {
-				continue
-			}
-			seen[blobKey] = true
-			if len(seen) >= maxSeenEntries {
-				slog.Warn("blob deduplication map reached limit, disabling dedup",
-					"limit", maxSeenEntries)
-				*seenFull = true
-			}
-		}
-
-		content, err := readBlob(file, s.maxFileSize)
-		if err != nil {
-			slog.Warn("failed to read file contents", "file", change.To.Name, "error", err)
-			continue
-		}
-
-		select {
-		case ch <- source.Chunk{
-			Data: content,
-			SourceMetadata: finding.SourceMetadata{
-				SourceType: "git",
-				Repository: s.displayTarget,
-				Commit:     c.Hash.String(),
-				Author:     c.Author.Name,
-				Email:      c.Author.Email,
-				Date:       c.Author.When,
-				Branch:     branch,
-				FilePath:   change.To.Name,
-			},
-		}:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	select {
+	case ch <- source.Chunk{
+		Data:           content,
+		SourceMetadata: meta,
+	}:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	return nil
+}
+
+// scannableBlob resolves the post-change blob of one diff entry and applies the
+// per-file filters. ok is false when the entry must be skipped: a deletion, a
+// blob missing from the commit tree, content over the size limit, binary
+// content, a generated lock file, or a match against the configured
+// exclude-path globs.
+func (s *GitSource) scannableBlob(commitTree *object.Tree, change *object.Change) (*object.File, bool) {
+	// Only scan added/modified files.
+	if change.To.Name == "" {
+		return nil, false // Deleted file.
+	}
+
+	file, err := commitTree.File(change.To.Name)
+	if err != nil {
+		return nil, false
+	}
+
+	if file.Size > s.maxFileSize {
+		return nil, false
+	}
+
+	isBinary, err := file.IsBinary()
+	if err != nil {
+		slog.Debug("binary check failed", "file", change.To.Name, "error", err)
+	}
+	if isBinary {
+		return nil, false
+	}
+
+	// Skip auto-generated lock files.
+	if filter.IsSkippedFilename(change.To.Name) {
+		return nil, false
+	}
+
+	// Skip files matching exclude-path globs (relative path).
+	if filter.MatchesGlob(change.To.Name, s.excludePaths) {
+		return nil, false
+	}
+
+	return file, true
+}
+
+// markBlobSeen records a blob for deduplication and reports whether it should be
+// scanned. Only blobs that would actually be emitted reach this point. Keying on
+// content+path ensures two distinct files with identical content are both
+// reported, while a re-added identical blob at the same path is scanned once.
+// Once the map reaches maxSeenEntries, deduplication is disabled (seenFull) to
+// prevent unbounded memory growth and every later blob is accepted.
+func markBlobSeen(change *object.Change, seen map[string]bool, seenFull *bool) bool {
+	if *seenFull {
+		return true
+	}
+
+	blobKey := change.To.TreeEntry.Hash.String() + "\x00" + change.To.Name
+	if seen[blobKey] {
+		return false
+	}
+	seen[blobKey] = true
+	if len(seen) >= maxSeenEntries {
+		slog.Warn("blob deduplication map reached limit, disabling dedup",
+			"limit", maxSeenEntries)
+		*seenFull = true
+	}
+	return true
 }
 
 // readBlob reads a file blob's bytes directly into a []byte, avoiding the

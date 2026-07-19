@@ -157,67 +157,104 @@ func (s *FilesystemSource) walkRoot(ctx context.Context, root string, ch chan<- 
 		default:
 		}
 
-		// Skip symlinks to avoid cycles and potential security issues.
-		if d.Type()&fs.ModeSymlink != 0 {
+		switch s.classifyEntry(path, root, relBase, d, visited) {
+		case entrySkipDir:
+			return fs.SkipDir
+		case entrySkip:
 			return nil
+		case entryScan:
 		}
 
-		if d.IsDir() {
-			// Skip version-control metadata directories by default so the
-			// Git object/pack store is never walked and read as plain files.
-			// The explicit scan root is exempt, so `scan fs .git` still
-			// works if a user genuinely targets it.
-			if d.Name() == vcsDirName && path != root {
-				return fs.SkipDir
-			}
-			return nil
-		}
-
-		// Only regular files are readable as content. Named pipes, sockets and
-		// device files can block indefinitely on open/read, and symlinks are not
-		// followed, so skip anything that is not a regular file. This also guards
-		// a non-regular path passed directly as a scan target.
-		if !d.Type().IsRegular() {
-			return nil
-		}
-
-		if s.shouldSkip(path, d, relBase) {
-			return nil
-		}
-
-		if _, seen := visited[path]; seen {
-			return nil
-		}
-		visited[path] = struct{}{}
-
-		data, err := readIfNotBinary(path)
-		if err != nil {
-			slog.Warn("file read error", "path", path, "error", err)
-			return nil
-		}
-		if data == nil {
-			// Binary content detected from the leading bytes; skip it.
-			return nil
-		}
-
-		relPath, err := filepath.Rel(relBase, path)
-		if err != nil {
-			relPath = path
-		}
-
-		select {
-		case ch <- source.Chunk{
-			Data: data,
-			SourceMetadata: finding.SourceMetadata{
-				SourceType: "filesystem",
-				FilePath:   relPath,
-			},
-		}:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		return nil
+		return emitFileChunk(ctx, ch, path, relBase)
 	})
+}
+
+// entryAction is the walk's decision for a single directory entry.
+type entryAction int
+
+const (
+	// entryScan marks a candidate file that should be read and emitted.
+	entryScan entryAction = iota
+	// entrySkip ignores the entry; the walk continues normally.
+	entrySkip
+	// entrySkipDir skips the entry's whole subtree (fs.SkipDir).
+	entrySkipDir
+)
+
+// classifyEntry decides what the walk should do with one directory entry. It
+// applies, in order, the symlink guard, the version-control directory
+// exclusion, the regular-file guard, the configured skip filters, and the
+// cross-root deduplication. An accepted file is recorded in visited, so a file
+// reachable from more than one root is scanned only once.
+func (s *FilesystemSource) classifyEntry(path, root, relBase string, d fs.DirEntry, visited map[string]struct{}) entryAction {
+	// Skip symlinks to avoid cycles and potential security issues.
+	if d.Type()&fs.ModeSymlink != 0 {
+		return entrySkip
+	}
+
+	if d.IsDir() {
+		// Skip version-control metadata directories by default so the
+		// Git object/pack store is never walked and read as plain files.
+		// The explicit scan root is exempt, so `scan fs .git` still
+		// works if a user genuinely targets it.
+		if d.Name() == vcsDirName && path != root {
+			return entrySkipDir
+		}
+		return entrySkip
+	}
+
+	// Only regular files are readable as content. Named pipes, sockets and
+	// device files can block indefinitely on open/read, and symlinks are not
+	// followed, so skip anything that is not a regular file. This also guards
+	// a non-regular path passed directly as a scan target.
+	if !d.Type().IsRegular() {
+		return entrySkip
+	}
+
+	if s.shouldSkip(path, d, relBase) {
+		return entrySkip
+	}
+
+	if _, seen := visited[path]; seen {
+		return entrySkip
+	}
+	visited[path] = struct{}{}
+
+	return entryScan
+}
+
+// emitFileChunk reads an accepted file and sends its contents as a chunk, with
+// the reported path made relative to relBase. Neither a read failure (logged)
+// nor binary content is terminal — both leave the walk running. The only error
+// returned is the context's, when cancellation interrupts the send.
+func emitFileChunk(ctx context.Context, ch chan<- source.Chunk, path, relBase string) error {
+	data, err := readIfNotBinary(path)
+	if err != nil {
+		slog.Warn("file read error", "path", path, "error", err)
+		return nil
+	}
+	if data == nil {
+		// Binary content detected from the leading bytes; skip it.
+		return nil
+	}
+
+	relPath, err := filepath.Rel(relBase, path)
+	if err != nil {
+		relPath = path
+	}
+
+	select {
+	case ch <- source.Chunk{
+		Data: data,
+		SourceMetadata: finding.SourceMetadata{
+			SourceType: "filesystem",
+			FilePath:   relPath,
+		},
+	}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
 }
 
 // Err returns the first terminal error that aborted the filesystem walk, or nil
