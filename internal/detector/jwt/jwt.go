@@ -106,12 +106,15 @@ func isStructurallyValidJWT(match []byte) bool {
 // failure (invalid base64, truncated data, a JSON array/scalar instead of an
 // object) is treated as "not a valid JWT segment".
 func decodeJSONObject(seg []byte) (map[string]any, bool) {
-	decoded, err := base64.RawURLEncoding.DecodeString(string(seg))
+	// Decode straight from the byte slice: DecodeString would allocate an
+	// intermediate string for every candidate segment.
+	decoded := make([]byte, base64.RawURLEncoding.DecodedLen(len(seg)))
+	n, err := base64.RawURLEncoding.Decode(decoded, seg)
 	if err != nil {
 		return nil, false
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(decoded, &obj); err != nil {
+	if err := json.Unmarshal(decoded[:n], &obj); err != nil {
 		return nil, false
 	}
 	return obj, true

@@ -334,15 +334,13 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			default:
 			}
 
-			// Engine-level cancellation safeguard: run det.Scan bounded by ctx so
-			// a pathological or non-returning detector cannot hold this worker
-			// past cancellation (detectors themselves do not consult ctx). When
-			// ctx is cancelled mid-scan, ok is false and the worker returns
-			// promptly without queuing any further work.
-			rawFindings, ok := runDetector(ctx, det, chunk.Data)
-			if !ok {
-				return
-			}
+			// det.Scan runs inline. Cancellation latency is bounded by a single
+			// detector scan: the ctx check above runs before each detector, and
+			// Go's regexp engine (RE2) is linear-time with no catastrophic
+			// backtracking, so a scan always terminates. Wrapping each scan in a
+			// goroutine to abandon it mid-flight would add a goroutine and a
+			// channel per detector per chunk for no correctness gain.
+			rawFindings := det.Scan(ctx, chunk.Data)
 
 			// Track the search position per raw value so repeated matches of the
 			// same bytes resolve to distinct offsets. Detectors emit findings in
@@ -398,32 +396,6 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 				}
 			}
 		}
-	}
-}
-
-// runDetector runs det.Scan bounded by ctx and reports whether it completed. It
-// is the engine-level safeguard that keeps a worker responsive to cancellation
-// even though no detector consults the ctx it is handed: the scan runs in its
-// own goroutine and, if ctx is cancelled first, runDetector returns (nil, false)
-// immediately and abandons the in-flight scan rather than blocking on it.
-//
-// The done channel is buffered (cap 1) so an abandoned-but-eventually-returning
-// scan can still deliver its result and exit without leaking a goroutine; only a
-// truly non-returning detector — the pathological case this guards against — is
-// left running, and even then the worker is not held.
-func runDetector(ctx context.Context, det detector.Detector, data []byte) ([]detector.RawFinding, bool) {
-	if ctx.Err() != nil {
-		return nil, false
-	}
-	done := make(chan []detector.RawFinding, 1)
-	go func() {
-		done <- det.Scan(ctx, data)
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, false
-	case rf := <-done:
-		return rf, true
 	}
 }
 

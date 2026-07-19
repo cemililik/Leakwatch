@@ -147,7 +147,12 @@ func isPlaceholder(value []byte) bool {
 func hasHighVowelRatio(value []byte) bool {
 	letters := 0
 	vowels := 0
-	for _, b := range bytes.ToLower(value) {
+	// Lowercase in the loop rather than allocating a copy via bytes.ToLower:
+	// this runs on every candidate match, so the allocation is hot-path waste.
+	for _, b := range value {
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
 		if b < 'a' || b > 'z' {
 			continue
 		}
