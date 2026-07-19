@@ -2,6 +2,7 @@
 package infura
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -43,8 +44,8 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        hexKey,
-			RawV2:      fullMatch,
+			Raw:        bytes.Clone(hexKey),
+			RawV2:      bytes.Clone(fullMatch),
 			Redacted:   detector.RedactBytes(hexKey),
 		})
 	}

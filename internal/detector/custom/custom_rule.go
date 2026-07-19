@@ -3,6 +3,7 @@
 package custom
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"regexp"
@@ -50,7 +51,20 @@ func NewFromDef(def RuleDef) (*CustomDetector, error) {
 		return nil, fmt.Errorf("custom rule %q: invalid regex: %w", def.ID, err)
 	}
 
-	sev := parseSeverity(def.Severity)
+	// An empty severity legitimately defaults to medium; a non-empty but
+	// unrecognized severity (a casing mistake like "Critical", or a typo like
+	// "critial") must fail loudly rather than being silently downgraded to
+	// medium — severity is a first-class knob used to gate CI/CD via
+	// --min-severity, and a silent downgrade could drop a real finding below
+	// a severity gate with no error or log message.
+	sev := finding.SeverityMedium
+	if def.Severity != "" {
+		parsed, ok := parseSeverity(def.Severity)
+		if !ok {
+			return nil, fmt.Errorf("custom rule %q: unrecognized severity %q (expected one of: critical, high, medium, low)", def.ID, def.Severity)
+		}
+		sev = parsed
+	}
 
 	return &CustomDetector{
 		def:     def,
@@ -87,7 +101,7 @@ func (d *CustomDetector) Scan(_ context.Context, data []byte) []detector.RawFind
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   detector.RedactBytes(match),
 		})
 	}
@@ -122,17 +136,21 @@ func RegisterCustomRules(rules []RuleDef) (int, []error) {
 	return count, errs
 }
 
-func parseSeverity(s string) finding.Severity {
+// parseSeverity converts a rule's YAML severity string into a finding.Severity.
+// The second return value is false when s is a non-empty string that does not
+// match one of the four recognized (lowercase, exact) severity names; callers
+// must treat that as an error rather than silently falling back to medium.
+func parseSeverity(s string) (finding.Severity, bool) {
 	switch s {
 	case "critical":
-		return finding.SeverityCritical
+		return finding.SeverityCritical, true
 	case "high":
-		return finding.SeverityHigh
+		return finding.SeverityHigh, true
 	case "medium":
-		return finding.SeverityMedium
+		return finding.SeverityMedium, true
 	case "low":
-		return finding.SeverityLow
+		return finding.SeverityLow, true
 	default:
-		return finding.SeverityMedium
+		return finding.SeverityMedium, false
 	}
 }

@@ -1,5 +1,5 @@
 // Package npm provides a verifier for npm authentication tokens.
-// It uses the npm registry GET /-/whoami endpoint to check token validity.
+// It uses the npm registry GET /-/npm/v1/user endpoint to check token validity.
 package npm
 
 import (
@@ -39,6 +39,12 @@ func (v *Verifier) Type() string {
 
 // Verify checks if the detected npm token is valid/active.
 // Raw contains the token value.
+//
+// This calls GET /-/npm/v1/user, matching
+// docs/architecture/05-VERIFIER-ANALYSIS.md and
+// docs/guides/secret-verification.md (the code previously called the lighter,
+// undocumented /-/whoami endpoint, which is real and functionally
+// equivalent, but disagreed with the documented egress target).
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
 	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
@@ -46,22 +52,23 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "npm",
 		Request: httpx.Request{
-			URL:    apiURL + "/-/whoami",
+			URL:    apiURL + "/-/npm/v1/user",
 			Header: map[string]string{"Authorization": "Bearer " + token},
 		},
 		ActiveMessage:   "npm token is active",
 		InactiveMessage: "npm token is invalid or revoked",
-		Decode:          decodeWhoami,
+		Decode:          decodeUser,
 	})
 }
 
-// decodeWhoami reports the account name as username.
-func decodeWhoami(body io.Reader) (map[string]string, string, error) {
-	var whoami struct {
-		Username string `json:"username"`
+// decodeUser reports the account name as username. The npm profile endpoint
+// returns the username in a "name" field (not "username").
+func decodeUser(body io.Reader) (map[string]string, string, error) {
+	var user struct {
+		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(body).Decode(&whoami); err != nil {
+	if err := json.NewDecoder(body).Decode(&user); err != nil {
 		return nil, "", err
 	}
-	return map[string]string{"username": whoami.Username}, "", nil
+	return map[string]string{"username": user.Name}, "", nil
 }

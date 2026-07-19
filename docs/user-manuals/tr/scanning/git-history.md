@@ -51,11 +51,13 @@ Leakwatch commit-bazlı diff'leri incelediğinden, sonradan silinen — yani mev
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|------------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı çalışan sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Bu boyutu aşan blob'ları atla (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
+| `--exclude` | — | — | Dışlanacak yol kalıbı. Tekrarlanabilir; `filter.exclude-paths` ile birleştirilir. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri. Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
 | `--only-verified` | — | `false` | Yalnızca doğrulama ile aktif olduğu onaylanan bulguları raporla. |
 | `--min-severity` | — | `low` | Raporlanacak minimum önem: `low`, `medium`, `high`, `critical`. |
@@ -106,7 +108,8 @@ Git taramasından elde edilen her bulgu commit meta verisi içerir:
 |------|----------|
 | `repository` | Taranan deponun URL'si veya yolu (kimlik bilgileri ayıklanmış). |
 | `commit` | Sırrın tanıtıldığı commit hash'i. |
-| `author` | Commit yazarının adı ve e-postası. |
+| `author` | Yalnızca commit yazarının adı. |
+| `email` | Commit yazarının e-posta adresi, ayrı bir alan olarak. |
 | `date` | Commit zaman damgası. |
 | `branch` | Dal bağlamı (kullanılabilir olduğunda). |
 
@@ -125,10 +128,11 @@ Depo URL'leri gömülü kimlik bilgileri içeriyorsa (örn. `https://user:TOKEN@
 | `0` | Tarama tamamlandı, bulgu yok. |
 | `1` | Tarama tamamlandı, bulgular raporlandı. |
 | `2` | Tarama başarısız oldu (geçersiz URL, kimlik doğrulama hatası, vb.). |
+| `3` | Tarama tamamlanmadan kesildi (`Ctrl+C` / `SIGTERM`) ve hiçbir bulgu raporlanmamıştı. |
 
 Her çalıştırmanın ardından stderr'e bir tarama özeti yazdırılır. Taramalar SIGINT/SIGTERM sinyalinde düzgün biçimde iptal edilir.
 
-## Ayrıca bakınız
+## Ayrıca bakın
 
 - [Hızlı Başlangıç](#/getting-started/quick-start) — ilk taramanızı bir dakikadan kısa sürede çalıştırın.
 - [Çoklu Depo](#/scanning/multiple-repos) — tek komutla birden fazla depoyu tarayın.

@@ -13,3 +13,12 @@ docs/**
 
 # Vendor dependencies.
 vendor/**
+
+# Example custom-rule fixtures contain regex patterns designed to look like
+# real secrets, which is exactly what trips the generic/entropy detectors.
+# Self-scan tradeoff: this repo does not run `leakwatch scan fs .` against
+# itself in CI (see docs/05-ROADMAP.md), so nothing currently exercises the
+# case where this exclusion is missing or the fixtures grow new noise.
+# Adding a self-scan CI/dogfood step would let this exclusion's correctness
+# be verified continuously instead of by manual review.
+rules/**

@@ -27,7 +27,7 @@ For example, the config key `scan.concurrency` becomes `LEAKWATCH_SCAN_CONCURREN
 | `LEAKWATCH_SCAN_CONCURRENCY` | Number of concurrent scan workers. Equivalent to `--concurrency`. |
 | `LEAKWATCH_VERIFICATION_ENABLED` | Set to `false` to disable live verification globally. Equivalent to `--no-verify`. |
 | `LEAKWATCH_VERIFICATION_RATE_LIMIT` | Maximum verification requests per second across all verifiers. |
-| `LEAKWATCH_OUTPUT_FORMAT` | Default output format (`json`, `sarif`, `csv`, or `table`). Equivalent to `--format`. |
+| `LEAKWATCH_OUTPUT_FORMAT` | Default output format (`json`, `sarif`, `csv`, `table`, or `github`). Equivalent to `--format`. |
 | `LEAKWATCH_DETECTION_ENTROPY_THRESHOLD` | Minimum Shannon entropy for a match to be reported. Float value, e.g. `3.5`. |
 
 ### Display variable

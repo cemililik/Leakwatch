@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,7 +36,42 @@ jobs:
             echo "::error::Coverage ${COVERAGE}% is below 70% threshold"
             exit 1
           fi
+      - name: Detector coverage floor (95%)
+        # CLAUDE.md mandates 95% coverage for internal/detector/... packages.
+        # Every detector package currently meets it, so this is a hard gate:
+        # any detector package that drops below 95% fails the build.
+        run: |
+          set -uo pipefail
+          OUTPUT=$(go test -cover ./internal/detector/... 2>&1)
+          echo "$OUTPUT"
+          STALE=""
+          while IFS= read -r line; do
+            pkg=$(grep -oE 'github\.com/HodeTech/leakwatch/internal/detector[^[:space:]]*' <<<"$line" || true)
+            [ -z "$pkg" ] && continue
+            pct=$(grep -oE '[0-9]+\.[0-9]+% of statements' <<<"$line" | grep -oE '^[0-9]+\.[0-9]+' || true)
+            [ -z "$pct" ] && continue
+            base=$(basename "$pkg")
+            # testutil is a test-helper package, not a detector; it carries no
+            # coverage requirement of its own.
+            [ "$base" = "testutil" ] && continue
+            if awk -v p="$pct" 'BEGIN{exit !(p<95)}'; then
+              STALE="${STALE}  - ${pkg}: ${pct}%\n"
+            fi
+          done <<<"$OUTPUT"
+          if [ -n "$STALE" ]; then
+            echo "::error::internal/detector packages below the CLAUDE.md-mandated 95% coverage floor:"
+            printf '%b' "$STALE"
+            exit 1
+          fi
+          echo "All internal/detector packages meet the 95% coverage floor."
       - run: go build ./...
+      - name: Cross-compile smoke test (windows/amd64)
+        # Catches Windows build breaks on every push/PR instead of only at
+        # release time, when .goreleaser.yml actually builds windows/amd64
+        # and windows/arm64 binaries.
+        run: GOOS=windows GOARCH=amd64 go build ./...
+        env:
+          CGO_ENABLED: '0'
 
   lint:
     runs-on: ubuntu-latest
@@ -55,6 +94,28 @@ jobs:
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version: '1.25.12'
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: Run govulncheck
         run: govulncheck ./...
+
+  site-sync:
+    name: site-build output sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.25.12'
+          cache: true
+          cache-dependency-path: tools/site-build/go.sum
+      - name: Regenerate site/js from tools/site-build
+        working-directory: tools/site-build
+        run: go run . -strict
+      - name: Fail if the committed site/js has drifted from the generator
+        run: |
+          if ! git diff --exit-code -- site/js; then
+            echo "::error::site/js is stale. Run 'cd tools/site-build && go run . -strict' from the repo root and commit the regenerated files under site/js/."
+            exit 1
+          fi

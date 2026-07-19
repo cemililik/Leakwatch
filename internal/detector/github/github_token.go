@@ -9,11 +9,16 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-// tokenPattern matches GitHub Personal Access Tokens only. The OAuth-related
-// prefixes (gho/ghu/ghs/ghr) are intentionally excluded here and handled
-// exclusively by the github-oauth-token detector, so that any single token is
-// reported by exactly one detector (see github_oauth.go).
-var tokenPattern = regexp.MustCompile(`ghp_[A-Za-z0-9_]{36,100}`)
+// tokenPattern matches GitHub Personal Access Tokens: both the classic
+// `ghp_` PAT and the `github_pat_` fine-grained PAT, which GitHub has made
+// the default/recommended PAT type since 2022 (previously entirely
+// unmatched — see review section 03-detectors-d2.md HIGH finding
+// "github_token.go:16" and docs/05-ROADMAP.md "GitHub fine-grained PAT
+// support"). The OAuth-related prefixes (gho/ghu/ghs/ghr) are intentionally
+// excluded here and handled exclusively by the github-oauth-token detector,
+// so that any single token is reported by exactly one detector (see
+// github_oauth.go).
+var tokenPattern = regexp.MustCompile(`ghp_[A-Za-z0-9_]{36,100}|github_pat_[A-Za-z0-9_]{22,}`)
 
 // Token detects GitHub Personal Access Tokens.
 type Token struct{}
@@ -25,7 +30,7 @@ func (d *Token) ID() string { return "github-token" }
 func (d *Token) Description() string { return "GitHub Personal Access Token" }
 
 // Keywords returns the Aho-Corasick pre-filter keywords for GitHub token detection.
-func (d *Token) Keywords() []string { return []string{"ghp_"} }
+func (d *Token) Keywords() []string { return []string{"ghp_", "github_pat_"} }
 
 // Severity returns the default severity level for GitHub token findings.
 func (d *Token) Severity() finding.Severity { return finding.SeverityCritical }

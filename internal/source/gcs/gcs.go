@@ -6,9 +6,11 @@ package gcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
@@ -21,6 +23,13 @@ import (
 
 // defaultMaxFileSize is the maximum object size to scan (10 MB).
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
+
+// validateTimeout bounds the network calls made by Validate. The
+// source.Source interface's Validate() method takes no context.Context
+// parameter, so the caller's own cancellation cannot be threaded through
+// here; a bounded timeout at least prevents an unreachable/misconfigured
+// bucket from hanging Validate indefinitely.
+const validateTimeout = 30 * time.Second
 
 // gcsClient defines the subset of the GCS API used by GCSSource.
 // This interface enables unit testing without real GCP calls.
@@ -94,6 +103,13 @@ type GCSSource struct {
 	bufferSize   int
 	excludePaths []string
 	client       gcsClient
+
+	// err records the first terminal failure that aborted listing (client
+	// initialization or an object-listing failure). It is written only by the
+	// Chunks goroutine, before it closes the chunks channel, and read only via
+	// Err after that channel has been drained; the channel close/drain is the
+	// happens-before edge, so no extra synchronization is needed.
+	err error
 }
 
 // New creates a new GCSSource for the given bucket.
@@ -115,6 +131,29 @@ func (s *GCSSource) Type() string {
 	return "gcs"
 }
 
+// Err returns the first terminal error that aborted GCS listing, or nil if it
+// completed normally. It must only be called after the channel returned by Chunks
+// has been fully drained (closed).
+func (s *GCSSource) Err() error {
+	return s.err
+}
+
+// captureErr records the first terminal error that aborted chunk production. It
+// is called only from the single Chunks goroutine, before close(ch), so a plain
+// field write is safe (the channel close/drain publishes it to Err's reader).
+// Context cancellation is never recorded because it is reported through the
+// context, not Err. GCS API errors carry no credential material, so no additional
+// sanitization is required here.
+func (s *GCSSource) captureErr(err error) {
+	if err == nil || s.err != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	s.err = err
+}
+
 // Validate checks that the GCS bucket is accessible.
 // It initializes the GCS client if not already set and checks bucket attributes.
 func (s *GCSSource) Validate() error {
@@ -122,11 +161,14 @@ func (s *GCSSource) Validate() error {
 		return fmt.Errorf("gcs bucket name is required")
 	}
 
-	if err := s.ensureClient(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
+	defer cancel()
+
+	if err := s.ensureClient(ctx); err != nil {
 		return fmt.Errorf("gcs client initialization failed: %w", err)
 	}
 
-	_, err := s.client.Bucket(s.bucket).Attrs(context.Background())
+	_, err := s.client.Bucket(s.bucket).Attrs(ctx)
 	if err != nil {
 		return fmt.Errorf("gcs bucket inaccessible %q: %w", s.bucket, err)
 	}
@@ -143,8 +185,14 @@ func (s *GCSSource) Chunks(ctx context.Context) <-chan source.Chunk {
 
 		if err := s.ensureClient(ctx); err != nil {
 			slog.Error("gcs client initialization failed", "error", err)
+			s.captureErr(fmt.Errorf("gcs client initialization failed: %w", err))
 			return
 		}
+		defer func() {
+			if err := s.client.Close(); err != nil {
+				slog.Warn("gcs client close failed", "error", err)
+			}
+		}()
 
 		s.listAndSendChunks(ctx, ch)
 	}()
@@ -192,6 +240,7 @@ func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chun
 		}
 		if err != nil {
 			slog.Error("gcs list objects failed", "bucket", s.bucket, "error", err)
+			s.captureErr(fmt.Errorf("gcs list objects failed for bucket %q: %w", s.bucket, err))
 			return
 		}
 

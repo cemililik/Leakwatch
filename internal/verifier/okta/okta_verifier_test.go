@@ -109,7 +109,7 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 	assert.Equal(t, "empty token", result.Message)
 }
 
-func TestVerify_NoDomain_ReturnsError(t *testing.T) {
+func TestVerify_NoDomain_ReturnsUnverified(t *testing.T) {
 	v := &Verifier{}
 
 	raw := detector.RawFinding{
@@ -120,7 +120,7 @@ func TestVerify_NoDomain_ReturnsError(t *testing.T) {
 
 	result := v.Verify(context.Background(), raw)
 
-	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "Okta domain required", result.Message)
 }
 

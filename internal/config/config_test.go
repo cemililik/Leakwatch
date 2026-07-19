@@ -2,6 +2,7 @@ package config
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,48 @@ func TestLoadFrom_FilterAndOutputExtras_Unmarshalled(t *testing.T) {
 	assert.Equal(t, "high", cfg.Output.SeverityThreshold)
 }
 
+func TestLoadFrom_FilterExcludePaths_Unmarshalled(t *testing.T) {
+	// filter.exclude-paths must be registered with Viper's default set (like
+	// filter.exclude-detectors) so that AutomaticEnv/Set overrides for this key
+	// actually reach the unmarshalled Config; a missing SetDefault silently
+	// drops the value.
+	v := newTestViper()
+	v.Set("filter.exclude-paths", []string{"vendor/**", "*.lock"})
+
+	cfg, err := LoadFrom(v)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vendor/**", "*.lock"}, cfg.Filter.ExcludePaths)
+}
+
+func TestLoadFrom_FilterExcludePaths_DefaultsEmpty(t *testing.T) {
+	v := newTestViper()
+
+	cfg, err := LoadFrom(v)
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.Filter.ExcludePaths)
+}
+
+func TestLoadFrom_FilterExcludePathsEnvVar_Honored(t *testing.T) {
+	// Regression test for the documented "every config key can be overridden
+	// with an environment variable" contract: LEAKWATCH_FILTER_EXCLUDE_PATHS
+	// must reach Config.Filter.ExcludePaths. This mirrors the AutomaticEnv
+	// wiring cmd/scan_common.go performs on its own Viper instance, without
+	// depending on cmd/ (out of scope for this package's tests).
+	t.Setenv("LEAKWATCH_FILTER_EXCLUDE_PATHS", "vendor/**,*.lock")
+
+	v := newTestViper()
+	v.SetEnvPrefix("LEAKWATCH")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	v.AutomaticEnv()
+
+	cfg, err := LoadFrom(v)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vendor/**", "*.lock"}, cfg.Filter.ExcludePaths)
+}
+
 func TestLoadFrom_CustomRules_Unmarshalled(t *testing.T) {
 	v := newTestViper()
 	v.Set("custom-rules", []map[string]any{
@@ -190,6 +233,24 @@ func TestLoadFrom_InvalidMaxFileSize_ReturnsError(t *testing.T) {
 	_, err := LoadFrom(v)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max-file-size")
+}
+
+func TestLoadFrom_MaxFileSizeAboveCeiling_ReturnsError(t *testing.T) {
+	v := newTestViper()
+	v.Set("scan.max-file-size", maxFileSizeCeiling+1)
+
+	_, err := LoadFrom(v)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "max-file-size")
+}
+
+func TestLoadFrom_MaxFileSizeAtCeiling_Accepted(t *testing.T) {
+	v := newTestViper()
+	v.Set("scan.max-file-size", maxFileSizeCeiling)
+
+	cfg, err := LoadFrom(v)
+	require.NoError(t, err)
+	assert.Equal(t, int64(maxFileSizeCeiling), cfg.Scan.MaxFileSize)
 }
 
 func TestLoadFrom_UnsupportedFormat_ReturnsError(t *testing.T) {

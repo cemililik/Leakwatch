@@ -220,7 +220,7 @@ leakwatch scan slack --rate-limit 50
 
 ## 9. Output Formats
 
-Leakwatch supports four output formats for Slack scan results:
+Leakwatch supports five output formats for Slack scan results:
 
 | Format | Flag | Use Case |
 |--------|------|----------|
@@ -228,6 +228,7 @@ Leakwatch supports four output formats for Slack scan results:
 | **SARIF** | `--format sarif` | GitHub Security, IDE integration |
 | **CSV** | `--format csv` | Spreadsheet tools, Excel |
 | **Table** | `--format table` | Human-readable terminal output |
+| **GitHub** | `--format github` | Inline pull-request annotations in GitHub Actions |
 
 ```bash
 # JSON output (default)

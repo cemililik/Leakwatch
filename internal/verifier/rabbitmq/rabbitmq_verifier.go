@@ -45,9 +45,13 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 
 	parsed, err := url.Parse(connStr)
 	if err != nil {
+		// NEVER log err.Error() here: net/url wraps parse failures in a
+		// *url.Error whose message embeds the entire original input string
+		// (including the plaintext password) via its %q-quoted URL field.
+		// Log a generic message only; raw.Redacted is already safe to emit.
 		slog.DebugContext(
-			ctx, "rabbitmq verifier: failed to parse URL",
-			slog.String("error", err.Error()),
+			ctx, "rabbitmq verifier: failed to parse connection string",
+			slog.String("redacted", raw.Redacted),
 		)
 		return finding.VerificationResult{
 			Status:  finding.StatusUnverified,
@@ -87,7 +91,7 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		"user": parsed.User.Username(),
 	}
 
-	slog.InfoContext(
+	slog.DebugContext(
 		ctx, "rabbitmq verifier: connection string format validated",
 		slog.String("host", parsed.Hostname()),
 		slog.String("user", parsed.User.Username()),

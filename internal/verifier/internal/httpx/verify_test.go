@@ -187,6 +187,36 @@ func TestVerifyToken_UnexpectedStatus(t *testing.T) {
 	assert.Contains(t, res.Message, "500")
 }
 
+func TestVerifyToken_RateLimited_429IsDistinguished(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	res := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:    "x",
+		Request: Request{URL: server.URL},
+	})
+	assert.Equal(t, finding.StatusVerifyError, res.Status)
+	assert.Contains(t, res.Message, "rate limited by provider")
+	assert.Contains(t, res.Message, "Retry-After: 30")
+	// A rate-limit response must be actionable, not the generic unexpected-status
+	// message.
+	assert.NotContains(t, res.Message, "unexpected status code")
+}
+
+func TestRateLimited(t *testing.T) {
+	withHeader := RateLimited(context.Background(), "x", "12")
+	assert.Equal(t, finding.StatusVerifyError, withHeader.Status)
+	assert.Contains(t, withHeader.Message, "Retry-After: 12")
+
+	noHeader := RateLimited(context.Background(), "x", "")
+	assert.Equal(t, finding.StatusVerifyError, noHeader.Status)
+	assert.Contains(t, noHeader.Message, "rate limited by provider")
+	assert.NotContains(t, noHeader.Message, "Retry-After")
+}
+
 func TestVerifyToken_Redirect_IsVerifyError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Location", "https://example.com/login")

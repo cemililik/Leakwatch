@@ -114,17 +114,23 @@ Both `s3` and `gcs` support the same common scan flags:
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Write results to this file instead of stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent workers. |
 | `--max-file-size` | — | `10485760` (10 MB) | Skip objects larger than this value (bytes). |
 | `--show-raw` | — | `false` | Include the raw secret value in output. |
+| `--exclude` | — | — | Object-key pattern to exclude. Repeatable; combined with `filter.exclude-paths`. |
+| `--exclude-detectors` | — | — | Detector IDs to exclude for this run. Repeatable; combined with `filter.exclude-detectors`. |
 | `--no-verify` | — | `false` | Disable secret verification. |
 | `--only-verified` | — | `false` | Report only findings confirmed active by verification. |
 | `--min-severity` | — | `low` | Minimum severity to report: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Attach remediation guidance to each finding. |
 
-Path-based exclusions (applied to object keys) are configured in `.leakwatch.yaml` under `filter.exclude-paths`. Root-level flags `--config` and `--log-level` (default `warn`) also apply.
+Path-based exclusions (applied to object keys) are configured in `.leakwatch.yaml` under `filter.exclude-paths`, or per-run via `--exclude`. Root-level flags `--config` and `--log-level` (default `warn`) also apply.
+
+## Finding metadata
+
+An S3 or GCS finding carries only the fields common to every source, plus `file_path` set to `<bucket>/<object-key>` (there is no separate `line` field for cloud-storage findings).
 
 ## Exit codes
 
@@ -133,6 +139,7 @@ Path-based exclusions (applied to object keys) are configured in `.leakwatch.yam
 | `0` | Scan completed, no findings. |
 | `1` | Scan completed, findings reported. |
 | `2` | Scan failed (authentication error, bucket not found, etc.). |
+| `3` | Scan was interrupted (`Ctrl+C` / `SIGTERM`) before completing, and no findings had been reported. |
 
 A scan summary is printed to stderr after every run. Scans cancel gracefully on SIGINT/SIGTERM.
 

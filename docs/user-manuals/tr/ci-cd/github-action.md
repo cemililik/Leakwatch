@@ -181,7 +181,7 @@ Bulguları GitHub Actions iş akışı komutları olarak yaymak için `format: g
     fail-on-findings: "false"   # isterseniz engellemeden yalnızca ek açıklama yapın
 ```
 
-Ek açıklamalar her zaman yalnızca **redakte edilmiş** değeri gösterir — ham sır, (çoğu zaman herkese açık olan) PR arayüzüne veya günlüklere asla yazılmaz. Hızlı ve görünür PR geri bildirimi için `format: github`, bulguları **Security** sekmesinde Code Scanning uyarıları olarak kaydetmek için `sarif-upload: true` ile `format: sarif` kullanın.
+Ek açıklamalar her zaman yalnızca **maskelenmiş** değeri gösterir — ham sır, (çoğu zaman herkese açık olan) PR arayüzüne veya günlüklere asla yazılmaz. Hızlı ve görünür PR geri bildirimi için `format: github`, bulguları **Security** sekmesinde Code Scanning uyarıları olarak kaydetmek için `sarif-upload: true` ile `format: sarif` kullanın.
 
 ## Ayrıca bakın
 

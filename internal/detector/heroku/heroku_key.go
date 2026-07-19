@@ -2,6 +2,7 @@
 package heroku
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -9,8 +10,12 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
+// (?i) makes the key-name portion case-insensitive to catch mixed/Pascal
+// casing (e.g. "Heroku_Api_Key="); the Aho-Corasick pre-filter is already
+// case-insensitive (internal/matcher/matcher.go lowercases both keywords and
+// data), so this closes a regex-stage-only gap.
 var herokuKeyPattern = regexp.MustCompile(
-	`(?:HEROKU_API_KEY|heroku_api_key|heroku)\s*[=:]\s*['"]?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['"]?`,
+	`(?i)(?:HEROKU_API_KEY|heroku_api_key|heroku)\s*[=:]\s*['"]?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['"]?`,
 )
 
 // Detector detects Heroku API Keys.
@@ -33,15 +38,16 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 
+	// herokuKeyPattern has exactly one mandatory (non-optional) capturing
+	// group, so every entry in allMatches is guaranteed to carry it: there is
+	// no defensive length check to make here (a `len(match) < 2` guard would
+	// be permanently dead code, unreachable by any input).
 	findings := make([]detector.RawFinding, 0, len(allMatches))
 	for _, match := range allMatches {
-		if len(match) < 2 {
-			continue
-		}
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match[1],
-			RawV2:      match[0],
+			Raw:        bytes.Clone(match[1]),
+			RawV2:      bytes.Clone(match[0]),
 			Redacted:   detector.RedactBytes(match[1]),
 		})
 	}

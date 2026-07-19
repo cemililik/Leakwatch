@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hodetech.github.io/Leakwatch/sitemap.xml

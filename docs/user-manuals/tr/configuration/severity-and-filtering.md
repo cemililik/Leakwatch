@@ -41,7 +41,7 @@ output:
 
 ## `--only-verified`: yalnızca onaylanmış aktif sırlar
 
-Yalnızca doğrulama durumu `verified_active` olan bulguları, yani Leakwatch'ın sağlayıcı API'sine kontrollü bir salt-okunur çağrı yaparak hâlâ geçerli olduğunu doğruladığı sırları tutmak için `--only-verified` parametresini kullanın. Diğer tüm bulgular (doğrulanmamış, doğrulanmış-etkin değil veya doğrulama hatası) bırakılır.
+Yalnızca doğrulama durumu `verified_active` olan bulguları, yani Leakwatch'ın sağlayıcı API'sine kontrollü bir salt-okunur çağrı yaparak hâlâ geçerli olduğunu doğruladığı sırları tutmak için `--only-verified` parametresini kullanın. Diğer tüm bulgular (`unverified`, `verified_inactive` veya `verify_error`) bırakılır.
 
 ```bash
 leakwatch scan fs . --only-verified
@@ -64,6 +64,8 @@ filter:
 
 Dedektör ID'leri [Dedektör Kataloğu](#/detectors/detector-catalog)'nda listelenmiştir. Bir dedektör sürekli olarak kod tabanınız için yanlış pozitifler ürettiğinde ve diğer bastırma mekanizmaları (satır içi yok saymalar veya `.leakwatchignore`) yeterince ayrıntılı olmadığında bu ayarı kullanın.
 
+Yapılandırma dosyasını düzenlemeden bir dedektörü tek bir çalıştırma için susturmak üzere, herhangi bir tarama alt komutunda `--exclude-detectors <id>[,<id>...]` (tekrarlanabilir) geçirin. Bu, `filter.exclude-detectors`'ın yerine geçmek yerine ona ekleme yapar.
+
 ## `filter.exclude-paths`: tarama öncesi yolları atla
 
 Yolları tarama motoru okumadan önce dışlamak için yapılandırma dosyasında `filter.exclude-paths` kullanın. Desenler, `.leakwatchignore` ile aynı glob söz dizimini kullanır (standart globlar, `**` çift yıldız ve sondaki eğik çizgili dizin desenleri) ve **tüm tarama kaynaklarına** uygulanır:
@@ -79,7 +81,7 @@ filter:
 ```
 
 :::note
-`scan fs` komutunda `--exclude <pattern>` bayrağı, `filter.exclude-paths` ile komut satırı eşdeğeridir. `--exclude` bayrağı **yalnızca** `scan fs` komutunda mevcuttur — diğer tüm kaynaklar için yapılandırma dosyası ayarını kullanın.
+`--exclude <pattern>` bayrağı, `filter.exclude-paths`'in komut satırı eşdeğeridir ve `scan slack` **hariç** (bunun yerine `--exclude-channels` ile dışlama yapan) her tarama alt komutunda kullanılabilir. Tekrarlanabilir olup `filter.exclude-paths`'in yerine geçmek yerine ona ekleme yapar.
 :::
 
 ## CI'da filtreleri birleştirme

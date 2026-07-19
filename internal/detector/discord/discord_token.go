@@ -2,6 +2,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -39,7 +40,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   detector.RedactBytes(match),
 		})
 	}

@@ -113,7 +113,14 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 	if errResult != nil {
 		return *errResult
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// Drain the remaining body (bounded by MaxBodyBytes so a misbehaving
+		// endpoint cannot exhaust memory) before closing, so the underlying
+		// connection can be returned to the shared client's keep-alive pool
+		// instead of being discarded.
+		_, _ = io.Copy(io.Discard, LimitReader(resp.Body))
+		_ = resp.Body.Close()
+	}()
 
 	code := resp.StatusCode
 	switch {
@@ -125,6 +132,11 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 			Status:  finding.StatusVerifiedInactive,
 			Message: spec.InactiveMessage,
 		}
+	case code == http.StatusTooManyRequests:
+		// A provider-side rate limit must be distinguishable from a genuine
+		// verification bug: report an actionable message rather than a generic
+		// "unexpected status code".
+		return RateLimited(ctx, spec.Name, resp.Header.Get("Retry-After"))
 	default:
 		return UnexpectedStatus(ctx, spec.Name, code)
 	}
@@ -223,6 +235,24 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		Status:    finding.StatusVerifiedActive,
 		Message:   spec.ActiveMessage,
 		ExtraData: extra,
+	}
+}
+
+// RateLimited returns a distinguished StatusVerifyError result for an HTTP 429
+// (Too Many Requests) response, so a provider-side rate limit is never conflated
+// with a genuine verification bug or an inactive secret. retryAfter is the raw
+// Retry-After header value (may be empty); it is echoed into the message to make
+// the outcome actionable and never contains secret material.
+func RateLimited(ctx context.Context, name, retryAfter string) finding.VerificationResult {
+	msg := "rate limited by provider (HTTP 429), retry later"
+	if retryAfter != "" {
+		msg = fmt.Sprintf("%s (Retry-After: %s)", msg, retryAfter)
+	}
+	slog.WarnContext(ctx, name+" verifier: rate limited by provider",
+		slog.String("retry_after", retryAfter))
+	return finding.VerificationResult{
+		Status:  finding.StatusVerifyError,
+		Message: msg,
 	}
 }
 

@@ -14,6 +14,7 @@ go test -race ./...
 ## Requirements
 
 - Go 1.25+
+- gofumpt
 - golangci-lint v2+
 - Git 2.30+
 
@@ -22,8 +23,9 @@ go test -race ./...
 1. Create a feature branch from `main`: `git checkout -b feature/my-feature`
 2. Make your changes
 3. Run tests: `go test -race ./...`
-4. Run lint checks: `golangci-lint run ./...`
-5. Create a pull request
+4. Format your code: `gofumpt -w .` (mandatory — a strict superset of `gofmt`; CI rejects non-compliant formatting)
+5. Run lint checks: `golangci-lint run ./... --config .golangci.yml` (must pass with 0 issues before committing)
+6. Create a pull request
 
 ## Standards
 

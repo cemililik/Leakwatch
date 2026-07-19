@@ -50,23 +50,24 @@ The bot token must be associated with a Slack app that has the following OAuth s
 | `--exclude-channels` | string | — | Comma-separated list of channel names to skip. |
 | `--since` | string (YYYY-MM-DD) | — | Scan messages posted on or after this date. |
 | `--include-dms` | bool | `false` | Also scan direct messages and group DMs. |
-| `--rate-limit` | float | `20` | Maximum Slack API requests per second. |
+| `--rate-limit` | float | `1` | Maximum Slack API requests per second. |
 
 ### Common scan flags
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Write results to this file instead of stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent workers. |
 | `--max-file-size` | — | `10485760` (10 MB) | Internal chunk size limit (bytes). |
 | `--show-raw` | — | `false` | Include the raw secret value in output. |
+| `--exclude-detectors` | — | — | Detector IDs to exclude for this run. Repeatable; combined with `filter.exclude-detectors`. |
 | `--no-verify` | — | `false` | Disable secret verification. |
 | `--only-verified` | — | `false` | Report only findings confirmed active by verification. |
 | `--min-severity` | — | `low` | Minimum severity to report: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Attach remediation guidance to each finding. |
 
-Root-level flags `--config` and `--log-level` (default `warn`) also apply.
+Root-level flags `--config` and `--log-level` (default `warn`) also apply. Unlike every other scan subcommand, `scan slack` has no `--exclude` path-pattern flag — use `--exclude-channels` to skip whole channels instead.
 
 ## Examples
 
@@ -114,13 +115,17 @@ Each finding from a Slack scan includes message and channel metadata:
 
 | Field | Description |
 |-------|-------------|
-| `channel` | The channel name where the finding was detected. |
+| `channel` | The Slack channel **ID** where the finding was detected (e.g. `C0123456`) — not the human-readable name. |
+| `channel_name` | The human-readable channel name (e.g. `engineering`), as a separate field from `channel`. |
+| `message_user` | Slack user ID of the message author. There is no `author` field for Slack findings. |
 | `message_ts` | Slack message timestamp (unique message ID). |
-| `author` | Slack user ID of the message author. |
+| `thread_ts` | Timestamp of the parent message, present only when the finding is in a threaded reply. |
 
 ## Performance considerations
 
-Slack API requests are subject to rate limits enforced by Slack. The `--rate-limit` flag (default `20` requests/second) controls how aggressively Leakwatch makes requests. Lower this value if you see `429 Too Many Requests` errors, especially on large workspaces.
+Slack API requests are subject to rate limits enforced by Slack. The `--rate-limit` flag (default `1` request/second) controls how aggressively Leakwatch makes requests. Raise it cautiously for a faster scan on a workspace with generous rate limits, or lower it further if you see `429 Too Many Requests` errors.
+
+When Slack responds with `429 Too Many Requests`, Leakwatch automatically honors the `Retry-After` header and retries the request rather than failing the scan outright.
 
 Use `--channels` to target specific channels rather than scanning the entire workspace on every run. Combine with `--since` to scan only recent messages incrementally.
 
@@ -131,6 +136,7 @@ Use `--channels` to target specific channels rather than scanning the entire wor
 | `0` | Scan completed, no findings. |
 | `1` | Scan completed, findings reported. |
 | `2` | Scan failed (missing token, authentication error, etc.). |
+| `3` | Scan was interrupted (`Ctrl+C` / `SIGTERM`) before completing, and no findings had been reported. |
 
 A scan summary is printed to stderr after every run. Scans cancel gracefully on SIGINT/SIGTERM.
 

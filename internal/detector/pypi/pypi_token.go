@@ -2,6 +2,7 @@
 package pypi
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -9,7 +10,15 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var pypiTokenPattern = regexp.MustCompile(`pypi-[A-Za-z0-9_-]{16,}`)
+// pypiTokenPattern is anchored on "AgEIcHlwaS5vcmc", the base64url encoding of
+// the fixed macaroon-version header Warehouse (PyPI) prepends to every issued
+// token, and requires a substantially longer body — real PyPI tokens are
+// 150-200+ characters. The bare "pypi-" + 16-char floor previously used here
+// matched plausible non-secret strings (package-mirror URLs, Docker image
+// tags, CI job/step names); anchoring on the macaroon prefix, the same
+// approach other scanners (gitleaks/trufflehog) use for this token type,
+// sharply cuts false positives while keeping true positives.
+var pypiTokenPattern = regexp.MustCompile(`pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}`)
 
 // Detector detects PyPI API Tokens.
 type Detector struct{}
@@ -33,7 +42,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		redacted := "pypi-****" + raw[len(raw)-4:]
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   redacted,
 		})
 	}

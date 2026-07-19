@@ -4,6 +4,7 @@
 
 import * as vscode from "vscode";
 import { Finding, Severity } from "./types";
+import { resolveFindingPath } from "./paths";
 
 /** Maps Leakwatch severity to VS Code diagnostic severity. */
 function toVSCodeSeverity(severity: Severity): vscode.DiagnosticSeverity {
@@ -34,18 +35,11 @@ function toDiagnostic(finding: Finding): vscode.Diagnostic {
   return diagnostic;
 }
 
-/**
- * Updates the diagnostic collection with findings grouped by file.
- * Clears previous diagnostics before applying new ones.
- */
-export function updateDiagnostics(
-  collection: vscode.DiagnosticCollection,
+/** Groups findings by their resolved absolute file URI. */
+function groupByUri(
   findings: Finding[],
-  workspacePath: string
-): void {
-  collection.clear();
-
-  // Group findings by file path
+  scanRoot: string
+): Map<string, vscode.Diagnostic[]> {
   const grouped = new Map<string, vscode.Diagnostic[]>();
 
   for (const finding of findings) {
@@ -54,22 +48,67 @@ export function updateDiagnostics(
       continue;
     }
 
-    // Resolve to absolute path if relative
-    const absolutePath = filePath.startsWith("/")
-      ? filePath
-      : `${workspacePath}/${filePath}`;
-
+    const absolutePath = resolveFindingPath(scanRoot, filePath);
     const uri = vscode.Uri.file(absolutePath);
     const key = uri.toString();
 
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.push(toDiagnostic(finding));
+    } else {
+      grouped.set(key, [toDiagnostic(finding)]);
     }
-
-    grouped.get(key)!.push(toDiagnostic(finding));
   }
 
-  for (const [uriString, diagnostics] of grouped) {
+  return grouped;
+}
+
+/**
+ * Sets diagnostics for the given findings without clearing the collection,
+ * resolving each finding's path against `scanRoot`. Used to aggregate the
+ * results of several roots (multi-root workspaces) into one collection.
+ */
+export function addDiagnostics(
+  collection: vscode.DiagnosticCollection,
+  findings: Finding[],
+  scanRoot: string
+): void {
+  for (const [uriString, diagnostics] of groupByUri(findings, scanRoot)) {
     collection.set(vscode.Uri.parse(uriString), diagnostics);
   }
+}
+
+/**
+ * Replaces the entire diagnostic collection with the given findings.
+ * Used for whole-workspace scans where every previous entry is superseded.
+ */
+export function replaceAllDiagnostics(
+  collection: vscode.DiagnosticCollection,
+  findings: Finding[],
+  scanRoot: string
+): void {
+  collection.clear();
+  addDiagnostics(collection, findings, scanRoot);
+}
+
+/**
+ * Replaces the diagnostics for a single target file only, leaving every other
+ * file's diagnostics in the collection untouched. Used for save-triggered and
+ * single-file scans so they don't wipe the rest of the Problems panel.
+ */
+export function setFileDiagnostics(
+  collection: vscode.DiagnosticCollection,
+  targetUri: vscode.Uri,
+  findings: Finding[],
+  scanRoot: string
+): void {
+  const diagnostics: vscode.Diagnostic[] = [];
+  for (const [uriString, group] of groupByUri(findings, scanRoot)) {
+    if (vscode.Uri.parse(uriString).toString() === targetUri.toString()) {
+      diagnostics.push(...group);
+    }
+  }
+  // collection.set on a single URI atomically replaces just that file's
+  // entries — no blanket clear needed.
+  collection.set(targetUri, diagnostics);
 }

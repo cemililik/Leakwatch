@@ -25,14 +25,16 @@ By default, output is JSON written to stdout. To get a human-readable, colorized
 leakwatch scan fs . --format table
 ```
 
-Here is what a result looks like:
+Here is what a result looks like (the table formatter always prints a trailing REMEDIATION column; it shows `-` unless `--remediation` is also set):
 
 ```text
- SEVERITY  DETECTOR            FILE                      LINE  REDACTED                 STATUS
-─────────────────────────────────────────────────────────────────────────────────────────────
- CRITICAL  aws-access-key-id   config/deploy.env           12  AKIA••••••••••••EXAMPLE  verified:active
- HIGH      github-pat          scripts/bootstrap.sh        37  ghp_••••••••••••••••••   verified:active
- MEDIUM    generic-api-key     src/services/analytics.js   89  sk-••••••••••••••••••••  unverified
+SEVERITY  DETECTOR           FILE                       LINE  REDACTED      STATUS           REMEDIATION
+--------  --------           ----                       ----  --------      ------           -----------
+CRITICAL  aws-access-key-id  config/deploy.env          12    ****MNOP      verified_active   -
+HIGH      npm-token          scripts/bootstrap.sh       37    npm_****wxyz  verified_active   -
+MEDIUM    generic-api-key    src/services/analytics.js  89    ****w2y4      unverified        -
+
+Found 3 secrets (1 critical, 1 high, 1 medium).
 
 ── Scan Summary ─────────────────────────────────
   Date:            2026-05-23 14:03:11
@@ -57,9 +59,10 @@ Each row in the table (or object in JSON) represents one finding. The key fields
 | **FILE** | Path to the file where the secret was found, relative to the scan root |
 | **LINE** | Line number of the match |
 | **REDACTED** | A masked representation of the secret — never the raw value unless `--show-raw` is set |
-| **STATUS** | Verification outcome: `verified:active`, `verified:inactive`, `unverified`, or `verify:error` |
+| **STATUS** | Verification outcome: `verified_active`, `verified_inactive`, `unverified`, or `verify_error` |
+| **REMEDIATION** | Rotation/revocation guidance title, or `-` when `--remediation` was not passed |
 
-A `verified:active` status means Leakwatch confirmed the secret is still live by making a read-only API call to the provider. **Treat every `verified:active` finding as an open incident.**
+A `verified_active` status means Leakwatch confirmed the secret is still live by making a read-only API call to the provider. **Treat every `verified_active` finding as an open incident.**
 
 ## Common scan options
 
@@ -124,6 +127,7 @@ Leakwatch uses distinct exit codes so CI scripts can act on results without pars
 | `0` | Scan completed — no findings |
 | `1` | Scan completed — one or more secrets found |
 | `2` | Scan failed due to an error |
+| `3` | Scan was interrupted (`Ctrl+C` / `SIGTERM`) before it completed, and no findings had been reported yet |
 
 A typical CI gate looks like:
 
@@ -141,7 +145,7 @@ Exit code `1` is returned whenever *any* finding passes the active filters (incl
 
 ## Cancelling a scan
 
-Press `Ctrl+C` (or send `SIGTERM`) to cancel a running scan. Leakwatch stops gracefully: in-flight chunks finish, partial results are written, and the summary indicates `Status: interrupted (partial results)`.
+Press `Ctrl+C` (or send `SIGTERM`) to cancel a running scan. Leakwatch stops gracefully: in-flight chunks finish, partial results are written, and the summary indicates `Status: interrupted (partial results)`. Findings still take precedence over interruption — if secrets were already found before the interrupt, the scan exits `1` so that signal is never masked. Exit code `3` is returned only when the scan was interrupted with zero findings reported, so a CI pipeline can never mistake a scan that did not finish for a clean pass.
 
 ## See also
 

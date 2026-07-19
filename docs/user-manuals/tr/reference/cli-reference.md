@@ -13,7 +13,7 @@ Bu bayraklar her komut ve alt komut üzerinde kullanılabilir.
 
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
-| `--config <path>` | Otomatik olarak bulunan `.leakwatch.yaml` | Yapılandırma dosyasının yolu. Atlandığında Leakwatch, geçerli dizinde ve üst dizinlerinde `.leakwatch.yaml` arar. |
+| `--config <path>` | Otomatik olarak bulunan `.leakwatch.yaml` | Yapılandırma dosyasının yolu. Atlandığında Leakwatch, `.leakwatch.yaml` için önce geçerli dizini, ardından kullanıcının ana dizinini arar — üst dizin taraması **yapılmaz**. Her iki konumdaki bozuk bir yapılandırma dosyası (geçersiz YAML) da ölümcül bir hatadır. |
 | `--log-level <level>` | `warn` | Günlük ayrıntı düzeyi: `debug`, `info`, `warn` veya `error`. Günlük çıktısı stderr'e gider ve tarama sonuçlarını etkilemez. |
 
 ## `leakwatch version`
@@ -33,7 +33,7 @@ leakwatch v1.5.0 (commit: a3f9c12, built: 2026-05-10T08:22:00Z)
 Geçerli dizinde önerilen varsayılanlarla bir `.leakwatch.yaml` yapılandırma dosyası oluşturur.
 
 ```bash
-leakwatch init [bayraklar]
+leakwatch init [flags]
 ```
 
 | Bayrak | Varsayılan | Açıklama |
@@ -59,33 +59,38 @@ Aşağıdaki bayraklar **tüm** `scan` alt komutlarında kullanılabilir.
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|-----------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv` veya `table`. |
-| `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosya yoluna yaz. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table` veya `github`. |
+| `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosya yoluna yaz. Uzantısız düz bir yol verildiğinde, biçimin kendi uzantısı otomatik olarak eklenir (örn. `--format sarif --output results`, `results.sarif` dosyasını yazar). Dosya `0600` izinleriyle yazılır. Her zaman stdout'a yazan `--format github` için yok sayılır. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı tarama çalışanı sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Bu bayt sayısından büyük dosyaları veya blob'ları atla. |
 | `--show-raw` | — | `false` | Çıktıya ham (maskelenmemiş) sır değerini dahil et. Dikkatli kullanın. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri (örn. `aws-access-key-id,generic-api-key`). Tekrarlanabilir veya virgülle ayrılabilir; yapılandırma dosyasındaki `filter.exclude-detectors` ile birleştirilir (onun yerine geçmez). |
 | `--no-verify` | — | `false` | Canlı sır doğrulamasını devre dışı bırak. Giden API çağrısı yapılmaz. |
 | `--only-verified` | — | `false` | Yalnızca canlı doğrulama ile etkin olduğu teyit edilen bulguları raporla. |
-| `--min-severity` | — | `low` | Çıktıya dahil edilecek minimum önem derecesi: `low`, `medium`, `high` veya `critical`. |
+| `--min-severity` | — | `low` | Çıktıya dahil edilecek minimum önem derecesi: `low`, `medium`, `high` veya `critical`. Tanınmayan bir değer (örn. bir yazım hatası) sessizce kabul edilmek yerine kesin bir hataya yol açar. |
 | `--remediation` | — | `false` | Her bulguya düzeltme rehberi (dönüşüm/iptal adımları) ekle. |
+
+`--exclude <pattern>` (tekrarlanabilir) bayrağı, `scan slack` **hariç** her tarama alt komutunda da kullanılabilir — bu bayrak tüm alt komutlar arasında paylaşılmak yerine komut başına kaydedildiğinden, aşağıda her alt komutun kendi bayrak tablosuna bakın.
+
+Çıkış kodu sözleşmesinin tamamı için [Çıkış Kodları](#/reference/exit-codes) sayfasına bakın: `0` temiz, `1` bulgu var, `2` hata, `3` tamamlanmadan kesildi.
 
 ---
 
 ### `scan fs`
 
-Yerel bir dizin ağacını tarar.
+Bir veya daha fazla yerel dosya sistemi yolunu tarar — her biri bir dizin (özyinelemeli olarak dolaşılır) veya tek bir dosya olabilir.
 
 ```bash
-leakwatch scan fs [path] [bayraklar]
+leakwatch scan fs [path...] [flags]
 ```
 
-`path` varsayılan olarak `.`'dır. En fazla bir konumsal argüman kabul eder.
+**Sıfır veya daha fazla** konumsal argüman kabul eder. Yol verilmediğinde `.` (geçerli dizin) taranır. Tek bir çağrıda dosya ve dizinler karıştırılarak birden fazla yol verilebilir.
 
 #### Dosya sistemine özgü bayraklar
 
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
-| `--exclude <kalıp>` | — | Dışlanacak yollar için glob kalıbı. Tekrarlanabilir. |
+| `--exclude <pattern>` | — | Dışlanacak yollar için glob kalıbı. Tekrarlanabilir. |
 
 #### Örnekler
 
@@ -93,12 +98,21 @@ leakwatch scan fs [path] [bayraklar]
 # Geçerli dizini tara, renklendirilmiş tablo yazdır
 leakwatch scan fs . --format table
 
+# Tek bir dosyayı tara
+leakwatch scan fs cmd/main.go
+
+# Birden fazla dosya ve dizini birlikte tara
+leakwatch scan fs cmd/ main.go internal/config
+
 # SARIF çıktısını kaydet, test dosyalarını ve vendor'ı dışla
 leakwatch scan fs . \
   --exclude "**/*_test.go" \
   --exclude "vendor/**" \
   --format sarif \
   --output results.sarif
+
+# Bu çalıştırma için belirli dedektörleri hariç tut
+leakwatch scan fs . --exclude-detectors aws-access-key-id,generic-api-key
 ```
 
 ---
@@ -108,7 +122,7 @@ leakwatch scan fs . \
 Yerel veya uzak bir Git deposunun tam commit geçmişini tarar.
 
 ```bash
-leakwatch scan git <url_or_path> [bayraklar]
+leakwatch scan git <url_or_path> [flags]
 ```
 
 Tam olarak bir konumsal argüman gereklidir: yerel bir yol veya HTTP/HTTPS/SSH URL'si.
@@ -119,8 +133,9 @@ Tam olarak bir konumsal argüman gereklidir: yerel bir yol veya HTTP/HTTPS/SSH U
 |--------|-----------|----------|
 | `--since <YYYY-MM-DD>` | — | Yalnızca bu tarihten sonraki commit'leri tara. |
 | `--since-commit <hash>` | — | Yalnızca bu commit karmasından HEAD'e kadar olan değişiklikleri tara. |
-| `--branch <ad>` | — | Varsayılan dal yerine belirli bir dalı hedefle. |
+| `--branch <name>` | — | Varsayılan dal yerine belirli bir dalı hedefle. |
 | `--depth <int>` | `0` (tam) | Uzak depolar için sığ klonlama derinliği. `0` tam geçmişi getirir. |
+| `--exclude <pattern>` | — | Dışlanacak blob yolları için glob kalıbı. Tekrarlanabilir. |
 
 #### Örnekler
 
@@ -139,10 +154,10 @@ leakwatch scan git . --since-commit a1b2c3d --format json
 Bir OCI/Docker imajının katmanlarını sırlar açısından tarar. Leakwatch daemonsuz çalışır ve kayıt defterinden doğrudan çeker — Docker soketi gerekmez.
 
 ```bash
-leakwatch scan image <image:tag> [bayraklar]
+leakwatch scan image <image:tag> [flags]
 ```
 
-Tam olarak bir konumsal argüman gereklidir.
+Tam olarak bir konumsal argüman gereklidir. Ortak tarama bayraklarının ötesinde imaja özgü bir bayrak yoktur; ortak bayraklar arasında, katmanlar içindeki dosya yollarıyla eşleştirilen `--exclude <pattern>` (tekrarlanabilir) de bulunur.
 
 #### Örnekler
 
@@ -163,7 +178,7 @@ leakwatch scan image registry.example.com/my-app:v2.3.0 \
 Bir AWS S3 kovasındaki nesneleri tarar.
 
 ```bash
-leakwatch scan s3 <kova> [bayraklar]
+leakwatch scan s3 <bucket> [flags]
 ```
 
 Tam olarak bir konumsal argüman gereklidir.
@@ -174,6 +189,7 @@ Tam olarak bir konumsal argüman gereklidir.
 |--------|-----------|----------|
 | `--prefix <string>` | — | Taramayı, anahtarı bu ön ekle başlayan nesnelerle sınırla. |
 | `--region <string>` | — | Kovanın bulunduğu AWS bölgesi. `AWS_REGION` ortam değişkenine veya AWS SDK varsayılanına geri döner. |
+| `--exclude <pattern>` | — | Dışlanacak nesne anahtarları için glob kalıbı. Tekrarlanabilir. |
 
 #### Örnekler
 
@@ -192,7 +208,7 @@ leakwatch scan s3 my-data-bucket --prefix backups/2026/ --format json
 Bir Google Cloud Storage kovasındaki nesneleri tarar.
 
 ```bash
-leakwatch scan gcs <kova> [bayraklar]
+leakwatch scan gcs <bucket> [flags]
 ```
 
 Tam olarak bir konumsal argüman gereklidir.
@@ -203,6 +219,7 @@ Tam olarak bir konumsal argüman gereklidir.
 |--------|-----------|----------|
 | `--prefix <string>` | — | Taramayı, adı bu ön ekle başlayan nesnelerle sınırla. |
 | `--project <string>` | — | GCP proje kimliği. Varsayılan kimlik bilgilerinden proje çıkarılamadığında gereklidir. |
+| `--exclude <pattern>` | — | Dışlanacak nesne adları için glob kalıbı. Tekrarlanabilir. |
 
 #### Örnekler
 
@@ -221,7 +238,7 @@ leakwatch scan gcs my-gcs-bucket --prefix uploads/2026/ --format json
 Bir Slack çalışma alanındaki mesaj metnini tarar.
 
 ```bash
-leakwatch scan slack [bayraklar]
+leakwatch scan slack [flags]
 ```
 
 Konumsal argüman yoktur.
@@ -231,11 +248,13 @@ Konumsal argüman yoktur.
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
 | `--token <string>` | — | Slack bot token'ı. `LEAKWATCH_SLACK_TOKEN` ortam değişkeni ile de ayarlanabilir. |
-| `--channels <liste>` | — | Taranacak kanal adları veya kimliklerinin virgülle ayrılmış listesi. Atlandığında erişilebilir tüm kanalları tarar. |
-| `--exclude-channels <liste>` | — | Atlanacak kanal adları veya kimliklerinin virgülle ayrılmış listesi. |
+| `--channels <list>` | — | Taranacak kanal adları veya kimliklerinin virgülle ayrılmış listesi. Atlandığında erişilebilir tüm kanalları tarar. |
+| `--exclude-channels <list>` | — | Atlanacak kanal adları veya kimliklerinin virgülle ayrılmış listesi. |
 | `--since <YYYY-MM-DD>` | — | Yalnızca bu tarihten sonra gönderilen mesajları tara. |
 | `--include-dms` | `false` | Doğrudan mesajları dahil et (ek OAuth kapsamları gerektirir). |
-| `--rate-limit <int>` | `20` | Saniye başına maksimum Slack API isteği. |
+| `--rate-limit <float>` | `1` | Saniye başına maksimum Slack API isteği. |
+
+`scan slack` komutunda (diğer her tarama alt komutunun aksine) `--exclude` yol-kalıbı bayrağı yoktur — bunun yerine tüm kanalları atlamak için `--exclude-channels` kullanın.
 
 #### Örnekler
 
@@ -258,7 +277,7 @@ leakwatch scan slack \
 Birden fazla Git deposunu paralel olarak tarar.
 
 ```bash
-leakwatch scan repos <url_or_path...> [bayraklar]
+leakwatch scan repos <url_or_path...> [flags]
 ```
 
 En az iki konumsal argüman (depo URL'leri veya yerel yollar) gereklidir.
@@ -269,6 +288,7 @@ En az iki konumsal argüman (depo URL'leri veya yerel yollar) gereklidir.
 |--------|------|-----------|----------|
 | `--parallel` | — | `3` | Eşzamanlı olarak taranacak depo sayısı. |
 | `--concurrency` | `-c` | CPU sayısı | Her depo taramasındaki çalışan eşzamanlılığı. |
+| `--exclude <pattern>` | — | — | Her depoya uygulanan, dışlanacak blob yolları için glob kalıbı. Tekrarlanabilir. |
 
 #### Örnekler
 

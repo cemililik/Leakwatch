@@ -18,7 +18,7 @@ Tarama sonuçlarından yolları hariç tutmak için depo kökünüze (veya geçe
 
 ### Yükleme sırası
 
-Leakwatch, `.leakwatchignore` dosyasını önce tarama kökünden, ardından geçerli çalışma dizininden yükler. Her ikisi de aynı yol için desen içeriyorsa, geçerli dizin dosyasının desenleri öncelik kazanır çünkü son değerlendirilenler bunlardır.
+Leakwatch, bulduğu **ilk** `.leakwatchignore` dosyasını yükler; önce tarama kökünü, ardından yedek olarak geçerli çalışma dizinini kontrol eder. Her tarama için yalnızca bir dosya kullanılır — tarama kökünde bir `.leakwatchignore` varsa, geçerli dizindeki dosya (varsa) hiçbir zaman açılmaz, birleştirilmesi bir yana. Dosyalar arası öncelik veya birleştirme yoktur: öngörülebilir bir davranış için kurallarınızı tarama kökündeki tek bir `.leakwatchignore` dosyasında toplayın.
 
 ### Glob söz dizimi
 
@@ -116,7 +116,9 @@ filter:
     - "third-party/"
 ```
 
-Bu ayar **tüm tarama kaynaklarına** uygulanır (dosya sistemi, Git geçmişi, konteyner imajları, bulut depolama, Slack). `scan fs` komutunda ayrıca komut satırında `--exclude <pattern>` parametresi de geçirebilirsiniz; bu, `filter.exclude-paths` ile eşdeğer bir bayraktır.
+Bu ayar **tüm tarama kaynaklarına** uygulanır (dosya sistemi, Git geçmişi, konteyner imajları, bulut depolama, Slack). Yolları tarayan her `scan` alt komutunda (`fs`, `git`, `image`, `s3`, `gcs`, `repos` — bunun yerine `--exclude-channels` ile dışlama yapan `slack` hariç) komut satırında da `--exclude <pattern>` geçirebilirsiniz; tekrarlanabilir olan bu bayrak, `filter.exclude-paths`'in yerine geçmek yerine onunla birleştirilir.
+
+Yapılandırma dosyasını düzenlemeden gürültülü bir dedektörü tek bir çalıştırma için susturmak üzere, herhangi bir tarama alt komutunda `--exclude-detectors <id>[,<id>...]` (tekrarlanabilir) geçirin — bkz. [Dedektör Kataloğu](#/detectors/detector-catalog).
 
 Tam yapılandırma şeması için [Yapılandırma Dosyası](#/configuration/config-file), dedektör düzeyinde ve önem derecesi düzeyinde filtreleme için [Önem Derecesi & Filtreleme](#/configuration/severity-and-filtering) bölümlerine bakın.
 

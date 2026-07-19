@@ -67,6 +67,51 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 	}
 }
 
+func TestDetector_Scan_CapturesOrgDomain(t *testing.T) {
+	suffix40 := strings.Repeat("Abc1Defg", 5)
+	token := "00" + suffix40
+
+	tests := []struct {
+		name       string
+		input      string
+		wantDomain string
+	}{
+		{
+			name:       "domain in url with okta context",
+			input:      "OKTA_URL=https://acme.okta.com\nokta_token=" + token,
+			wantDomain: "acme.okta.com",
+		},
+		{
+			name:       "oktapreview domain",
+			input:      "issuer: https://dev-12345.oktapreview.com okta_token=" + token,
+			wantDomain: "dev-12345.oktapreview.com",
+		},
+		{
+			name:       "okta-emea domain without scheme",
+			input:      "org=acme.okta-emea.com SSWS " + token,
+			wantDomain: "acme.okta-emea.com",
+		},
+		{
+			name:       "no domain co-located",
+			input:      "okta_token=" + token,
+			wantDomain: "",
+		},
+	}
+
+	d := &Detector{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := d.Scan(context.Background(), []byte(tt.input))
+			require.Len(t, findings, 1)
+			if tt.wantDomain == "" {
+				assert.Empty(t, findings[0].ExtraData["domain"])
+				return
+			}
+			assert.Equal(t, tt.wantDomain, findings[0].ExtraData["domain"])
+		})
+	}
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	suffix40 := strings.Repeat("Abc1Defg", 5)
 

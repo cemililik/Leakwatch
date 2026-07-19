@@ -2,15 +2,18 @@
 package ftp
 
 import (
+	"bytes"
 	"context"
-	"net/url"
 	"regexp"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var ftpCredPattern = regexp.MustCompile(`(?:s?ftps?)://[^\s'"]+:[^\s'"]+@[^\s'"]+`)
+// Each credential/host segment is bounded to a generous but finite length so
+// a single match cannot run away across an entire line of unrelated
+// whitespace-free text (e.g. a long minified/concatenated string).
+var ftpCredPattern = regexp.MustCompile(`(?:s?ftps?)://[^\s'"]{1,256}:[^\s'"]{1,256}@[^\s'"]{1,256}`)
 
 // Detector detects FTP/SFTP Credentials in connection URLs.
 type Detector struct{}
@@ -41,26 +44,11 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
-			Redacted:   redactPassword(string(match)),
+			Raw:        bytes.Clone(match),
+			Redacted:   detector.RedactURLPassword(string(match)),
 		})
 	}
 	return findings
-}
-
-// redactPassword masks the password portion in an FTP/SFTP connection URL.
-// Uses net/url.Parse for proper parsing, then reconstructs with masked password.
-func redactPassword(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "****"
-	}
-	if u.User == nil {
-		return raw
-	}
-	username := u.User.Username()
-	u.User = nil
-	return u.Scheme + "://" + username + ":****@" + u.Host + u.RequestURI()
 }
 
 func init() {

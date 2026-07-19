@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,11 +46,8 @@ func init() {
 	scanCmd.AddCommand(scanGitCmd)
 
 	flags := scanGitCmd.Flags()
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
-	flags.StringP("output", "o", "", "output file (default: stdout)")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
-	flags.Int64("max-file-size", 10*1024*1024, "maximum file size in bytes")
-	flags.Bool(flagShowRaw, false, "show raw secret content in output")
+	addCommonScanFlags(flags)
+	addExcludePathFlag(flags)
 	flags.String("since", "", "scan commits after this date (YYYY-MM-DD)")
 	flags.String("since-commit", "", "scan changes from this commit to HEAD")
 	flags.String("branch", "", "branch to scan")
@@ -66,14 +62,13 @@ func runScanGit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var opts []gitsource.Option
-	opts = append(opts, gitsource.WithMaxFileSize(cfg.maxFileSize))
+	opts := []gitsource.Option{gitsource.WithMaxFileSize(cfg.MaxFileSize)}
 
-	if len(cfg.excludePaths) > 0 {
-		opts = append(opts, gitsource.WithExcludePaths(cfg.excludePaths))
+	if excludes := mergedExcludePaths(cmd, cfg); len(excludes) > 0 {
+		opts = append(opts, gitsource.WithExcludePaths(excludes))
 	}
 
-	if since, _ := cmd.Flags().GetString("since"); since != "" {
+	if since := flagString(cmd, "since"); since != "" {
 		t, err := time.Parse("2006-01-02", since)
 		if err != nil {
 			return fmt.Errorf("invalid date format (expected YYYY-MM-DD): %w", err)
@@ -81,20 +76,20 @@ func runScanGit(cmd *cobra.Command, args []string) error {
 		opts = append(opts, gitsource.WithSince(t))
 	}
 
-	if sinceCommit, _ := cmd.Flags().GetString("since-commit"); sinceCommit != "" {
+	if sinceCommit := flagString(cmd, "since-commit"); sinceCommit != "" {
 		opts = append(opts, gitsource.WithSinceCommit(sinceCommit))
 	}
 
-	if branch, _ := cmd.Flags().GetString("branch"); branch != "" {
+	if branch := flagString(cmd, "branch"); branch != "" {
 		opts = append(opts, gitsource.WithBranch(branch))
 	}
 
-	if depth, _ := cmd.Flags().GetInt("depth"); depth > 0 {
+	if depth := flagInt(cmd, "depth"); depth > 0 {
 		opts = append(opts, gitsource.WithDepth(depth))
 	}
 
-	cfg.scanTarget = gitsource.SafeDisplayURL(args[0])
+	cfg.ScanTarget = gitsource.SafeDisplayURL(args[0])
 	src := gitsource.New(args[0], opts...)
 
-	return executeScan(cmd.Context(), cfg, src, src)
+	return runScan(cmd, cfg, src, src)
 }

@@ -27,7 +27,7 @@ Leakwatch, yapılandırmayı öncelik sırasına göre üç kaynaktan okur: **ko
 | `LEAKWATCH_SCAN_CONCURRENCY` | Eşzamanlı tarama çalışanı sayısı. `--concurrency`'e eşdeğer. |
 | `LEAKWATCH_VERIFICATION_ENABLED` | Canlı doğrulamayı genel olarak devre dışı bırakmak için `false` olarak ayarlayın. `--no-verify`'e eşdeğer. |
 | `LEAKWATCH_VERIFICATION_RATE_LIMIT` | Tüm doğrulayıcılar genelinde saniye başına maksimum doğrulama isteği. |
-| `LEAKWATCH_OUTPUT_FORMAT` | Varsayılan çıktı biçimi (`json`, `sarif`, `csv` veya `table`). `--format`'a eşdeğer. |
+| `LEAKWATCH_OUTPUT_FORMAT` | Varsayılan çıktı biçimi (`json`, `sarif`, `csv`, `table` veya `github`). `--format`'a eşdeğer. |
 | `LEAKWATCH_DETECTION_ENTROPY_THRESHOLD` | Bir eşleşmenin raporlanması için gereken minimum Shannon entropisi. Float değer, örn. `3.5`. |
 
 ### Görüntüleme değişkeni

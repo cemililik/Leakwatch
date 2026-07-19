@@ -1,5 +1,10 @@
 // Package databricks provides a verifier for Databricks personal access tokens.
-// It uses the Databricks SCIM API GET /api/2.0/preview/scim/v2/Me endpoint to check token validity.
+// A Databricks PAT is workspace-scoped and authenticates only against its own
+// workspace host (for example https://dbc-xxxx.cloud.databricks.com), never the
+// account-level host. The verifier therefore calls the workspace SCIM API
+// GET /api/2.0/preview/scim/v2/Me on the workspace host provided by the detector
+// via ExtraData["host"]; when no host is available it returns an indeterminate
+// (format-only) result rather than making a wrong-host call.
 package databricks
 
 import (
@@ -7,6 +12,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -15,9 +21,6 @@ import (
 )
 
 const detectorID = "databricks-token"
-
-// defaultAPIURL is the base URL for the Databricks accounts API.
-const defaultAPIURL = "https://accounts.cloud.databricks.com"
 
 // Verifier checks whether a Databricks personal access token is active by calling
 // the Databricks SCIM API. It NEVER logs or persists raw token values.
@@ -38,10 +41,31 @@ func (v *Verifier) Type() string {
 }
 
 // Verify checks if the detected Databricks token is valid/active.
-// Raw contains the token value.
+// Raw contains the token value; the workspace host is read from
+// ExtraData["host"]. Without a workspace host the token cannot be verified
+// against the correct instance, so the result is indeterminate (unverified).
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "empty token",
+		}
+	}
+
+	// Prefer the test-injected base URL, then the detector-captured workspace
+	// host. A Databricks PAT is only valid against its own workspace host, so
+	// without one we cannot make a correct live call.
+	apiURL := v.apiURL
+	if apiURL == "" && raw.ExtraData != nil {
+		apiURL = strings.TrimRight(raw.ExtraData["host"], "/")
+	}
+	if apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "format valid; workspace host required for live verification (not found alongside token)",
+		}
+	}
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "databricks",

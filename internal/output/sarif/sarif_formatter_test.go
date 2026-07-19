@@ -174,8 +174,29 @@ func TestFormatter_Format_Driver_HasVersionAndInformationURI(t *testing.T) {
 
 	driver := doc.Runs[0].Tool.Driver
 	assert.Equal(t, toolName, driver.Name)
-	assert.Equal(t, toolVersion, driver.Version, "driver must report a version")
+	assert.Equal(t, defaultToolVersion, driver.Version,
+		"a zero-value Formatter (no Version set) must fall back to defaultToolVersion")
 	assert.Equal(t, toolInfoURI, driver.InformationURI, "driver must report an informationUri")
+}
+
+// TestFormatter_Format_Driver_UsesInjectedVersion asserts against a real,
+// non-default version string so this test would actually fail if
+// Formatter.Version stopped being threaded into tool.driver.version (unlike
+// the old test, which compared the constant against itself).
+func TestFormatter_Format_Driver_UsesInjectedVersion(t *testing.T) {
+	f := &Formatter{Version: "v1.6.0"}
+	var buf bytes.Buffer
+
+	err := f.Format(&buf, []finding.Finding{})
+	require.NoError(t, err)
+
+	var doc sarifDocument
+	err = json.Unmarshal(buf.Bytes(), &doc)
+	require.NoError(t, err)
+
+	driver := doc.Runs[0].Tool.Driver
+	assert.Equal(t, "v1.6.0", driver.Version)
+	assert.NotEqual(t, defaultToolVersion, driver.Version)
 }
 
 func TestFormatter_Format_SeverityMapping_MapsCorrectly(t *testing.T) {
@@ -302,6 +323,92 @@ func TestFormatter_Format_WithoutRemediation_RuleHasNoHelp(t *testing.T) {
 	assert.Empty(t, rule.HelpURI, "rule should not have helpUri when remediation is absent")
 }
 
+func TestFormatter_Format_SlackSource_GetsSyntheticLocation(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			ID:         "slack-1",
+			DetectorID: "generic-secret",
+			Severity:   finding.SeverityHigh,
+			Redacted:   "sk_****abcd",
+			SourceMetadata: finding.SourceMetadata{
+				SourceType:  "slack",
+				Channel:     "C0123456",
+				ChannelName: "secrets-oops",
+				MessageTS:   "1699999999.000100",
+			},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var doc sarifDocument
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	require.Len(t, doc.Runs[0].Results, 1)
+	result := doc.Runs[0].Results[0]
+	require.Len(t, result.Locations, 1,
+		"a Slack-sourced finding must not be emitted without a locations entry")
+	assert.Equal(t, "slack://secrets-oops/1699999999.000100", result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+	assert.Nil(t, result.Locations[0].PhysicalLocation.Region, "Slack findings have no line region")
+}
+
+func TestFormatter_Format_SlackSource_FallsBackToChannelIDWhenNameMissing(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			ID:         "slack-2",
+			DetectorID: "generic-secret",
+			SourceMetadata: finding.SourceMetadata{
+				SourceType: "slack",
+				Channel:    "C0123456",
+				MessageTS:  "1700000000.000200",
+			},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var doc sarifDocument
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	require.Len(t, doc.Runs[0].Results, 1)
+	require.Len(t, doc.Runs[0].Results[0].Locations, 1)
+	assert.Equal(t, "slack://C0123456/1700000000.000200",
+		doc.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI)
+}
+
+func TestFormatter_Format_UnknownNonFileSource_StaysLocationLess(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			ID:         "no-loc-1",
+			DetectorID: "generic-secret",
+			SourceMetadata: finding.SourceMetadata{
+				SourceType: "some-future-source",
+			},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var doc sarifDocument
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	require.Len(t, doc.Runs[0].Results, 1)
+	assert.Empty(t, doc.Runs[0].Results[0].Locations,
+		"a source type with neither a file path nor synthetic-URI support stays location-less")
+}
+
 func TestFormatter_FileExtension_ReturnsSARIF(t *testing.T) {
 	f := &Formatter{}
 	assert.Equal(t, ".sarif", f.FileExtension())
@@ -339,4 +446,33 @@ func TestFormatter_Format_PartialFingerprints_LocationIndependent(t *testing.T) 
 	assert.NotEmpty(t, fp(0))
 	assert.Equal(t, fp(0), fp(1), "same secret + same file, different line → same fingerprint")
 	assert.NotEqual(t, fp(0), fp(2), "different file → different fingerprint")
+}
+
+// TestSyntheticArtifactURI_StripsChannelHash pins that a Slack channel name is
+// not emitted with its leading '#': in a URI '#' starts the fragment, so
+// "slack://#general/..." would parse as an empty authority plus a fragment.
+func TestSyntheticArtifactURI_StripsChannelHash(t *testing.T) {
+	tests := []struct {
+		name string
+		meta finding.SourceMetadata
+		want string
+	}{
+		{
+			name: "channel name with leading hash",
+			meta: finding.SourceMetadata{SourceType: "slack", ChannelName: "#general", MessageTS: "1700000000.1"},
+			want: "slack://general/1700000000.1",
+		},
+		{
+			name: "falls back to channel id, also stripped",
+			meta: finding.SourceMetadata{SourceType: "slack", Channel: "#C123", MessageTS: "1700000000.2"},
+			want: "slack://C123/1700000000.2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := syntheticArtifactURI(tt.meta)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "#", "a '#' would be parsed as a URI fragment")
+		})
+	}
 }

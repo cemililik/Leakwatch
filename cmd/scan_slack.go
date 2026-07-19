@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -17,6 +16,13 @@ import (
 // file content. Defined as a constant so the registration, deprecation, and
 // read sites reference a single literal.
 const flagIncludeFiles = "include-files"
+
+// defaultSlackRateLimit is the default for the --rate-limit flag. It mirrors the
+// slack source's own conservative defaultRateLimit (1 req/s): because the flag
+// is always applied when > 0, a mismatched flag default would silently override
+// the source's default and defeat it. Keep this in sync with
+// internal/source/slack defaultRateLimit until that constant is exported.
+const defaultSlackRateLimit = 1.0
 
 var scanSlackCmd = &cobra.Command{
 	Use:   "slack",
@@ -66,13 +72,8 @@ func init() {
 	if err := flags.MarkDeprecated(flagIncludeFiles, "Slack file scanning is not yet implemented; this flag has no effect"); err != nil {
 		slog.Warn("failed to mark include-files deprecated", "error", err)
 	}
-	flags.Float64("rate-limit", 20, "max Slack API requests per second")
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
-	flags.StringP("output", "o", "", "output file (default: stdout)")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
-	flags.Int64("max-file-size", 10*1024*1024, "maximum file size in bytes")
-	flags.Bool(flagShowRaw, false, "show raw secret content in output")
-
+	flags.Float64("rate-limit", defaultSlackRateLimit, "max Slack API requests per second")
+	addCommonScanFlags(flags)
 	addVerifyFlags(flags)
 }
 
@@ -83,7 +84,7 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Resolve token from flag, falling back to environment variable.
-	token, _ := cmd.Flags().GetString("token")
+	token := flagString(cmd, "token")
 	if token == "" {
 		token = os.Getenv("LEAKWATCH_SLACK_TOKEN")
 	}
@@ -93,15 +94,15 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 
 	var opts []slacksource.Option
 
-	if channels, _ := cmd.Flags().GetString("channels"); channels != "" {
+	if channels := flagString(cmd, "channels"); channels != "" {
 		opts = append(opts, slacksource.WithChannels(splitComma(channels)))
 	}
 
-	if excludeChannels, _ := cmd.Flags().GetString("exclude-channels"); excludeChannels != "" {
+	if excludeChannels := flagString(cmd, "exclude-channels"); excludeChannels != "" {
 		opts = append(opts, slacksource.WithExcludeChannels(splitComma(excludeChannels)))
 	}
 
-	if sinceStr, _ := cmd.Flags().GetString("since"); sinceStr != "" {
+	if sinceStr := flagString(cmd, "since"); sinceStr != "" {
 		since, err := time.Parse("2006-01-02", sinceStr)
 		if err != nil {
 			return fmt.Errorf("invalid --since date format, expected YYYY-MM-DD: %w", err)
@@ -109,22 +110,22 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 		opts = append(opts, slacksource.WithSince(since))
 	}
 
-	if includeDMs, _ := cmd.Flags().GetBool("include-dms"); includeDMs {
+	if flagBool(cmd, "include-dms") {
 		opts = append(opts, slacksource.WithIncludeDMs(true))
 	}
 
-	if includeFiles, _ := cmd.Flags().GetBool(flagIncludeFiles); includeFiles {
+	if flagBool(cmd, flagIncludeFiles) {
 		opts = append(opts, slacksource.WithIncludeFiles(true))
 	}
 
-	if rateLimit, _ := cmd.Flags().GetFloat64("rate-limit"); rateLimit > 0 {
+	if rateLimit := flagFloat64(cmd, "rate-limit"); rateLimit > 0 {
 		opts = append(opts, slacksource.WithRateLimit(rateLimit))
 	}
 
-	cfg.scanTarget = "slack workspace"
+	cfg.ScanTarget = "slack workspace"
 	src := slacksource.New(token, opts...)
 
-	return executeScan(cmd.Context(), cfg, src, nil)
+	return runScan(cmd, cfg, src, nil)
 }
 
 // splitComma splits a comma-separated string into trimmed, non-empty parts.

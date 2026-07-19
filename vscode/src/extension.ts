@@ -11,7 +11,9 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { scan } from "./scanner";
-import { updateDiagnostics } from "./diagnostics";
+import { addDiagnostics, setFileDiagnostics } from "./diagnostics";
+import { findingMatchesFile } from "./paths";
+import { Finding } from "./types";
 import * as statusbar from "./statusbar";
 
 let diagnosticCollection: vscode.DiagnosticCollection;
@@ -19,6 +21,31 @@ let diagnosticCollection: vscode.DiagnosticCollection;
 /** Debounce timer for scan-on-save. */
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const SAVE_DEBOUNCE_MS = 1000;
+
+/**
+ * The single in-flight scan, if any. Starting a new scan cancels the previous
+ * one so overlapping scans never race to stomp diagnostics/status-bar state.
+ */
+let activeScan: vscode.CancellationTokenSource | undefined;
+
+/** Cancels any in-flight scan and returns a fresh token for the new scan. */
+function beginScan(): vscode.CancellationToken {
+  if (activeScan) {
+    activeScan.cancel();
+    activeScan.dispose();
+  }
+  activeScan = new vscode.CancellationTokenSource();
+  return activeScan.token;
+}
+
+/** Cancels any in-flight scan without starting a new one. */
+function cancelActiveScan(): void {
+  if (activeScan) {
+    activeScan.cancel();
+    activeScan.dispose();
+    activeScan = undefined;
+  }
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   diagnosticCollection =
@@ -37,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
       scanCurrentFile()
     ),
     vscode.commands.registerCommand("leakwatch.clearDiagnostics", () => {
+      cancelActiveScan();
       diagnosticCollection.clear();
       statusbar.setIdle();
     })
@@ -49,13 +77,17 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!config.get<boolean>("scanOnSave", true)) {
         return;
       }
+      // Never auto-run the binary against an untrusted workspace.
+      if (!vscode.workspace.isTrusted) {
+        return;
+      }
 
       // Debounce rapid saves
       if (saveTimer) {
         clearTimeout(saveTimer);
       }
       saveTimer = setTimeout(() => {
-        scanFile(document.uri.fsPath);
+        scanFile(document.uri);
       }, SAVE_DEBOUNCE_MS);
     })
   );
@@ -65,38 +97,67 @@ export function deactivate(): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
   }
+  cancelActiveScan();
+}
+
+/** Returns false (and warns) when the workspace is not trusted. */
+function requireTrust(): boolean {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showWarningMessage(
+      "Leakwatch: Scanning is disabled in untrusted workspaces. Trust this workspace to scan."
+    );
+    return false;
+  }
+  return true;
 }
 
 /**
- * Scans the entire workspace folder.
+ * Scans every folder of the (possibly multi-root) workspace and aggregates
+ * the results into the Problems panel.
  */
 async function scanWorkspace(): Promise<void> {
+  if (!requireTrust()) {
+    return;
+  }
+
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders || workspaceFolders.length === 0) {
     vscode.window.showWarningMessage("Leakwatch: No workspace folder open.");
     return;
   }
 
-  const workspacePath = workspaceFolders[0].uri.fsPath;
-
   statusbar.setScanning();
+  const token = beginScan();
 
-  const tokenSource = new vscode.CancellationTokenSource();
-  const result = await scan(workspacePath, tokenSource.token);
-  tokenSource.dispose();
+  const perFolder: { scanRoot: string; findings: Finding[] }[] = [];
+  let totalFindings = 0;
 
-  if (result.error) {
-    statusbar.setError(result.error);
-    vscode.window.showErrorMessage(`Leakwatch: ${result.error}`);
-    return;
+  for (const folder of workspaceFolders) {
+    const scanRoot = folder.uri.fsPath;
+    const result = await scan(scanRoot, token);
+
+    if (token.isCancellationRequested) {
+      return; // A newer scan superseded us; let it own the UI.
+    }
+    if (result.error) {
+      statusbar.setError(result.error);
+      vscode.window.showErrorMessage(`Leakwatch: ${result.error}`);
+      return;
+    }
+
+    perFolder.push({ scanRoot, findings: result.findings });
+    totalFindings += result.findings.length;
   }
 
-  updateDiagnostics(diagnosticCollection, result.findings, workspacePath);
-  statusbar.setResults(result.findings.length);
+  diagnosticCollection.clear();
+  for (const { scanRoot, findings } of perFolder) {
+    addDiagnostics(diagnosticCollection, findings, scanRoot);
+  }
+  statusbar.setResults(totalFindings);
 
-  if (result.findings.length > 0) {
+  if (totalFindings > 0) {
     vscode.window.showWarningMessage(
-      `Leakwatch: Found ${result.findings.length} secret${result.findings.length === 1 ? "" : "s"}. Check the Problems panel.`
+      `Leakwatch: Found ${totalFindings} secret${totalFindings === 1 ? "" : "s"}. Check the Problems panel.`
     );
   }
 }
@@ -105,48 +166,48 @@ async function scanWorkspace(): Promise<void> {
  * Scans the currently active file.
  */
 async function scanCurrentFile(): Promise<void> {
+  if (!requireTrust()) {
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage("Leakwatch: No active file.");
     return;
   }
 
-  await scanFile(editor.document.uri.fsPath);
+  await scanFile(editor.document.uri);
 }
 
 /**
- * Scans a single file by creating a temporary directory context.
+ * Scans just the given file. The CLI's filesystem source accepts a single file
+ * target and reports its path relative to the file's parent directory, so the
+ * findings are resolved against that directory as the scan root.
  */
-async function scanFile(filePath: string): Promise<void> {
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  const workspacePath = workspaceFolders?.[0]?.uri.fsPath ?? path.dirname(filePath);
-  const dir = path.dirname(filePath);
+async function scanFile(fileUri: vscode.Uri): Promise<void> {
+  const filePath = fileUri.fsPath;
+  // The CLI reports the finding path relative to the file's parent directory.
+  const scanRoot = path.dirname(filePath);
 
   statusbar.setScanning();
+  const token = beginScan();
 
-  const tokenSource = new vscode.CancellationTokenSource();
-  const result = await scan(dir, tokenSource.token);
-  tokenSource.dispose();
+  // Scan only this file rather than its whole containing directory.
+  const result = await scan(filePath, token);
 
+  if (token.isCancellationRequested) {
+    return; // Superseded by a newer scan.
+  }
   if (result.error) {
     statusbar.setError(result.error);
     return;
   }
 
-  // Filter to only findings from this specific file
-  const fileFindings = result.findings.filter((f) => {
-    const findingPath = f.sourceMetadata.filePath;
-    return (
-      findingPath === filePath ||
-      findingPath === path.basename(filePath) ||
-      filePath.endsWith(findingPath)
-    );
-  });
+  // Keep only findings whose resolved path matches this exact file.
+  const fileFindings = result.findings.filter((f) =>
+    findingMatchesFile(scanRoot, f.sourceMetadata.filePath, filePath)
+  );
 
-  // Clear diagnostics only for this file, then set new ones
-  const fileUri = vscode.Uri.file(filePath);
-  diagnosticCollection.delete(fileUri);
-
-  updateDiagnostics(diagnosticCollection, fileFindings, workspacePath);
+  setFileDiagnostics(diagnosticCollection, fileUri, fileFindings, scanRoot);
   statusbar.setResults(fileFindings.length);
 }

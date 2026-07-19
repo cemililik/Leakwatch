@@ -6,18 +6,18 @@
 
 ## 1. Current State
 
-Leakwatch has **63 built-in detectors (60 packages)** and **54 verifiers (51 packages)** covering 85.7% of all detectors.
+Leakwatch has **64 built-in detectors (60 packages)** and **54 verifiers (51 packages)** covering 84.4% of all detectors.
 
-All counts are verified by inspecting `detector.Register(` and `verifier.Register(` call sites (2026-05-22).
+All counts are verified by inspecting `detector.Register(` and `verifier.Register(` call sites.
 
 | Metric | Value | Source |
 |--------|-------|--------|
-| Total Detectors | 63 (60 packages) | `grep -r "detector.Register" internal/detector/` |
+| Total Detectors | 64 (60 packages) | `grep -r "detector.Register" internal/detector/` |
 | Verifiers Implemented | 54 (51 packages) | `grep -r "verifier.Register" internal/verifier/` |
-| Verification Coverage | 54/63 (85.7%) | |
-| Live API Verifiers | 49 | Make real network/SDK calls |
-| Format-Only Verifiers | 5 | Structural/format checks only |
-| Detectors Without Verifiers | 9 | Listed in section 2 |
+| Verification Coverage | 54/64 (84.4%) | |
+| Live API Verifiers | 48 | Make real network/SDK calls |
+| Format-Only Verifiers | 6 | Structural/format checks only |
+| Detectors Without Verifiers | 10 | Listed in section 2 |
 | Verifier Architecture | `init()` + compile-time registration via `verifier.Register()` | |
 | Verification Interface | `Verifier.Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult` | `internal/verifier/verifier.go` |
 
@@ -31,7 +31,7 @@ All current verifiers follow a consistent pattern:
 
 ## 2. Verifier Classification
 
-All 63 detectors are classified into tiers based on verification feasibility. **All 54 verifiers listed in Tiers 1–3 are implemented and registered** (verified against source as of 2026-05-22).
+All 64 detectors are classified into tiers based on verification feasibility. **All 54 verifiers listed in Tiers 1–3 are implemented and registered.**
 
 ### Tier 1 --- Easy (Simple API call, single credential, no extra context)
 
@@ -43,8 +43,8 @@ These detectors can be verified with a single HTTP request using only the detect
 | 2 | `slack-token` | `https://slack.com/api/auth.test` | POST | `Bearer {token}` | Easy | P0 | Returns team/user metadata on success |
 | 3 | `openai-api-key` | `https://api.openai.com/v1/models` | GET | `Bearer {token}` | Easy | P0 | Returns model list; 401 if invalid |
 | 4 | `anthropic-api-key` | `https://api.anthropic.com/v1/models` | GET | `x-api-key: {token}` | Easy | P0 | Requires `anthropic-version` header |
-| 5 | `gitlab-pat` | `https://gitlab.com/api/v4/user` | GET | `PRIVATE-TOKEN: {token}` | Easy | P0 | Returns user info; 401 if invalid |
-| 6 | `sendgrid-api-key` | `https://api.sendgrid.com/v3/user/profile` | GET | `Bearer {token}` | Easy | P0 | Returns user profile; 401/403 if invalid |
+| 5 | `gitlab-pat` | `https://{host}/api/v4/user` | GET | `PRIVATE-TOKEN: {token}` | Easy | P0 | Returns user info; 401 if invalid. Defaults to `gitlab.com`, honoring a co-located self-hosted instance host (`ExtraData["host"]`) when present |
+| 6 | `sendgrid-api-key` | `https://api.sendgrid.com/v3/scopes` | GET | `Bearer {token}` | Easy | P0 | Needs no specific scope, so a restricted-permission key is never misread as revoked; 401 = invalid, other unexpected statuses fall through to a verify error rather than a false negative |
 | 7 | `digitalocean-token` | `https://api.digitalocean.com/v2/account` | GET | `Bearer {token}` | Easy | P0 | Returns account info |
 | 8 | `cloudflare-api-token` | `https://api.cloudflare.com/client/v4/user/tokens/verify` | GET | `Bearer {token}` | Easy | P0 | Dedicated verify endpoint |
 | 9 | `newrelic-api-key` | `https://api.newrelic.com/v2/users.json` | GET | `Api-Key: {token}` | Easy | P0 | Returns user list; 401 if invalid |
@@ -81,26 +81,25 @@ These require either extracting additional information from the finding context 
 | 1 | `aws-access-key-id` | AWS STS `GetCallerIdentity` | SDK | HMAC-signed | Medium | P0 | Needs both Access Key ID (`Raw`) + Secret Access Key (`RawV2`) |
 | 2 | `stripe-api-key-live` | `https://api.stripe.com/v1/charges?limit=1` | GET | Basic `{key}:` | Medium | P0 | Live key -- verification must be read-only; use minimal-scope endpoint |
 | 3 | `stripe-api-key-test` | `https://api.stripe.com/v1/charges?limit=1` | GET | Basic `{key}:` | Medium | P1 | Test key -- lower risk but same flow as live |
-| 4 | `twilio-api-key` | `https://api.twilio.com/2010-04-01/Accounts.json` | GET | Basic `{sid}:{token}` | Medium | P1 | Needs Account SID + Auth Token pair |
-| 5 | `mailgun-api-key` | `https://api.mailgun.net/v3/domains` | GET | Basic `api:{key}` | Medium | P1 | Uses Basic auth with `api` as username |
-| 6 | `shopify-access-token` | `https://{shop}.myshopify.com/admin/api/2024-01/shop.json` | GET | `X-Shopify-Access-Token: {token}` | Medium | P1 | Requires shop domain from context |
-| 7 | `okta-api-token` | `https://{domain}/api/v1/users/me` | GET | `SSWS {token}` | Medium | P1 | Requires Okta domain from context |
-| 8 | `databricks-token` | `https://{workspace}.cloud.databricks.com/api/2.0/clusters/list` | GET | `Bearer {token}` | Medium | P1 | Requires workspace URL from context |
+| 4 | `twilio-api-key` | `https://api.twilio.com/2010-04-01/Accounts.json` | GET | Basic `{apiKeySID}:{apiKeySecret}` | Medium | P1 | Paired as API Key SID (`Raw`) + API Key Secret (`ExtraData["api_key_secret"]`) — NOT Account SID + Auth Token, since the detector captures an API Key SID (`SK...`), which only authenticates with its own paired secret. Scoped to `ExtraData["account_sid"]` when available. Missing secret → `unverified`, never a guessed inactive |
+| 5 | `mailgun-api-key` | `https://api.mailgun.net/v3/domains`, retrying `https://api.eu.mailgun.net/v3/domains` | GET | Basic `api:{key}` | Medium | P1 | Mailgun keys carry no region marker; the US host is probed first and the EU host is retried only if US reports the key inactive, so a live EU-only key is never misreported as dead |
+| 6 | `shopify-access-token` | `https://{shop}.myshopify.com/admin/api/2024-01/shop.json` | GET | `X-Shopify-Access-Token: {token}` | Medium | P1 | Requires `ExtraData["store_domain"]`, which the detector does not currently populate — findings resolve to `unverified` until this wiring lands (tracked in the ROADMAP) |
+| 7 | `okta-api-token` | `https://{domain}/api/v1/users/me` | GET | `SSWS {token}` | Medium | P1 | Domain is captured by the detector from a co-located org domain in `ExtraData["domain"]`; without it, the result is `unverified` (never a false invalid) |
+| 8 | `databricks-token` | `https://{workspace-host}/api/2.0/preview/scim/v2/Me` | GET | `Bearer {token}` | Medium | P1 | Workspace host captured by the detector in `ExtraData["host"]` (a Databricks PAT only authenticates against its own workspace host); without it, the result is `unverified` |
 | 9 | `github-oauth-token` | `https://api.github.com/user` | GET | `Bearer {token}` | Medium | P1 | Same endpoint as github-token but OAuth tokens may have limited scopes |
-| 10 | `auth0-management-token` | `https://{domain}/api/v2/users?per_page=1` | GET | `Bearer {token}` | Medium | P2 | JWT-format; needs Auth0 domain extracted from token `iss` claim |
-| 11 | `coinbase-api-key` | `https://api.coinbase.com/v2/user` | GET | HMAC signature | Medium | P2 | Requires API key + secret + timestamp-based HMAC signing |
-| 12 | `datadog-api-key` | `https://api.datadoghq.com/api/v1/validate` | GET | `DD-API-KEY: {key}` | Medium | P2 | Dedicated validate endpoint; may also need Application Key for full validation |
-| 13 | `terraform-cloud-token` | `https://app.terraform.io/api/v2/account/details` | GET | `Bearer {token}` | Medium | P2 | Standard Bearer auth; some tokens may be for Terraform Enterprise (custom URL) |
-| 14 | `supabase-service-key` | `https://{project-ref}.supabase.co/rest/v1/` | GET | `apikey: {key}` + `Authorization: Bearer {key}` | Medium | P2 | Needs project ref from context; JWT format may contain project ref |
-| 15 | `rubygems-api-key` | `https://rubygems.org/api/v1/api_key.json` | GET | `Authorization: {key}` | Medium | P2 | Returns key metadata |
-| 16 | `bitbucket-app-password` | `https://api.bitbucket.org/2.0/user` | GET | Basic `{username}:{app-password}` | Medium | P2 | Requires username from context |
-| 17 | `dockerhub-pat` | `https://hub.docker.com/v2/user/login` | POST | Token exchange | Medium | P2 | Need to exchange PAT for JWT via login endpoint |
-| 18 | `teams-webhook` | `POST {webhookURL}` | POST | None (URL is the credential) | Medium | P1 | Sends minimal payload; 400 treated as active (valid URL, empty payload rejected). Live probe — no real message content posted. |
-| 19 | `infura-api-key` | `https://mainnet.infura.io/v3/{token}` | POST | Token in URL path | Medium | P1 | JSON-RPC `web3_clientVersion` call. Consumes a small amount of API quota. |
+| 10 | `auth0-management-token` | `https://{tenant}/api/v2/` | GET | `Bearer {token}` | Medium | P2 | JWT-format; the tenant host is decoded from the token's own `iss` claim (unverified signature — used only for routing, not trust), falling back to `unverified` when the claim is absent |
+| 11 | `datadog-api-key` | `https://api.datadoghq.com/api/v1/validate` | GET | `DD-API-KEY: {key}` | Medium | P2 | Dedicated validate endpoint; may also need Application Key for full validation |
+| 12 | `terraform-cloud-token` | `https://app.terraform.io/api/v2/account/details` | GET | `Bearer {token}` | Medium | P2 | Standard Bearer auth; some tokens may be for Terraform Enterprise (custom URL) |
+| 13 | `supabase-service-key` | `https://api.supabase.com/v1/projects` | GET | `Bearer {token}` | Medium | P2 | Fixed Supabase Management API host — no project ref, no `apikey` header, no per-project context needed |
+| 14 | `rubygems-api-key` | `https://rubygems.org/api/v1/api_key.json` | GET | `Authorization: {key}` | Medium | P2 | Returns key metadata |
+| 15 | `bitbucket-app-password` | `https://api.bitbucket.org/2.0/user` | GET | Basic `{username}:{app-password}` | Medium | P2 | Username captured by the detector in `ExtraData["username"]` |
+| 16 | `dockerhub-pat` | `https://hub.docker.com/v2/user/` | GET | `Bearer {token}` | Medium | P2 | Docker Hub PATs authenticate the v2 API directly; no login/JWT-exchange step and no username needed |
+| 17 | `teams-webhook` | `POST {webhookURL}` | POST | None (URL is the credential) | Medium | P1 | Sends minimal payload; 400 treated as active (valid URL, empty payload rejected). Live probe — no real message content posted. |
+| 18 | `infura-api-key` | `https://mainnet.infura.io/v3/{token}` | POST | Token in URL path | Medium | P1 | JSON-RPC `web3_clientVersion` call. Consumes a small amount of API quota. |
 
-**Total Tier 2: 19 detectors (all implemented)**
+**Total Tier 2: 18 detectors (all implemented)**
 
-> **Note:** `hashicorp-vault-token` was previously listed in this tier (Tier 2 P2) but has no verifier implementation. It has been moved to Tier 4 (no verifier). See section 2 Tier 4 for rationale.
+> **Note:** `hashicorp-vault-token` was previously listed in this tier (Tier 2 P2) but has no verifier implementation. It has been moved to Tier 4 (no verifier). See section 2 Tier 4 for rationale. `coinbase-api-key` was previously listed here but is a format-only (Tier 3) check — see below.
 
 ### Tier 3 --- Format-Only (Implemented; validates structure but cannot confirm liveness)
 
@@ -113,12 +112,13 @@ These detectors have verifier implementations that perform structural/format val
 | 3 | `gcp-service-account` | `internal/verifier/gcp` | JSON structure validation (type, project_id, private_key_id, client_email) | Live check requires JWT assertion to Google OAuth2 endpoint |
 | 4 | `snowflake-credentials` | `internal/verifier/snowflake` | Non-empty credentials check only | Live check requires direct database connection (JDBC/ODBC) |
 | 5 | `rabbitmq-connection-string` | `internal/verifier/rabbitmq` | AMQP URL scheme + user + host validation | Live check requires network access to the broker |
+| 6 | `coinbase-api-key` | `internal/verifier/coinbase` | Key character-set/length format check | Coinbase's v2 API authenticates with HMAC-SHA256 request signing using the key's paired secret, which the detector captures as an independent, unpaired finding — never attempts a live call, and always returns `unverified` (never a false active/inactive) |
 
-**Total Tier 3 (Format-Only): 5 verifiers**
+**Total Tier 3 (Format-Only): 6 verifiers**
 
 ### Tier 4 --- No Verifier Implemented
 
-These 9 detectors currently have no verifier. The reasons range from "no public API" to "side effects on verification" to "planned but not yet built."
+These 10 detectors currently have no verifier. The reasons range from "no public API" to "side effects on verification" to "planned but not yet built."
 
 | # | Detector ID | Reason / Status |
 |---|-------------|-----------------|
@@ -129,29 +129,31 @@ These 9 detectors currently have no verifier. The reasons range from "no public 
 | 5 | `ftp-credentials` | FTP/SFTP URIs with embedded credentials. Verification requires direct connection to potentially internal FTP servers. |
 | 6 | `ldap-credentials` | LDAP bind credentials (`ldap://`). Verification requires direct connection to an internal LDAP directory. |
 | 7 | `slack-webhook` | Webhook URLs (`https://hooks.slack.com/services/...`). Any call would POST a message to a real channel (side effect). Read-only verification is not possible. |
-| 8 | `jwt` | JSON Web Tokens. Cannot verify the signature without the signing key. Can only check expiry and structural validity — no live state can be confirmed. Planned. |
-| 9 | `hashicorp-vault-token` | Vault tokens. Live check requires the Vault server address extracted from context, which is typically not available in a static finding. Planned. |
+| 8 | `discord-webhook-url` | Discord incoming-webhook URLs. Any call would POST a message to a real channel (side effect). Read-only verification is not possible. |
+| 9 | `jwt` | JSON Web Tokens. Cannot verify the signature without the signing key. Can only check expiry and structural validity — no live state can be confirmed. Planned. |
+| 10 | `hashicorp-vault-token` | Vault tokens. Live check requires the Vault server address extracted from context, which is typically not available in a static finding. Planned. |
 
-**Total Tier 4: 9 detectors (no verifier)**
+**Total Tier 4: 10 detectors (no verifier)**
 
-### Verified Tier Summary (Measured 2026-05-22)
+### Verified Tier Summary
 
 | Tier | Count | Description |
 |------|-------|-------------|
 | Tier 1 — Live (Easy) | 30 | Simple Bearer/API-key, single HTTP request |
-| Tier 2 — Live (Medium) | 14 | Context extraction, multi-step auth, or SDK |
+| Tier 2 — Live (Medium) | 16 | Context extraction, multi-step auth, or SDK |
 | Tier 2b — Live (Side-effect probe) | 2 | `teams-webhook`, `infura-api-key` — live but consume quota or trigger side effects |
-| Tier 3 — Format-Only | 5 | Structural validation; no network call |
-| Tier 4 — No Verifier | 9 | Not implemented |
-| **Total Detectors** | **63** | |
-| **Total Verifiers** | **54** | Live: 49 · Format-only: 5 |
+| Tier 3 — Format-Only | 6 | Structural validation; no network call |
+| Tier 4 — No Verifier | 10 | Not implemented |
+| **Total Detectors** | **64** | |
+| **Total Verifiers** | **54** | Live: 48 · Format-only: 6 |
 
-> **Coverage:** 54/63 = **85.7%**
+> **Coverage:** 54/64 = **84.4%**
 
 **Notes:**
 - `teams-webhook` (`internal/verifier/teams`): Live HTTP POST probe. A 400 response (valid URL but empty payload rejected) is treated as active. This is a deliberate non-destructive probe — no readable message is posted.
 - `infura-api-key` (`internal/verifier/infura`): Live JSON-RPC POST (`web3_clientVersion`). This does consume a small amount of API quota; the call is read-only and non-destructive.
 - `rabbitmq-connection-string` (`internal/verifier/rabbitmq`): Format-only (Tier 3). AMQP URL structure validated; no network connection attempted.
+- `coinbase-api-key` (`internal/verifier/coinbase`): Format-only (Tier 3). Key shape validated only; never attempts a live call since Coinbase's HMAC-signed API requires the paired secret, which the detector cannot reliably supply.
 
 ## 3. Implementation Roadmap (COMPLETED)
 
@@ -170,6 +172,8 @@ All 5 sprints have been completed. Two additional verifiers (`teams-webhook`, `i
 | Sprint 5 (Tier 2 + Tier 3) | 9 | 52/63 (82.5%) | supabase, rubygems, bitbucket, dockerhub, azure-storage, azure-entra, gcp, snowflake, rabbitmq |
 | Post-roadmap additions | 2 | 54/63 (85.7%) | teams-webhook, infura-api-key (live probes added in fix/wire-custom-rules-and-inline-ignore) |
 | **Total** | **51** | **54/63 (85.7%)** | |
+
+> **Historical snapshot:** the sprint table above reflects the state as of 2026-05-22, before the `discord-webhook-url` detector was added and the `coinbase-api-key` verifier was reclassified from a Tier 2 live check to a Tier 3 format-only check (it never made a real live call — see Tier 3, section 2). **Current totals are 64 detectors / 54 verifiers = 84.4% coverage** (section 1); the sprint-by-sprint history is preserved here unchanged for traceability.
 
 ## 4. Security Considerations
 

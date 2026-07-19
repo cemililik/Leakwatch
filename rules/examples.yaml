@@ -1,83 +1,100 @@
 # Leakwatch - Example Custom Rules
 #
-# Place this file (or your own) in the custom-rules section of .leakwatch.yaml:
+# This file is NOT loaded by Leakwatch directly -- there is no "load rules
+# from an external file" mechanism. Custom rules are only read from the
+# `custom-rules:` key inside your own .leakwatch.yaml, as a list of rule
+# objects (id/description/regex/keywords/severity/entropy), exactly as shown
+# below. To use one of these examples, copy the rule object(s) you want
+# straight into your .leakwatch.yaml:
 #
+#   # .leakwatch.yaml
 #   custom-rules:
-#     - rules/examples.yaml
-#     - rules/my-company.yaml
+#     - id: "hetzner-api-token"
+#       description: "Hetzner Cloud API Token"
+#       regex: "[a-zA-Z0-9]{64}"
+#       keywords:
+#         - "hcloud"
+#         - "hetzner"
+#       severity: high
+#       entropy: 4.5
 #
-# Each rule defines a secret pattern to detect. Leakwatch will load these
-# at startup alongside the built-in detectors.
+# All regexes below are patterns only -- no real secret values are included
+# anywhere in this file.
 #
-# See: docs/guides/custom-rules.md for full documentation.
+# See: docs/guides/custom-rules.md for the full field reference and workflow.
 
-rules:
-  # -----------------------------------------------------------------------
-  # Cloud Provider Tokens
-  # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Cloud Provider Tokens
+#
+# NOTE: These IDs are deliberately distinct from Leakwatch's built-in
+# detector IDs (e.g. "digitalocean-token", "cloudflare-api-token"). A custom
+# rule whose id collides with a built-in detector is skipped at load time
+# with an "ID already registered" warning -- rename it if you want your own
+# variant of a pattern Leakwatch already ships.
+# -----------------------------------------------------------------------
 
-  - id: digitalocean-token
-    description: "DigitalOcean Personal Access Token"
-    regex: "dop_v1_[a-f0-9]{64}"
-    keywords:
-      - "dop_v1_"
-    severity: critical
+- id: digitalocean-custom-token
+  description: "DigitalOcean Personal Access Token (custom variant)"
+  regex: "dop_v1_[a-f0-9]{64}"
+  keywords:
+    - "dop_v1_"
+  severity: critical
 
-  - id: hetzner-api-token
-    description: "Hetzner Cloud API Token"
-    regex: "[a-zA-Z0-9]{64}"
-    keywords:
-      - "hcloud"
-      - "hetzner"
-    severity: high
-    entropy: 4.5
+- id: hetzner-api-token
+  description: "Hetzner Cloud API Token"
+  regex: "[a-zA-Z0-9]{64}"
+  keywords:
+    - "hcloud"
+    - "hetzner"
+  severity: high
+  entropy: 4.5
 
-  - id: cloudflare-api-token
-    description: "Cloudflare API Token"
-    regex: "[a-zA-Z0-9_-]{40}"
-    keywords:
-      - "cloudflare"
-      - "CF_API_TOKEN"
-    severity: critical
-    entropy: 4.0
+- id: cloudflare-custom-token
+  description: "Cloudflare API Token (custom variant)"
+  regex: "[a-zA-Z0-9_-]{40}"
+  keywords:
+    - "cloudflare"
+    - "CF_API_TOKEN"
+  severity: critical
+  entropy: 4.0
 
-  # -----------------------------------------------------------------------
-  # Internal / Company-Specific
-  # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Internal / Company-Specific
+# -----------------------------------------------------------------------
 
-  - id: internal-api-key
-    description: "Internal API Key (example pattern)"
-    regex: "mycompany_[a-zA-Z0-9]{32}"
-    keywords:
-      - "mycompany_"
-    severity: high
+- id: internal-api-key
+  description: "Internal API Key (example pattern)"
+  regex: "mycompany_[a-zA-Z0-9]{32}"
+  keywords:
+    - "mycompany_"
+  severity: high
 
-  - id: internal-webhook-secret
-    description: "Internal Webhook Signing Secret"
-    regex: "whsec_[a-zA-Z0-9]{32,64}"
-    keywords:
-      - "whsec_"
-    severity: high
+- id: internal-webhook-secret
+  description: "Internal Webhook Signing Secret"
+  regex: "whsec_[a-zA-Z0-9]{32,64}"
+  keywords:
+    - "whsec_"
+  severity: high
 
-  # -----------------------------------------------------------------------
-  # Certificates & Passwords
-  # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Certificates & Passwords
+# -----------------------------------------------------------------------
 
-  - id: pkcs12-password
-    description: "PKCS#12 / PFX Certificate Password"
-    regex: "(?i)(pkcs12|pfx|keystore)[_-]?pass(word)?\\s*[:=]\\s*['\"]?([^\\s'\"]{8,})['\"]?"
-    keywords:
-      - "pkcs12"
-      - "pfx"
-      - "keystore"
-    severity: high
-    entropy: 3.0
+- id: pkcs12-password
+  description: "PKCS#12 / PFX Certificate Password"
+  regex: "(?i)(pkcs12|pfx|keystore)[_-]?pass(word)?\\s*[:=]\\s*['\"]?([^\\s'\"]{8,})['\"]?"
+  keywords:
+    - "pkcs12"
+    - "pfx"
+    - "keystore"
+  severity: high
+  entropy: 3.0
 
-  - id: ldap-bind-password
-    description: "LDAP Bind Password"
-    regex: "(?i)ldap[_-]?(bind)?[_-]?pass(word)?\\s*[:=]\\s*['\"]?([^\\s'\"]{8,})['\"]?"
-    keywords:
-      - "ldap"
-      - "bind_password"
-    severity: critical
-    entropy: 3.0
+- id: ldap-bind-password
+  description: "LDAP Bind Password"
+  regex: "(?i)ldap[_-]?(bind)?[_-]?pass(word)?\\s*[:=]\\s*['\"]?([^\\s'\"]{8,})['\"]?"
+  keywords:
+    - "ldap"
+    - "bind_password"
+  severity: critical
+  entropy: 3.0

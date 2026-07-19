@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,9 +119,10 @@ func TestRedactPassword_VariousFormats(t *testing.T) {
 			expected: "ftp://user:****@host:21/path",
 		},
 		{
+			// No userinfo: fail safe and mask everything but the scheme.
 			name:     "no credentials in URL",
 			input:    "ftp://host:21/path",
-			expected: "ftp://host:21/path",
+			expected: "ftp://****",
 		},
 		{
 			name:     "user without password",
@@ -141,8 +143,42 @@ func TestRedactPassword_VariousFormats(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := redactPassword(tt.input)
+			result := detector.RedactURLPassword(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestRedactPassword_EmbeddedCredentialInPath_MasksInsteadOfLeaking guards the
+// fail-open regression: the detector regex only excludes whitespace and
+// quotes, so a whitespace-free run can carry a "user:pass@" credential in the
+// path or query while net/url parses the authority as having no userinfo.
+// RedactURLPassword must MASK such a match, never return the raw string with
+// the cleartext credential.
+func TestRedactPassword_EmbeddedCredentialInPath_MasksInsteadOfLeaking(t *testing.T) {
+	raw := "ftp://simplehost/path?redirect=http://user:s3cr3tP4ss@evil.com"
+
+	result := detector.RedactURLPassword(raw)
+
+	assert.Equal(t, "ftp://****", result)
+	assert.NotContains(t, result, "s3cr3tP4ss")
+	assert.NotContains(t, result, "user:")
+	assert.NotEqual(t, raw, result)
+}
+
+func TestDetector_Scan_Raw_DoesNotAliasInputBuffer(t *testing.T) {
+	input := []byte("ftp://deploy:s3cretP4ss@ftp.example.com:21/uploads")
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), input)
+	require.Len(t, findings, 1)
+
+	raw := findings[0].Raw
+	original := string(raw)
+
+	for i := range input {
+		input[i] = 'x'
+	}
+
+	assert.Equal(t, original, string(raw))
 }

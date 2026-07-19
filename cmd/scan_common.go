@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -18,54 +18,23 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/HodeTech/leakwatch/internal/config"
-	"github.com/HodeTech/leakwatch/internal/detector"
-	"github.com/HodeTech/leakwatch/internal/detector/custom"
 	"github.com/HodeTech/leakwatch/internal/engine"
-	"github.com/HodeTech/leakwatch/internal/filter"
 	"github.com/HodeTech/leakwatch/internal/output"
 	csvout "github.com/HodeTech/leakwatch/internal/output/csv"
 	githubout "github.com/HodeTech/leakwatch/internal/output/github"
 	jsonout "github.com/HodeTech/leakwatch/internal/output/json"
 	sarifout "github.com/HodeTech/leakwatch/internal/output/sarif"
 	tableout "github.com/HodeTech/leakwatch/internal/output/table"
-	"github.com/HodeTech/leakwatch/internal/remediation"
+	"github.com/HodeTech/leakwatch/internal/scanner"
 	"github.com/HodeTech/leakwatch/internal/source"
-	"github.com/HodeTech/leakwatch/internal/verifier"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-// closeable is implemented by sources that hold resources (e.g. cloned repos).
-type closeable interface {
-	Close() error
-}
-
-// scanConfig holds the resolved configuration for a scan command.
-type scanConfig struct {
-	concurrency       int
-	maxFileSize       int64
-	excludePaths      []string
-	excludeDetectors  []string
-	enableEntropy     bool
-	entropyThreshold  float64
-	showRaw           bool
-	outputFile        string
-	format            string
-	noVerify          bool
-	onlyVerified      bool
-	minSeverity       finding.Severity
-	enableRemediation bool
-	scanRoot          string // root path for .leakwatchignore resolution
-	scanTarget        string // display name for scan summary (path, URL, image ref)
-
-	// Verification engine settings sourced from the `verification:` config block.
-	verifyEnabled     bool
-	verifyTimeout     time.Duration
-	verifyConcurrency int
-	verifyRateLimit   float64
-
-	// User-defined YAML custom rules from the `custom-rules:` config block.
-	customRules []custom.RuleDef
-}
+// defaultMaxFileSize is the default maximum size (in bytes) of a single
+// file/blob/object Leakwatch reads into memory during a scan (10 MB). It is the
+// single source of truth for every scan subcommand's --max-file-size default so
+// the literal no longer has to be kept in sync by hand across seven files.
+const defaultMaxFileSize = 10 * 1024 * 1024
 
 // Flag names shared across the scan_*.go commands. Defining them as constants
 // avoids duplicating the string literals that several commands reference when
@@ -102,13 +71,19 @@ func bindScanFlags(v *viper.Viper, flags *pflag.FlagSet) {
 }
 
 // newScanViper builds an isolated Viper instance for a single scan invocation.
-// It replicates the global config discovery performed in cmd/root.go's
-// initConfig (respecting --config, otherwise searching the working directory
-// and home directory for .leakwatch.yaml), enables LEAKWATCH_-prefixed env var
-// overrides with the same key replacer, and binds the active command's pflags so
-// that flag > env > config-file > default precedence holds without cross-command
+// It performs the same config discovery the CLI uses globally (respecting the
+// --config flag, otherwise searching the working directory and the home
+// directory for .leakwatch.yaml), enables LEAKWATCH_-prefixed env var overrides
+// with the same key replacer, and binds the active command's pflags so that
+// flag > env > config-file > default precedence holds without cross-command
 // global-state leakage (SYS-07a/b).
-func newScanViper(cmd *cobra.Command) *viper.Viper {
+//
+// A genuine config parse error (a malformed .leakwatch.yaml, or an explicit
+// --config path that cannot be read) is fatal: it is returned as an error rather
+// than warn-logged-and-ignored, so detection scope can never silently diverge
+// from what the operator configured. A simply-absent config file on the search
+// path is not an error.
+func newScanViper(cmd *cobra.Command) (*viper.Viper, error) {
 	v := viper.New()
 
 	if cfgFile != "" {
@@ -129,18 +104,49 @@ func newScanViper(cmd *cobra.Command) *viper.Viper {
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {
-		// A missing config file is acceptable; only surface genuine parse errors.
 		var notFound viper.ConfigFileNotFoundError
-		if !errors.As(err, &notFound) && v.ConfigFileUsed() != "" {
-			slog.Warn("failed to parse config file", "file", v.ConfigFileUsed(), "error", err)
+		switch {
+		case errors.As(err, &notFound):
+			// No config file found on the search path: acceptable, use defaults.
+		case errors.Is(err, os.ErrNotExist):
+			// An explicit --config path that does not exist is treated as "no
+			// config" (same as a search-path miss) rather than fatal.
+			slog.Debug("config file not found", "file", v.ConfigFileUsed())
+		default:
+			// A genuine parse error (malformed YAML) or an otherwise-unreadable
+			// config is fatal, so detection scope never silently diverges from
+			// what the operator configured.
+			return nil, fmt.Errorf("failed to parse config file %q: %w", v.ConfigFileUsed(), err)
 		}
 	}
 
 	bindScanFlags(v, cmd.Flags())
-	return v
+	return v, nil
 }
 
-// addVerifyFlags adds --no-verify, --only-verified and --min-severity flags.
+// addCommonScanFlags registers the format/output/concurrency/max-file-size/
+// show-raw flags shared by every scan subcommand. It mirrors addVerifyFlags so a
+// new subcommand cannot drift out of sync with the common flag surface, and it is
+// the single place the --max-file-size default is wired.
+func addCommonScanFlags(flags *pflag.FlagSet) {
+	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
+	flags.StringP("output", "o", "", "output file (default: stdout)")
+	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
+	flags.Int64("max-file-size", defaultMaxFileSize, "maximum file size in bytes")
+	flags.Bool(flagShowRaw, false, "show raw secret content in output")
+	flags.StringSlice("exclude-detectors", nil, "detector IDs to exclude (e.g. aws-access-key-id)")
+}
+
+// addExcludePathFlag registers the --exclude path-pattern flag. It is added to
+// every source that supports path-based exclusion (fs/git/image/s3/gcs/repos, all
+// of which accept WithExcludePaths); the Slack source deliberately omits it
+// because it excludes by channel (--exclude-channels), not by path.
+func addExcludePathFlag(flags *pflag.FlagSet) {
+	flags.StringSlice("exclude", nil, "path patterns to exclude")
+}
+
+// addVerifyFlags adds --no-verify, --only-verified, --min-severity and
+// --remediation flags.
 func addVerifyFlags(flags *pflag.FlagSet) {
 	flags.Bool("no-verify", false, "disable secret verification")
 	flags.Bool("only-verified", false, "only show verified active findings")
@@ -155,34 +161,27 @@ func addVerifyFlags(flags *pflag.FlagSet) {
 // scan command's flag defaults (SYS-07a/b). Flags that are not config-keyed
 // (--no-verify, --only-verified, --min-severity, --remediation, --exclude) are
 // read directly from the command.
-func loadScanConfig(cmd *cobra.Command) (*scanConfig, error) {
-	v := newScanViper(cmd)
+func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
+	v, err := newScanViper(cmd)
+	if err != nil {
+		return nil, err
+	}
 	cfg, err := config.LoadFrom(v)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	noVerify, err := cmd.Flags().GetBool("no-verify")
-	if err != nil {
-		slog.Debug("no-verify flag not available", "error", err)
-	}
-	onlyVerified, err := cmd.Flags().GetBool("only-verified")
-	if err != nil {
-		slog.Debug("only-verified flag not available", "error", err)
-	}
-	minSevStr, err := cmd.Flags().GetString("min-severity")
-	if err != nil {
-		slog.Debug("min-severity flag not available", "error", err)
-	}
 	// The --min-severity flag takes precedence; fall back to the
-	// output.severity-threshold config value only when the flag is not set.
+	// output.severity-threshold config value only when the flag is not set. An
+	// unrecognized value is rejected (rather than silently downgraded to "low")
+	// using the same canonical severity set the config validator enforces.
+	minSevStr := flagString(cmd, "min-severity")
 	if !cmd.Flags().Changed("min-severity") && cfg.Output.SeverityThreshold != "" {
 		minSevStr = cfg.Output.SeverityThreshold
 	}
-	minSev := parseSeverity(minSevStr)
-	enableRemediation, err := cmd.Flags().GetBool("remediation")
-	if err != nil {
-		slog.Debug("remediation flag not available", "error", err)
+	minSev, ok := finding.ParseSeverity(minSevStr)
+	if !ok {
+		return nil, fmt.Errorf("invalid --min-severity value: %q (must be low, medium, high, or critical)", minSevStr)
 	}
 
 	// show-raw is bound to the isolated Viper, so cfg.Output.ShowRaw already
@@ -190,29 +189,181 @@ func loadScanConfig(cmd *cobra.Command) (*scanConfig, error) {
 	// --show-raw=false override a config `show-raw: true` (OUT-m-04).
 	showRaw := cfg.Output.ShowRaw
 	if cmd.Flags().Changed(flagShowRaw) {
-		showRaw, _ = cmd.Flags().GetBool(flagShowRaw)
+		showRaw = flagBool(cmd, flagShowRaw)
 	}
 
-	return &scanConfig{
-		concurrency:       cfg.Scan.Concurrency,
-		maxFileSize:       cfg.Scan.MaxFileSize,
-		excludePaths:      cfg.Filter.ExcludePaths,
-		excludeDetectors:  cfg.Filter.ExcludeDetectors,
-		enableEntropy:     cfg.Detection.Entropy.Enabled,
-		entropyThreshold:  cfg.Detection.Entropy.Threshold,
-		showRaw:           showRaw,
-		outputFile:        cfg.Output.File,
-		format:            cfg.Output.Format,
-		noVerify:          noVerify,
-		onlyVerified:      onlyVerified,
-		minSeverity:       minSev,
-		enableRemediation: enableRemediation,
-		verifyEnabled:     cfg.Verification.Enabled,
-		verifyTimeout:     cfg.Verification.Timeout,
-		verifyConcurrency: cfg.Verification.Concurrency,
-		verifyRateLimit:   cfg.Verification.RateLimit,
-		customRules:       cfg.CustomRules,
+	return &scanner.Config{
+		Concurrency:       cfg.Scan.Concurrency,
+		MaxFileSize:       cfg.Scan.MaxFileSize,
+		ExcludePaths:      cfg.Filter.ExcludePaths,
+		ExcludeDetectors:  mergedExcludeDetectors(cmd, cfg),
+		EnableEntropy:     cfg.Detection.Entropy.Enabled,
+		EntropyThreshold:  cfg.Detection.Entropy.Threshold,
+		ShowRaw:           showRaw,
+		OutputFile:        cfg.Output.File,
+		Format:            cfg.Output.Format,
+		NoVerify:          flagBool(cmd, "no-verify"),
+		OnlyVerified:      flagBool(cmd, "only-verified"),
+		MinSeverity:       minSev,
+		EnableRemediation: flagBool(cmd, "remediation"),
+		VerifyEnabled:     cfg.Verification.Enabled,
+		VerifyTimeout:     cfg.Verification.Timeout,
+		VerifyConcurrency: cfg.Verification.Concurrency,
+		VerifyRateLimit:   cfg.Verification.RateLimit,
+		CustomRules:       cfg.CustomRules,
 	}, nil
+}
+
+// mergedExcludeDetectors returns the config-file filter.exclude-detectors
+// combined with any per-invocation --exclude-detectors flag values. Detector
+// exclusion is otherwise config-file-only; wiring the flag here lets an operator
+// suppress a noisy detector for a single run without editing .leakwatch.yaml
+// (resolving the wave-3 carryover where the config key existed but no CLI flag
+// did). The flag augments rather than replaces the config list.
+func mergedExcludeDetectors(cmd *cobra.Command, cfg *config.Config) []string {
+	flagVals := flagStringSlice(cmd, "exclude-detectors")
+	if len(flagVals) == 0 {
+		return cfg.Filter.ExcludeDetectors
+	}
+	merged := make([]string, 0, len(cfg.Filter.ExcludeDetectors)+len(flagVals))
+	merged = append(merged, cfg.Filter.ExcludeDetectors...)
+	merged = append(merged, flagVals...)
+	return merged
+}
+
+// mergedExcludePaths returns the config-file exclude-paths combined with any
+// per-invocation --exclude flag values registered by addCommonScanFlags. Every
+// scan subcommand carries the flag, so exclusion works uniformly rather than
+// being config-file-only on all sources but `scan fs`.
+func mergedExcludePaths(cmd *cobra.Command, cfg *scanner.Config) []string {
+	flagExcludes := flagStringSlice(cmd, "exclude")
+	if len(flagExcludes) == 0 {
+		return cfg.ExcludePaths
+	}
+	merged := make([]string, 0, len(cfg.ExcludePaths)+len(flagExcludes))
+	merged = append(merged, cfg.ExcludePaths...)
+	merged = append(merged, flagExcludes...)
+	return merged
+}
+
+// runScan wires a single-source scan: it installs SIGINT/SIGTERM handling,
+// delegates the scan pipeline to internal/scanner, renders the result, and maps
+// an interruption to a distinct non-zero exit. If cl is non-nil its Close is
+// called (best-effort) when the scan completes.
+func runScan(cmd *cobra.Command, cfg *scanner.Config, src source.Source, cl io.Closer) error {
+	if cl != nil {
+		defer func() {
+			if err := cl.Close(); err != nil {
+				slog.Warn("failed to clean up source", "error", err)
+			}
+		}()
+	}
+
+	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	result, scanErr := scanner.Run(ctx, cfg, src)
+	if result == nil {
+		// Only a pre-scan failure (e.g. source validation) yields a nil result.
+		return fmt.Errorf("scan failed: %w", scanErr)
+	}
+	return finishScan(cfg, result, src.Type(), scanErr)
+}
+
+// finishScan renders an already post-processed scan result and resolves the exit
+// code. Exit-code contract (documented in Execute):
+//   - findings present     -> FindingsExitError (exit 1)
+//   - interrupted, no finds -> InterruptedExitError (exit 3): the scan did not
+//     complete, so its clean verdict must not be trusted
+//   - other scan error      -> wrapped error (exit 2)
+//   - clean, complete       -> nil (exit 0)
+//
+// Findings take precedence over interruption so a "secrets found" signal is never
+// masked, but an interrupted scan that found nothing can never report exit 0.
+func finishScan(cfg *scanner.Config, result *engine.ScanResult, sourceType string, scanErr error) error {
+	if err := writeOutput(cfg, result, sourceType); err != nil {
+		return err
+	}
+
+	if len(result.Findings) > 0 {
+		return &FindingsExitError{Count: len(result.Findings)}
+	}
+	if result.Interrupted {
+		slog.Warn("scan did not complete before interruption; results are partial", "error", scanErr)
+		return &InterruptedExitError{}
+	}
+	if scanErr != nil {
+		return fmt.Errorf("scan failed: %w", scanErr)
+	}
+	return nil
+}
+
+// writeOutput renders the (already post-processed) findings to the configured
+// destination using the selected formatter, then prints the scan summary to
+// stderr. It returns only genuine output errors; the exit-code decision is made
+// by finishScan. Both single-source scans and multi-repo scans funnel through
+// here so their output behavior cannot drift (CMD-M-04).
+func writeOutput(cfg *scanner.Config, result *engine.ScanResult, sourceType string) error {
+	findings := result.Findings
+	if findings == nil {
+		findings = []finding.Finding{}
+	}
+
+	// The "github" format emits GitHub Actions workflow commands, which only take
+	// effect on the live stdout stream — writing them to a file does nothing. If an
+	// output file was configured (e.g. output.file in .leakwatch.yaml), ignore it
+	// so the annotations always reach stdout instead of being silently swallowed.
+	outputFile := cfg.OutputFile
+	if cfg.Format == "github" && outputFile != "" {
+		slog.Debug("ignoring output file for github format; annotations are written to stdout", "file", outputFile)
+		outputFile = ""
+	}
+
+	colorEnabled := resolveColorEnabled(cfg.Format, outputFile)
+	formatter := selectFormatter(cfg.Format, cfg.ShowRaw, colorEnabled)
+
+	// Auto-suffix a bare --output path (one with no extension) with the
+	// formatter's own extension, so `--format sarif --output results` writes
+	// results.sarif rather than an extension-less file that downstream SARIF
+	// consumers (e.g. GitHub Code Scanning) will not recognize.
+	if outputFile != "" && filepath.Ext(outputFile) == "" {
+		outputFile += formatter.FileExtension()
+	}
+
+	if outputFile != "" {
+		if err := writeOutputFile(outputFile, formatter, findings); err != nil {
+			return err
+		}
+	} else if err := formatter.Format(os.Stdout, findings); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
+	}
+
+	// Print scan summary to stderr (visible regardless of output format/file).
+	printScanSummary(result, sourceType, cfg.ScanTarget)
+	return nil
+}
+
+// writeOutputFile formats findings into the given path. The file is created with
+// 0600 permissions because, under --show-raw, it can contain live secret values
+// that must not be world/group-readable. The Close error is propagated on the
+// success path: a swallowed Close can mean a silently truncated results file that
+// a downstream CI consumer would trust. A deferred best-effort close only covers
+// the early-return path where Format itself failed.
+func writeOutputFile(path string, formatter output.Formatter, findings []finding.Finding) error {
+	cleanPath := filepath.Clean(path)
+	f, err := os.OpenFile(cleanPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	if err := formatter.Format(f, findings); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to write output: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to finalize output file: %w", err)
+	}
+	return nil
 }
 
 // selectFormatter returns the appropriate formatter based on the format string.
@@ -220,7 +371,10 @@ func loadScanConfig(cmd *cobra.Command) (*scanConfig, error) {
 func selectFormatter(format string, showRaw bool, colorEnabled bool) output.Formatter {
 	switch format {
 	case "sarif":
-		return &sarifout.Formatter{ShowRaw: showRaw}
+		// Version is the real build version (see cmd/root.go buildVersion) so
+		// shipped SARIF documents are traceable to the release that produced
+		// them instead of always reporting "dev".
+		return &sarifout.Formatter{ShowRaw: showRaw, Version: buildVersion}
 	case "csv":
 		return &csvout.Formatter{ShowRaw: showRaw}
 	case "table":
@@ -269,90 +423,6 @@ func stdoutIsTerminal() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// executeScan runs the scan pipeline: detect, verify, filter, format, output.
-// If cl is non-nil, Close() is called when the scan completes.
-func executeScan(parent context.Context, cfg *scanConfig, src source.Source, cl closeable) error {
-	if cl != nil {
-		defer func() {
-			if err := cl.Close(); err != nil {
-				slog.Warn("failed to clean up source", "error", err)
-			}
-		}()
-	}
-
-	engCfg, err := buildEngineConfig(cfg)
-	if err != nil {
-		return err
-	}
-	eng := engine.New(engCfg)
-
-	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	result, err := eng.Scan(ctx, src)
-	if err != nil && result == nil {
-		return fmt.Errorf("scan failed: %w", err)
-	}
-
-	return renderResult(cfg, result, src.Type(), cfg.scanRoot)
-}
-
-// renderResult finishes the shared scan pipeline for an already-produced
-// ScanResult: it applies .leakwatchignore (searched in ignoreRoot, then CWD),
-// enriches findings with remediation guidance when enabled, writes the formatted
-// output to the configured destination, prints the scan summary to stderr, and
-// returns a FindingsExitError when any findings remain. Both single-source scans
-// (executeScan) and the multi-repo scan (runScanRepos) funnel through here so
-// their output behavior cannot drift (CMD-M-04).
-func renderResult(cfg *scanConfig, result *engine.ScanResult, sourceType, ignoreRoot string) error {
-	result.Findings = applyLeakwatchIgnore(result.Findings, ignoreRoot)
-
-	if cfg.enableRemediation {
-		result.Findings = remediation.EnrichFindings(result.Findings)
-	}
-	if result.Findings == nil {
-		result.Findings = []finding.Finding{}
-	}
-
-	// The "github" format emits GitHub Actions workflow commands, which only take
-	// effect on the live stdout stream — writing them to a file does nothing. If an
-	// output file was configured (e.g. output.file in .leakwatch.yaml), ignore it
-	// so the annotations always reach stdout instead of being silently swallowed.
-	if cfg.format == "github" && cfg.outputFile != "" {
-		slog.Debug("ignoring output file for github format; annotations are written to stdout", "file", cfg.outputFile)
-		cfg.outputFile = ""
-	}
-
-	colorEnabled := resolveColorEnabled(cfg.format, cfg.outputFile)
-	formatter := selectFormatter(cfg.format, cfg.showRaw, colorEnabled)
-
-	var w io.WriteCloser
-	if cfg.outputFile != "" {
-		cleanPath := filepath.Clean(cfg.outputFile)
-		f, err := os.Create(cleanPath)
-		if err != nil {
-			return fmt.Errorf("failed to create output file: %w", err)
-		}
-		defer func() { _ = f.Close() }()
-		w = f
-	} else {
-		w = os.Stdout
-	}
-
-	if err := formatter.Format(w, result.Findings); err != nil {
-		return fmt.Errorf("failed to write output: %w", err)
-	}
-
-	// Print scan summary to stderr (visible regardless of output format/file).
-	printScanSummary(result, sourceType, cfg.scanTarget)
-
-	if len(result.Findings) > 0 {
-		return &FindingsExitError{Count: len(result.Findings)}
-	}
-
-	return nil
-}
-
 // printScanSummary writes scan metadata to stderr.
 func printScanSummary(result *engine.ScanResult, sourceType string, target string) {
 	fmt.Fprintf(os.Stderr, "\n── Scan Summary ─────────────────────────────────\n")
@@ -370,112 +440,51 @@ func printScanSummary(result *engine.ScanResult, sourceType string, target strin
 	fmt.Fprintf(os.Stderr, "─────────────────────────────────────────────────\n\n")
 }
 
-func parseSeverity(s string) finding.Severity {
-	switch s {
-	case "critical":
-		return finding.SeverityCritical
-	case "high":
-		return finding.SeverityHigh
-	case "medium":
-		return finding.SeverityMedium
-	default:
-		return finding.SeverityLow
+// flagString reads a string flag the active command is known to have registered.
+// A lookup error is impossible for a registered flag of the right type; it is
+// logged at Debug and the zero value returned rather than propagated, giving one
+// consistent convention across cmd/ for these can't-happen lookups.
+func flagString(cmd *cobra.Command, name string) string {
+	v, err := cmd.Flags().GetString(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}
+	return v
 }
 
-// buildEngineConfig registers custom rules, applies detector exclusions, and
-// assembles the engine.Config shared by every scan command (fs/git/image/s3/
-// gcs/slack and repos). Centralizing this guarantees that custom-rules,
-// verification.*, and exclude-detectors take effect uniformly — previously
-// `scan repos` built its own config and silently ignored all three.
-func buildEngineConfig(cfg *scanConfig) (engine.Config, error) {
-	// Register user-defined custom rules (from the `custom-rules:` config block)
-	// before snapshotting the detector set so they participate in the scan.
-	if len(cfg.customRules) > 0 {
-		count, errs := custom.RegisterCustomRules(cfg.customRules)
-		for _, e := range errs {
-			slog.Warn("custom rule registration skipped", "error", e)
-		}
-		slog.Info("custom rules registered", "count", count, "skipped", len(errs))
+// flagBool reads a bool flag; see flagString for the error convention.
+func flagBool(cmd *cobra.Command, name string) bool {
+	v, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}
-
-	detectors := detector.All()
-	if len(cfg.excludeDetectors) > 0 {
-		detectors = excludeDetectorsByID(detectors, cfg.excludeDetectors)
-	}
-	if len(detectors) == 0 {
-		return engine.Config{}, fmt.Errorf("no registered detectors found")
-	}
-	slog.Debug("detectors loaded", "count", len(detectors))
-
-	// Configure verification from the `verification:` config block.
-	// The --no-verify CLI flag takes precedence over the config value.
-	verifierCfg := verifier.Config{
-		Enabled:     cfg.verifyEnabled,
-		Timeout:     cfg.verifyTimeout,
-		Concurrency: cfg.verifyConcurrency,
-		RateLimit:   cfg.verifyRateLimit,
-	}
-	if cfg.noVerify {
-		verifierCfg.Enabled = false
-	}
-	if cfg.onlyVerified && cfg.noVerify {
-		slog.Warn("--only-verified has no effect when --no-verify is set")
-	}
-
-	return engine.Config{
-		Concurrency:      cfg.concurrency,
-		Detectors:        detectors,
-		EnableEntropy:    cfg.enableEntropy,
-		EntropyThreshold: cfg.entropyThreshold,
-		ShowRaw:          cfg.showRaw,
-		VerifierConfig:   verifierCfg,
-		Verifiers:        verifier.All(),
-		OnlyVerified:     cfg.onlyVerified,
-		MinSeverity:      cfg.minSeverity,
-	}, nil
+	return v
 }
 
-// applyLeakwatchIgnore filters findings through the first .leakwatchignore found
-// in scanRoot, then the current working directory. scanRoot may be empty.
-func applyLeakwatchIgnore(findings []finding.Finding, scanRoot string) []finding.Finding {
-	var ignoreRules *filter.IgnoreRules
-	for _, dir := range []string{scanRoot, "."} {
-		if dir == "" {
-			continue
-		}
-		ignorePath := filepath.Join(dir, ".leakwatchignore")
-		if rules, err := filter.LoadIgnoreFile(ignorePath); err == nil {
-			ignoreRules = rules
-			slog.Debug("loaded .leakwatchignore", "path", ignorePath)
-			break
-		}
+// flagInt reads an int flag; see flagString for the error convention.
+func flagInt(cmd *cobra.Command, name string) int {
+	v, err := cmd.Flags().GetInt(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}
-	if ignoreRules == nil {
-		return findings
-	}
-	filtered := make([]finding.Finding, 0, len(findings))
-	for _, f := range findings {
-		if !ignoreRules.ShouldIgnore(f.SourceMetadata.FilePath) {
-			filtered = append(filtered, f)
-		}
-	}
-	return filtered
+	return v
 }
 
-// excludeDetectorsByID returns the detectors whose ID is not in the exclude list.
-func excludeDetectorsByID(detectors []detector.Detector, exclude []string) []detector.Detector {
-	excluded := make(map[string]bool, len(exclude))
-	for _, id := range exclude {
-		excluded[id] = true
+// flagFloat64 reads a float64 flag; see flagString for the error convention.
+func flagFloat64(cmd *cobra.Command, name string) float64 {
+	v, err := cmd.Flags().GetFloat64(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}
-	kept := make([]detector.Detector, 0, len(detectors))
-	for _, d := range detectors {
-		if excluded[d.ID()] {
-			slog.Debug("detector excluded by config", "detector_id", d.ID())
-			continue
-		}
-		kept = append(kept, d)
+	return v
+}
+
+// flagStringSlice reads a string-slice flag; see flagString for the error
+// convention.
+func flagStringSlice(cmd *cobra.Command, name string) []string {
+	v, err := cmd.Flags().GetStringSlice(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}
-	return kept
+	return v
 }

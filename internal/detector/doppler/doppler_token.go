@@ -2,6 +2,7 @@
 package doppler
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -9,7 +10,11 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var dopplerTokenPattern = regexp.MustCompile(`dp\.st\.[a-zA-Z0-9_-]{40,}`)
+// dopplerTokenPattern matches every current Doppler token type: service
+// tokens (st), personal tokens (pt), CLI/config tokens (ct) and SCIM tokens
+// (scim). The token type is captured so the redacted output can reflect the
+// actual prefix matched instead of a hardcoded one.
+var dopplerTokenPattern = regexp.MustCompile(`dp\.(st|pt|ct|scim)\.[a-zA-Z0-9_-]{40,}`)
 
 // Detector detects Doppler Service Tokens.
 type Detector struct{}
@@ -21,25 +26,29 @@ func (d *Detector) ID() string { return "doppler-token" }
 func (d *Detector) Description() string { return "Doppler Service Token" }
 
 // Keywords returns the Aho-Corasick pre-filter keywords for Doppler token detection.
-func (d *Detector) Keywords() []string { return []string{"dp.st."} }
+// "dp." is the common prefix shared by every token type the pattern matches.
+func (d *Detector) Keywords() []string { return []string{"dp."} }
 
 // Severity returns the default severity level for Doppler token findings.
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
-// Scan searches the data for Doppler Service Token patterns.
+// Scan searches the data for Doppler token patterns.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
-	matches := dopplerTokenPattern.FindAll(data, -1)
-	if len(matches) == 0 {
+	allMatches := dopplerTokenPattern.FindAllSubmatch(data, -1)
+	if len(allMatches) == 0 {
 		return nil
 	}
 
-	findings := make([]detector.RawFinding, 0, len(matches))
-	for _, match := range matches {
+	findings := make([]detector.RawFinding, 0, len(allMatches))
+	for _, groups := range allMatches {
+		match := groups[0]
+		tokenType := string(groups[1])
 		s := string(match)
-		redacted := "dp.st.****" + s[len(s)-4:]
+		redacted := "dp." + tokenType + ".****" + s[len(s)-4:]
+
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   redacted,
 		})
 	}

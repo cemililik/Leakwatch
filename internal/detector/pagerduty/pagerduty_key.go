@@ -64,7 +64,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		value := match[1]
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        value,
+			Raw:        bytes.Clone(value),
 			Redacted:   "u+****" + string(value[len(value)-4:]),
 		})
 	}

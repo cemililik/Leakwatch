@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,15 +12,22 @@ import (
 )
 
 var scanFsCmd = &cobra.Command{
-	Use:   "fs [path]",
-	Short: "Scans a filesystem directory",
-	Long: `Scans files in the specified directory to detect leaked secrets.
-If no path is provided, the current working directory is scanned.`,
+	Use:   "fs [path...]",
+	Short: "Scans filesystem paths (files or directories)",
+	Long: `Scans one or more filesystem paths to detect leaked secrets. Each path may be
+a directory (walked recursively) or a single file. If no path is provided, the
+current working directory is scanned.`,
 	Example: `  # Scan current directory
   leakwatch scan fs
 
-  # Scan specific path
+  # Scan a specific directory
   leakwatch scan fs /path/to/project
+
+  # Scan a single file
+  leakwatch scan fs cmd/main.go
+
+  # Scan several files and directories at once
+  leakwatch scan fs cmd/ main.go internal/config
 
   # Output as table with remediation
   leakwatch scan fs . --format table --remediation
@@ -27,12 +35,15 @@ If no path is provided, the current working directory is scanned.`,
   # Exclude test files
   leakwatch scan fs . --exclude "**/*_test.go"
 
+  # Exclude specific detectors
+  leakwatch scan fs . --exclude-detectors aws-access-key-id,generic-api-key
+
   # Save results as SARIF
   leakwatch scan fs . --format sarif --output results.sarif
 
   # Limit file size and increase workers
   leakwatch scan fs . --max-file-size 5242880 --concurrency 8`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: runScanFs,
 }
 
@@ -40,41 +51,52 @@ func init() {
 	scanCmd.AddCommand(scanFsCmd)
 
 	flags := scanFsCmd.Flags()
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
-	flags.StringP("output", "o", "", "output file (default: stdout)")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
-	flags.Int64("max-file-size", 10*1024*1024, "maximum file size in bytes")
-	flags.StringSlice("exclude", nil, "path patterns to exclude")
-	flags.Bool(flagShowRaw, false, "show raw secret content in output")
-
+	addCommonScanFlags(flags)
+	addExcludePathFlag(flags)
 	addVerifyFlags(flags)
 }
 
 func runScanFs(cmd *cobra.Command, args []string) error {
-	scanPath := "."
-	if len(args) > 0 {
-		scanPath = args[0]
+	paths := args
+	if len(paths) == 0 {
+		paths = []string{"."}
 	}
-	scanPath = filepath.Clean(scanPath)
-	absPath, err := filepath.Abs(scanPath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
+
+	absPaths := make([]string, 0, len(paths))
+	for _, p := range paths {
+		absPath, err := filepath.Abs(filepath.Clean(p))
+		if err != nil {
+			return fmt.Errorf("failed to resolve path %q: %w", p, err)
+		}
+		absPaths = append(absPaths, absPath)
 	}
 
 	cfg, err := loadScanConfig(cmd)
 	if err != nil {
 		return err
 	}
-	cfg.scanRoot = absPath
-	cfg.scanTarget = absPath
+	// ScanRoot seeds .leakwatchignore discovery; use the first path's own
+	// directory so a single-file target still finds an ignore file next to it
+	// (a non-directory ScanRoot would never match). The CWD is always searched
+	// as a fallback inside the scanner.
+	cfg.ScanRoot = ignoreRootFor(absPaths[0])
+	cfg.ScanTarget = strings.Join(absPaths, ", ")
 
-	excludePaths, _ := cmd.Flags().GetStringSlice("exclude")
-
-	src := filesystem.New(
-		absPath,
-		filesystem.WithMaxFileSize(cfg.maxFileSize),
-		filesystem.WithExcludePaths(append(cfg.excludePaths, excludePaths...)),
+	src := filesystem.NewMulti(
+		absPaths,
+		filesystem.WithMaxFileSize(cfg.MaxFileSize),
+		filesystem.WithExcludePaths(mergedExcludePaths(cmd, cfg)),
 	)
 
-	return executeScan(cmd.Context(), cfg, src, nil)
+	return runScan(cmd, cfg, src, nil)
+}
+
+// ignoreRootFor returns the directory to search for a .leakwatchignore file for
+// the given (already absolute) scan path: the path itself when it is a
+// directory, otherwise its parent directory when it is a single file.
+func ignoreRootFor(absPath string) string {
+	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+		return filepath.Dir(absPath)
+	}
+	return absPath
 }

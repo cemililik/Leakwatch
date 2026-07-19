@@ -39,6 +39,18 @@ func (v *Verifier) Type() string {
 
 // Verify checks if the detected Docker Hub PAT is valid/active.
 // Raw contains the token value.
+//
+// Docker Hub Personal Access Tokens are sent directly as an Authorization:
+// Bearer header on the v2 API, without a preceding login/JWT-exchange step:
+// Docker's own access-token documentation confirms PATs authenticate the Hub
+// API directly (https://docs.docker.com/security/access-tokens/), and the
+// legacy POST /v2/users/login/ JWT-exchange flow is documented to reject
+// tokens minted from a PAT ("token issued from personal access token") on
+// many endpoints, so it is not a viable alternative here. That flow would
+// also require the token's Docker Hub username, which this package's
+// detector does not capture (only the PAT itself is matched) — a second,
+// independent reason the login-exchange is not implementable for this
+// verifier.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
 	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)

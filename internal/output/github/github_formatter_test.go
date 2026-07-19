@@ -286,6 +286,26 @@ func TestFormatter_Format_EscapesPercentAndCarriageReturn(t *testing.T) {
 	assert.NotContains(t, out, "%2525", "percent must not be double-escaped")
 }
 
+func TestFormatter_Format_ControlBytesInAttackerFields_StrippedFromOutput(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	err := f.Format(&buf, []finding.Finding{{
+		DetectorID: "custom-rule\x1b[2J",
+		Severity:   finding.SeverityHigh,
+		Redacted:   "AKIA\x1b]0;pwnedMPLE",
+		SourceMetadata: finding.SourceMetadata{
+			FilePath: "evil\x1b[31m.go",
+			Line:     1,
+		},
+	}})
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.NotContains(t, out, "\x1b",
+		"ESC bytes embedded in DetectorID, FilePath, or Redacted must never reach the workflow-command stream")
+}
+
 func TestFormatter_Format_WriteError_IsWrapped(t *testing.T) {
 	f := &Formatter{}
 	err := f.Format(errWriter{}, []finding.Finding{{

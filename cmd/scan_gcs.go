@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"runtime"
-
 	"github.com/spf13/cobra"
 
 	gcssource "github.com/HodeTech/leakwatch/internal/source/gcs"
@@ -32,11 +30,8 @@ func init() {
 	scanCmd.AddCommand(scanGCSCmd)
 
 	flags := scanGCSCmd.Flags()
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
-	flags.StringP("output", "o", "", "output file (default: stdout)")
-	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
-	flags.Int64("max-file-size", 10*1024*1024, "maximum file size in bytes")
-	flags.Bool(flagShowRaw, false, "show raw secret content in output")
+	addCommonScanFlags(flags)
+	addExcludePathFlag(flags)
 	flags.String("prefix", "", "scan only objects with this key prefix")
 	flags.String("project", "", "GCP project ID")
 
@@ -49,23 +44,22 @@ func runScanGCS(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var opts []gcssource.Option
-	opts = append(opts, gcssource.WithMaxFileSize(cfg.maxFileSize))
+	opts := []gcssource.Option{gcssource.WithMaxFileSize(cfg.MaxFileSize)}
 
-	if len(cfg.excludePaths) > 0 {
-		opts = append(opts, gcssource.WithExcludePaths(cfg.excludePaths))
+	if excludes := mergedExcludePaths(cmd, cfg); len(excludes) > 0 {
+		opts = append(opts, gcssource.WithExcludePaths(excludes))
 	}
 
-	if prefix, _ := cmd.Flags().GetString("prefix"); prefix != "" {
+	if prefix := flagString(cmd, "prefix"); prefix != "" {
 		opts = append(opts, gcssource.WithPrefix(prefix))
 	}
 
-	if project, _ := cmd.Flags().GetString("project"); project != "" {
+	if project := flagString(cmd, "project"); project != "" {
 		opts = append(opts, gcssource.WithProject(project))
 	}
 
-	cfg.scanTarget = "gs://" + args[0]
+	cfg.ScanTarget = "gs://" + args[0]
 	src := gcssource.New(args[0], opts...)
 
-	return executeScan(cmd.Context(), cfg, src, nil)
+	return runScan(cmd, cfg, src, nil)
 }

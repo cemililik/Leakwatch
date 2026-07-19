@@ -232,6 +232,91 @@ func TestFormatter_Format_WithoutRemediation_ShowsDash(t *testing.T) {
 	assert.Contains(t, dataRow, "-")
 }
 
+func TestFormatter_Format_LineColumn_ShowsLineNumber(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			DetectorID: "aws-access-key-id",
+			Severity:   finding.SeverityCritical,
+			Redacted:   "AKIA****MPLE",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "config.yaml",
+				Line:     42,
+			},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "LINE")
+	lines := strings.Split(output, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	assert.Contains(t, lines[2], "42")
+}
+
+func TestFormatter_Format_LineColumn_ShowsDashWhenUnset(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{DetectorID: "generic-secret", Severity: finding.SeverityLow, Redacted: "****"},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	lines := strings.Split(buf.String(), "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	assert.Contains(t, lines[2], "-")
+}
+
+func TestFormatter_Format_ControlBytesInFilePath_StrippedFromOutput(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			DetectorID: "generic-secret",
+			Severity:   finding.SeverityHigh,
+			Redacted:   "****",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "evil\x1b[31m\x1b]0;pwned\x07.go",
+			},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.NotContains(t, output, "\x1b",
+		"ESC bytes embedded in an attacker-controlled file path must never reach the table writer")
+}
+
+func TestFormatter_Format_ControlBytesInDetectorIDAndRedacted_StrippedFromOutput(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			DetectorID: "custom-rule\x1b[2J",
+			Severity:   finding.SeverityHigh,
+			Redacted:   "AKIA\x1b]0;pwnedMPLE",
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.NotContains(t, output, "\x1b",
+		"ESC bytes embedded in DetectorID or Redacted must never reach the table writer")
+}
+
 func TestFormatter_FileExtension_ReturnsTXT(t *testing.T) {
 	f := &Formatter{}
 	assert.Equal(t, ".txt", f.FileExtension())

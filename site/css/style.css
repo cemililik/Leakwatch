@@ -8,7 +8,7 @@
 :root{
   --ink:#0a0b0d; --panel:#111316; --panel-2:#16191e; --panel-3:#1b1f25;
   --line:#23272e; --line-2:#2c313a;
-  --paper:#f1eee5; --text:#d4d1c7; --muted:#8b9098; --faint:#5b616b;
+  --paper:#f1eee5; --text:#d4d1c7; --muted:#8b9098; --faint:#767c86;
   --redact:#000; --alert:#e6394d; --alert-2:#ff6377; --alert-deep:#b3263a;
   --cleared:#34d39a; --warn:#f0b429; --info:#5aa9e6;
 

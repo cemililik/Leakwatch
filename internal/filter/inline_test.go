@@ -46,6 +46,45 @@ func TestHasInlineIgnoreForDetector_NoMarker_ReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestHasInlineIgnoreForDetector_PrefixDetectorID_DoesNotFalseMatch(t *testing.T) {
+	// Regression test: a short detectorID ("aws") that is a prefix of a longer
+	// registered detector's marker ("aws-access-key-id") must not be falsely
+	// suppressed by an unbounded substring match against the longer marker.
+	line := `PASSWORD = "test123"  # leakwatch:ignore:aws-access-key-id`
+	if HasInlineIgnoreForDetector(line, "aws") {
+		t.Error("expected false: detectorID 'aws' is a prefix of the marker's 'aws-access-key-id', not an exact match")
+	}
+}
+
+func TestHasInlineIgnoreForDetector_ExactShortDetectorID_ReturnsTrue(t *testing.T) {
+	// The short detector ID must still match correctly when it appears exactly,
+	// including when followed by a non-identifier boundary character.
+	tests := []struct {
+		name string
+		line string
+	}{
+		{"end of line", `PASSWORD = "test123"  # leakwatch:ignore:aws`},
+		{"followed by whitespace", `PASSWORD = "test123"  # leakwatch:ignore:aws and more`},
+		{"followed by punctuation", `PASSWORD = "test123"  # leakwatch:ignore:aws,other-tag`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !HasInlineIgnoreForDetector(tt.line, "aws") {
+				t.Error("expected true for exact detector ID match")
+			}
+		})
+	}
+}
+
+func TestHasInlineIgnoreForDetector_LaterExactMatchAfterPrefixCollision_ReturnsTrue(t *testing.T) {
+	// A line where the first occurrence of the specific marker is a prefix
+	// collision but a second, exact occurrence follows must still match.
+	line := `# leakwatch:ignore:aws-access-key-id and also leakwatch:ignore:aws`
+	if !HasInlineIgnoreForDetector(line, "aws") {
+		t.Error("expected true: an exact marker occurs later in the line")
+	}
+}
+
 func TestLineHasInlineIgnore(t *testing.T) {
 	data := []byte("line1 safe\n" + // line 1
 		`API_KEY = "AKIAEXAMPLE" # leakwatch:ignore` + "\n" + // line 2 generic

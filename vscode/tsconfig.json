@@ -11,7 +11,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true
+    "declaration": false,
+    "noEmitOnError": true
   },
-  "exclude": ["node_modules", "dist", ".vscode-test"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "out", ".vscode-test"]
 }

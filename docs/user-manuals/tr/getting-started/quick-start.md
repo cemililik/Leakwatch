@@ -25,14 +25,16 @@ Varsayılan olarak çıktı JSON biçiminde stdout'a yazılır. Bunun yerine oku
 leakwatch scan fs . --format table
 ```
 
-Bir sonucun nasıl göründüğü aşağıdadır:
+Bir sonucun nasıl göründüğü aşağıdadır (tablo formatlayıcısı her zaman sondaki REMEDIATION sütununu yazdırır; `--remediation` de ayarlanmadıkça `-` gösterir):
 
 ```text
- SEVERITY  DETECTOR            FILE                      LINE  REDACTED                 STATUS
-─────────────────────────────────────────────────────────────────────────────────────────────
- CRITICAL  aws-access-key-id   config/deploy.env           12  AKIA••••••••••••EXAMPLE  verified:active
- HIGH      github-pat          scripts/bootstrap.sh        37  ghp_••••••••••••••••••   verified:active
- MEDIUM    generic-api-key     src/services/analytics.js   89  sk-••••••••••••••••••••  unverified
+SEVERITY  DETECTOR           FILE                       LINE  REDACTED      STATUS           REMEDIATION
+--------  --------           ----                       ----  --------      ------           -----------
+CRITICAL  aws-access-key-id  config/deploy.env          12    ****MNOP      verified_active   -
+HIGH      npm-token          scripts/bootstrap.sh       37    npm_****wxyz  verified_active   -
+MEDIUM    generic-api-key    src/services/analytics.js  89    ****w2y4      unverified        -
+
+Found 3 secrets (1 critical, 1 high, 1 medium).
 
 ── Scan Summary ─────────────────────────────────
   Date:            2026-05-23 14:03:11
@@ -57,9 +59,10 @@ Tablodaki her satır (veya JSON'daki her nesne) bir bulguyu temsil eder. Temel a
 | **FILE** | Sırrın bulunduğu dosyanın tarama köküne göreli yolu |
 | **LINE** | Eşleşmenin satır numarası |
 | **REDACTED** | Sırrın maskelenmiş gösterimi — `--show-raw` ayarlanmadıkça ham değer hiçbir zaman gösterilmez |
-| **STATUS** | Doğrulama sonucu: `verified:active`, `verified:inactive`, `unverified` veya `verify:error` |
+| **STATUS** | Doğrulama sonucu: `verified_active`, `verified_inactive`, `unverified` veya `verify_error` |
+| **REMEDIATION** | Döndürme/iptal rehberi başlığı, veya `--remediation` geçilmediğinde `-` |
 
-`verified:active` durumu, Leakwatch'ın sağlayıcıya salt-okunur bir API çağrısı yaparak sırrın hâlâ etkin olduğunu doğruladığı anlamına gelir. **Her `verified:active` bulgusunu açık bir olay olarak değerlendirin.**
+`verified_active` durumu, Leakwatch'ın sağlayıcıya salt-okunur bir API çağrısı yaparak sırrın hâlâ etkin olduğunu doğruladığı anlamına gelir. **Her `verified_active` bulgusunu açık bir olay olarak değerlendirin.**
 
 ## Yaygın tarama seçenekleri
 
@@ -124,6 +127,7 @@ Leakwatch, CI betiklerinin çıktıyı ayrıştırmadan sonuçlara göre hareket
 | `0` | Tarama tamamlandı — bulgu yok |
 | `1` | Tarama tamamlandı — bir veya daha fazla sır bulundu |
 | `2` | Tarama bir hata nedeniyle başarısız oldu |
+| `3` | Tarama tamamlanmadan (`Ctrl+C` / `SIGTERM`) kesildi ve henüz hiçbir bulgu raporlanmamıştı |
 
 Tipik bir CI kapısı şöyle görünür:
 
@@ -141,7 +145,7 @@ fi
 
 ## Taramayı iptal etme
 
-Çalışan bir taramayı iptal etmek için `Ctrl+C` tuşuna basın (veya `SIGTERM` gönderin). Leakwatch düzgün biçimde durur: işlemdeki parçalar tamamlanır, kısmi sonuçlar yazılır ve özet `Status: interrupted (partial results)` olarak gösterilir.
+Çalışan bir taramayı iptal etmek için `Ctrl+C` tuşuna basın (veya `SIGTERM` gönderin). Leakwatch düzgün biçimde durur: işlemdeki parçalar tamamlanır, kısmi sonuçlar yazılır ve özet `Status: interrupted (partial results)` olarak gösterilir. Bulgular kesintiye rağmen önceliklidir — kesintiden önce sırlar zaten bulunmuşsa tarama `1` ile çıkar, böylece bu sinyal hiçbir zaman gizlenmez. `3` çıkış kodu yalnızca tarama sıfır bulguyla kesintiye uğradığında döndürülür; bu sayede bir CI hattı tamamlanmamış bir taramayı asla temiz bir geçişle karıştırmaz.
 
 ## Ayrıca bakın
 

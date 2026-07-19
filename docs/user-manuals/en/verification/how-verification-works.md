@@ -20,13 +20,13 @@ Not all secrets can be verified the same way. Leakwatch uses two distinct approa
 
 ### Live API verification
 
-For approximately 49 detector types, Leakwatch makes a **controlled, read-only API call** to the provider — for example, calling `sts:GetCallerIdentity` for AWS keys or `GET /user` for GitHub tokens. The call uses only the minimum endpoint required to confirm identity; it never modifies data, creates resources, or triggers billing events.
+For 48 detector types, Leakwatch makes a **controlled, read-only API call** to the provider — for example, calling `sts:GetCallerIdentity` for AWS keys or `GET /user` for GitHub tokens. The call uses only the minimum endpoint required to confirm identity; it never modifies data, creates resources, or triggers billing events.
 
-If the provider returns a success response, the finding is marked `verified_active`. If the provider rejects the credential (for example with HTTP 401 or 403), the finding is marked `verified_inactive`.
+If the provider returns a success response, the finding is marked `verified_active`. If the provider rejects the credential (for example with HTTP 401, or HTTP 403 for a provider whose scoped-key errors are folded into "inactive"), the finding is marked `verified_inactive`. A few verifiers (for example SendGrid) distinguish a 403 caused by a narrowly scoped-but-valid key from a genuine rejection and still report `verified_active` in that case — see [Verification Coverage](#/verification/verification-coverage) for provider-specific notes.
 
 ### Format validation only
 
-For five credential types, no safe live check exists — the provider has no anonymous identity endpoint, or a real call would have side effects. For these, Leakwatch validates the structure of the credential without making any network request:
+For six credential types, no safe live check exists — the provider has no anonymous identity endpoint, a real call would have side effects, or (for `coinbase-api-key`) the live API requires HMAC request signing with a paired secret that cannot be reliably associated with the key. For these, Leakwatch validates the structure of the credential without making any network request:
 
 | Detector ID | What is validated |
 |-------------|------------------|
@@ -35,6 +35,7 @@ For five credential types, no safe live check exists — the provider has no ano
 | `snowflake-credentials` | Format check only — a valid format proves nothing, result is always `unverified` |
 | `azure-storage-key` | Format check |
 | `azure-entra-secret` | Format check |
+| `coinbase-api-key` | Character-set and length check |
 
 :::note
 Even when the format check passes, the result remains `unverified`. A structurally valid credential may be expired or revoked. These findings always require manual triage.

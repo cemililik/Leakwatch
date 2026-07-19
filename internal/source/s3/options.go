@@ -13,8 +13,12 @@ func WithPrefix(prefix string) Option {
 
 // WithMaxFileSize sets the maximum object size to download and scan.
 // Objects larger than this value are skipped.
+// Values less than or equal to zero are ignored, preserving the default.
 func WithMaxFileSize(size int64) Option {
 	return func(s *S3Source) {
+		if size <= 0 {
+			return
+		}
 		s.maxFileSize = size
 	}
 }

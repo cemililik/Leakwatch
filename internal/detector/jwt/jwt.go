@@ -4,6 +4,8 @@ package jwt
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"regexp"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
@@ -49,11 +51,18 @@ func (d *JWT) Scan(_ context.Context, data []byte) []detector.RawFinding {
 			continue
 		}
 		match := data[start:end]
+		// Reject loose regex matches that aren't structurally a JWT (three
+		// dot-separated base64url segments that merely start with "eyJ" but
+		// don't decode to JSON, e.g. build hashes or source-map identifiers).
+		if !isStructurallyValidJWT(match) {
+			continue
+		}
 		// Reveal only the trailing characters to avoid exposing the JWT
-		// header, payload, or signature.
+		// header, payload, or signature. Raw is cloned so the finding does not
+		// alias (and pin in memory) the full scanned chunk buffer.
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   detector.RedactBytes(match),
 		})
 	}
@@ -61,6 +70,54 @@ func (d *JWT) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		return nil
 	}
 	return findings
+}
+
+// isStructurallyValidJWT reports whether match's header and payload segments
+// (the first two dot-separated fields) are valid base64url-encoded JSON
+// objects, with the header additionally required to carry an "alg" key — the
+// field every real JWT header carries (RFC 7519 §5.1). This rejects loose
+// regex matches — three dot-separated base64url-looking segments whose first
+// two merely happen to start with the literal "eyJ" prefix, plausible in
+// webpack/source-map hashes or other base64 data at scale — before they are
+// ever reported as a finding.
+//
+// The decoded bytes are used only for this boolean structural check: they are
+// never stored, logged, or included in the finding output, preserving the
+// secret-safety invariant that only the original, still-encoded match is ever
+// retained (and only in redacted form).
+func isStructurallyValidJWT(match []byte) bool {
+	parts := bytes.SplitN(match, []byte("."), 3)
+	if len(parts) != 3 {
+		return false
+	}
+	header, ok := decodeJSONObject(parts[0])
+	if !ok {
+		return false
+	}
+	if _, hasAlg := header["alg"]; !hasAlg {
+		return false
+	}
+	_, ok = decodeJSONObject(parts[1])
+	return ok
+}
+
+// decodeJSONObject base64url-decodes seg (unpadded, matching the JWT spec)
+// and reports whether it unmarshals into a JSON object. Any decode or parse
+// failure (invalid base64, truncated data, a JSON array/scalar instead of an
+// object) is treated as "not a valid JWT segment".
+func decodeJSONObject(seg []byte) (map[string]any, bool) {
+	// Decode straight from the byte slice: DecodeString would allocate an
+	// intermediate string for every candidate segment.
+	decoded := make([]byte, base64.RawURLEncoding.DecodedLen(len(seg)))
+	n, err := base64.RawURLEncoding.Decode(decoded, seg)
+	if err != nil {
+		return nil, false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(decoded[:n], &obj); err != nil {
+		return nil, false
+	}
+	return obj, true
 }
 
 // isGitHubStatelessBody reports whether the JWT beginning at start is the body

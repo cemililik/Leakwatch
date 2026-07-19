@@ -43,17 +43,19 @@ Tüm depolardan elde edilen bulgular toplanır ve tek bir kaynaktan yapılmış 
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|------------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | **Depo başına** eşzamanlı çalışan sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Bu boyutu aşan blob'ları atla (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
+| `--exclude` | — | — | Her deponun taramasından dışlanacak yol kalıbı. Tekrarlanabilir; `filter.exclude-paths` ile birleştirilir. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri (örn. `aws-access-key-id`). Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
 | `--only-verified` | — | `false` | Yalnızca doğrulama ile aktif olduğu onaylanan bulguları raporla. |
 | `--min-severity` | — | `low` | Raporlanacak minimum önem: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Her bulguya düzeltme rehberi ekle. |
 
-`.leakwatch.yaml` dosyasındaki `filter.exclude-paths` yol dışlamaları tüm depolara uygulanır. `--config` ve `--log-level` (varsayılan `warn`) kök bayrakları da geçerlidir.
+`.leakwatch.yaml` dosyasındaki `filter.exclude-paths` yol dışlamaları (veya `--exclude`) tüm depolara uygulanır. `--config` ve `--log-level` (varsayılan `warn`) kök bayrakları da geçerlidir.
 
 ## Örnekler
 
@@ -102,7 +104,7 @@ Verimi kontrol eden iki parametre vardır:
 Tepe noktasındaki toplam eşzamanlı işlem = `--parallel` × `--concurrency`.
 
 :::note
-Bir veya daha fazla depo taraması başarısız olursa (örneğin ağ hatası veya kimlik doğrulama sorunu nedeniyle), Leakwatch hatayı günlüğe kaydeder ve kalan depoları taramaya devam eder. Diğer depolar bulgu üretmiş olsa bile herhangi bir depo taraması başarısız olursa çıkış kodu `2` olur.
+Bir veya daha fazla depo taraması başarısız olursa (örneğin ağ hatası veya kimlik doğrulama sorunu nedeniyle), Leakwatch hatayı günlüğe kaydeder ve kalan depoları taramaya devam eder. **Bulgular önceliklidir**: filtrelemeden sonra tüm çalıştırma genelinde tek bir bulgu bile kalırsa, bazı depoların taraması başarısız olsa dahi çıkış kodu `1` olur. Çıkış kodu `2` (depo tarama hatası) yalnızca genel olarak sıfır bulgu raporlandığında döndürülür.
 :::
 
 ## Kimlik bilgisi güvenliği
@@ -113,13 +115,14 @@ Depo URL'lerindeki gömülü kimlik bilgileri (örn. `https://user:TOKEN@host/re
 
 | Kod | Anlam |
 |-----|-------|
-| `0` | Tüm taramalar tamamlandı, bulgu yok. |
-| `1` | Tüm taramalar tamamlandı, bulgular raporlandı. |
-| `2` | Bir veya daha fazla depo taraması başarısız oldu ya da yapılandırma hatası oluştu. |
+| `0` | Tüm depo taramaları tamamlandı, bulgu yok. |
+| `1` | Filtrelemeden sonra bir veya daha fazla bulgu kaldı — bazı depoların taraması başarısız olsa veya çalıştırma kesintiye uğrasa bile döndürülür; böylece "sır bulundu" sinyali ilgisiz bir hata tarafından hiçbir zaman gizlenmez. |
+| `2` | Sıfır bulgu raporlandı ve bir veya daha fazla depo taraması başarısız oldu, ya da bir yapılandırma hatası oluştu. |
+| `3` | Çalıştırma tamamlanmadan kesildi (`Ctrl+C` / `SIGTERM`) ve sıfır bulgu raporlanmıştı. |
 
 Her çalıştırmanın ardından stderr'e bir tarama özeti yazdırılır. Taramalar SIGINT/SIGTERM sinyalinde düzgün biçimde iptal edilir.
 
-## Ayrıca bakınız
+## Ayrıca bakın
 
 - [Git Geçmişi](#/scanning/git-history) — tek bir depoyu derinlemesine tarayın.
 - [Hızlı Başlangıç](#/getting-started/quick-start) — ilk taramanızı bir dakikadan kısa sürede çalıştırın.

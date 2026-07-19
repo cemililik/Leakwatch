@@ -4,13 +4,46 @@
 package matcher
 
 import (
-	"bytes"
 	"strings"
+	"sync"
 
 	"github.com/cloudflare/ahocorasick"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 )
+
+// lowerBufPool holds reusable []byte buffers for lowercasing chunk data
+// before it is fed to the Aho-Corasick automaton. Each Get/Put pair grants
+// a goroutine exclusive, non-shared ownership of its buffer for the
+// duration of a single Match call, so reuse via sync.Pool is safe even
+// though a single Matcher is shared across many concurrent engine workers.
+var lowerBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 64*1024)
+		return &buf
+	},
+}
+
+// toLowerASCII lowercases the ASCII letters of src into dst (growing dst if
+// necessary) and returns the result sized to len(src). Non-ASCII bytes are
+// copied unchanged. All detector keywords registered with this Matcher are
+// pure ASCII (compile-time constants), so this is equivalent to a full
+// Unicode-aware lowercasing for the purpose of Aho-Corasick keyword
+// matching, while avoiding UTF-8 decoding and per-call allocation.
+func toLowerASCII(dst, src []byte) []byte {
+	if cap(dst) < len(src) {
+		dst = make([]byte, len(src))
+	} else {
+		dst = dst[:len(src)]
+	}
+	for i, b := range src {
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		dst[i] = b
+	}
+	return dst
+}
 
 // Matcher performs Aho-Corasick keyword pre-filtering to determine which
 // detectors should be run against a given chunk of data.
@@ -89,8 +122,16 @@ func (m *Matcher) Match(data []byte) []detector.Detector {
 	// Run Aho-Corasick on lowercased data. MatchThreadSafe (not Match) is used
 	// because this Matcher is shared across concurrent engine workers; the plain
 	// Match method is documented by the library as not thread-safe.
-	lower := bytes.ToLower(data)
+	//
+	// The lowercase buffer is borrowed from lowerBufPool instead of allocated
+	// fresh via bytes.ToLower on every call, since Match runs on 100% of
+	// scanned chunks and was the single highest-frequency allocation in the
+	// scan pipeline.
+	bufPtr, _ := lowerBufPool.Get().(*[]byte)
+	lower := toLowerASCII(*bufPtr, data)
+	*bufPtr = lower
 	hits := m.machine.MatchThreadSafe(lower)
+	lowerBufPool.Put(bufPtr)
 
 	for _, idx := range hits {
 		// idx is an index into the keyword dictionary the automaton was built

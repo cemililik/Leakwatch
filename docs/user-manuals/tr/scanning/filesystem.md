@@ -10,10 +10,10 @@ Sırlar çoğu zaman önce yerel kaynak kodda ortaya çıkar. `leakwatch scan fs
 ## Temel kullanım
 
 ```bash
-leakwatch scan fs [path]
+leakwatch scan fs [path...]
 ```
 
-`path` isteğe bağlıdır. Belirtilmediğinde Leakwatch geçerli çalışma dizinini (`.`) tarar. Yalnızca tek bir path argümanı kabul edilir.
+`path`, **sıfır veya daha fazla** argüman kabul eder; atlandığında Leakwatch geçerli çalışma dizinini (`.`) tarar. Her yol bir dizin (özyinelemeli olarak dolaşılır) veya tek bir dosya olabilir — tek bir çağrıda dosyaları ve dizinleri karıştırıp birden fazlasını geçebilirsiniz.
 
 ```bash
 # Geçerli dizini tara
@@ -21,6 +21,12 @@ leakwatch scan fs
 
 # Belirli bir proje klasörünü tara
 leakwatch scan fs ./my-project
+
+# Tek bir dosyayı tara
+leakwatch scan fs cmd/main.go
+
+# Birden fazla dosya ve dizini birlikte tara
+leakwatch scan fs cmd/ main.go internal/config
 ```
 
 ## Dosya sistemi kaynağının otomatik olarak atladıkları
@@ -30,6 +36,7 @@ Taramaları hızlı ve gürültüsüz tutmak için dosya sistemi kaynağı herha
 - **İkili dosyalar** — dosyanın ilk 8 KB'ında null byte bulunmasıyla tespit edilir.
 - **Bilinen ikili uzantılar** — yaygın derlenmiş, görsel, ses, video ve arşiv biçimleri.
 - **Kilit dosyaları** — `package-lock.json`, `yarn.lock`, `Pipfile.lock` ve benzerleri.
+- **`.git` dizinleri** — Git nesne/paket deposu asla dolaşılmaz veya düz dosya olarak okunmaz, çünkü commit geçmişini taramanın özel yolu `scan git`'tir. Bu, dolaşım sırasında karşılaşılan herhangi bir `.git` dizini için geçerlidir; `.git`'i tarama yolu olarak açıkça verirseniz bu muafiyet uygulanmaz ve normal şekilde taranır. Ayrıca etkilenmeyen bir diğer nokta: döngüleri önlemek için sembolik bağlantılar her zaman atlanır.
 
 ## Bayraklar
 
@@ -43,11 +50,12 @@ Taramaları hızlı ve gürültüsüz tutmak için dosya sistemi kaynağı herha
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|------------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı çalışan sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Bu boyutu aşan dosyaları atla (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri. Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
 | `--only-verified` | — | `false` | Yalnızca doğrulama ile aktif olduğu onaylanan bulguları raporla. |
 | `--min-severity` | — | `low` | Raporlanacak minimum önem: `low`, `medium`, `high`, `critical`. |
@@ -106,6 +114,7 @@ Takımınızla paylaşılan kalıcı dışlama kuralları için `.leakwatch.yaml
 | `0` | Tarama tamamlandı, bulgu yok. |
 | `1` | Tarama tamamlandı, bulgular raporlandı. |
 | `2` | Tarama başarısız oldu (yapılandırma hatası, okunamayan yol, vb.). |
+| `3` | Tarama tamamlanmadan kesildi (`Ctrl+C` / `SIGTERM`) ve hiçbir bulgu raporlanmamıştı. |
 
 Her çalıştırmanın ardından stderr'e bir tarama özeti (kaynak türü, hedef, dosya sayısı, süre ve bulgu sayısı) yazdırılır. Taramalar SIGINT/SIGTERM sinyalinde düzgün biçimde iptal edilir.
 
@@ -113,7 +122,7 @@ Her çalıştırmanın ardından stderr'e bir tarama özeti (kaynak türü, hede
 Geliştirme sırasında `leakwatch scan fs . --format table` komutunu çalıştırarak hızlı bir görsel genel bakış elde edin. CI hatlarında GitHub Code Scanning ile entegrasyon için `--format sarif` seçeneğine geçin.
 :::
 
-## Ayrıca bakınız
+## Ayrıca bakın
 
 - [Hızlı Başlangıç](#/getting-started/quick-start) — ilk taramanızı bir dakikadan kısa sürede çalıştırın.
 - [Yapılandırma Dosyası](#/configuration/config-file) — varsayılan biçimi, dışlamaları ve daha fazlasını yapılandırın.

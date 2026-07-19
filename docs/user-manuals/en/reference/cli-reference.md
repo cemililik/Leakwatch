@@ -13,7 +13,7 @@ These flags are available on every command and subcommand.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config <path>` | auto-discovered `.leakwatch.yaml` | Path to a configuration file. When omitted, Leakwatch searches the current directory and its parents for `.leakwatch.yaml`. |
+| `--config <path>` | auto-discovered `.leakwatch.yaml` | Path to a configuration file. When omitted, Leakwatch searches the current directory, then the user's home directory, for `.leakwatch.yaml` — there is **no** parent-directory walk. A malformed config file (invalid YAML) at either location is a fatal error. |
 | `--log-level <level>` | `warn` | Logging verbosity: `debug`, `info`, `warn`, or `error`. Log output goes to stderr and does not affect scan results. |
 
 ## `leakwatch version`
@@ -59,27 +59,32 @@ The following flags are available on **all** `scan` subcommands.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, or `table`. |
-| `--output` | `-o` | stdout | Write results to this file path instead of stdout. |
+| `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, or `github`. |
+| `--output` | `-o` | stdout | Write results to this file path instead of stdout. A bare path with no extension is auto-suffixed with the format's own extension (e.g. `--format sarif --output results` writes `results.sarif`). The file is written with `0600` permissions. Ignored for `--format github`, which always writes to stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent scan workers. |
 | `--max-file-size` | — | `10485760` (10 MB) | Skip files or blobs larger than this number of bytes. |
 | `--show-raw` | — | `false` | Include the raw (unredacted) secret value in output. Use with caution. |
+| `--exclude-detectors` | — | — | Detector IDs to exclude for this run (e.g. `aws-access-key-id,generic-api-key`). Repeatable or comma-separated; combined with (not a replacement for) `filter.exclude-detectors` in the config file. |
 | `--no-verify` | — | `false` | Disable live secret verification. No outbound API calls are made. |
 | `--only-verified` | — | `false` | Report only findings that Leakwatch has confirmed are active via live verification. |
-| `--min-severity` | — | `low` | Minimum severity to include in output: `low`, `medium`, `high`, or `critical`. |
+| `--min-severity` | — | `low` | Minimum severity to include in output: `low`, `medium`, `high`, or `critical`. An unrecognized value (e.g. a typo) is a hard error rather than being silently accepted. |
 | `--remediation` | — | `false` | Attach remediation guidance (rotation/revocation steps) to each finding. |
+
+`--exclude <pattern>` (repeatable) is also available on every scan subcommand **except** `scan slack` — see each subcommand's own flag table below, since it is registered per-command rather than shared by every subcommand.
+
+See [Exit Codes](#/reference/exit-codes) for the full exit-code contract: `0` clean, `1` findings, `2` error, `3` interrupted before completion.
 
 ---
 
 ### `scan fs`
 
-Scans a local directory tree.
+Scans one or more local filesystem paths — each may be a directory (walked recursively) or a single file.
 
 ```bash
-leakwatch scan fs [path] [flags]
+leakwatch scan fs [path...] [flags]
 ```
 
-`path` defaults to `.`. Accepts at most one positional argument.
+Accepts **zero or more** positional arguments. With no path given, `.` (the current directory) is scanned. Multiple paths may be mixed files and directories in one invocation.
 
 #### Filesystem-specific flags
 
@@ -93,12 +98,21 @@ leakwatch scan fs [path] [flags]
 # Scan the current directory, print a colorized table
 leakwatch scan fs . --format table
 
+# Scan a single file
+leakwatch scan fs cmd/main.go
+
+# Scan several files and directories at once
+leakwatch scan fs cmd/ main.go internal/config
+
 # Save SARIF output, exclude test files and vendor
 leakwatch scan fs . \
   --exclude "**/*_test.go" \
   --exclude "vendor/**" \
   --format sarif \
   --output results.sarif
+
+# Exclude specific detectors for this run
+leakwatch scan fs . --exclude-detectors aws-access-key-id,generic-api-key
 ```
 
 ---
@@ -121,6 +135,7 @@ Exactly one positional argument is required: a local path or an HTTP/HTTPS/SSH U
 | `--since-commit <hash>` | — | Scan only changes from this commit hash to HEAD. |
 | `--branch <name>` | — | Target a specific branch instead of the default branch. |
 | `--depth <int>` | `0` (full) | Shallow clone depth for remote repositories. `0` fetches the full history. |
+| `--exclude <pattern>` | — | Glob pattern for blob paths to exclude. Repeatable. |
 
 #### Examples
 
@@ -142,7 +157,7 @@ Scans the layers of an OCI/Docker image for secrets. Leakwatch is daemonless and
 leakwatch scan image <image:tag> [flags]
 ```
 
-Exactly one positional argument is required.
+Exactly one positional argument is required. There are no image-specific flags beyond the common scan flags, which include `--exclude <pattern>` (repeatable, matched against file paths inside layers).
 
 #### Examples
 
@@ -174,6 +189,7 @@ Exactly one positional argument is required.
 |------|---------|-------------|
 | `--prefix <string>` | — | Limit the scan to objects whose key starts with this prefix. |
 | `--region <string>` | — | AWS region of the bucket. Falls back to `AWS_REGION` environment variable or the AWS SDK default. |
+| `--exclude <pattern>` | — | Glob pattern for object keys to exclude. Repeatable. |
 
 #### Examples
 
@@ -203,6 +219,7 @@ Exactly one positional argument is required.
 |------|---------|-------------|
 | `--prefix <string>` | — | Limit the scan to objects whose name starts with this prefix. |
 | `--project <string>` | — | GCP project ID. Required when the bucket's project cannot be inferred from the default credentials. |
+| `--exclude <pattern>` | — | Glob pattern for object names to exclude. Repeatable. |
 
 #### Examples
 
@@ -235,7 +252,9 @@ No positional arguments.
 | `--exclude-channels <list>` | — | Comma-separated list of channel names or IDs to skip. |
 | `--since <YYYY-MM-DD>` | — | Scan only messages posted after this date. |
 | `--include-dms` | `false` | Include direct messages (requires additional OAuth scopes). |
-| `--rate-limit <int>` | `20` | Maximum Slack API requests per second. |
+| `--rate-limit <float>` | `1` | Maximum Slack API requests per second. |
+
+`scan slack` has no `--exclude` path-pattern flag (unlike every other scan subcommand) — use `--exclude-channels` to skip whole channels instead.
 
 #### Examples
 
@@ -269,6 +288,7 @@ Requires at least two positional arguments (repository URLs or local paths).
 |------|-------|---------|-------------|
 | `--parallel` | — | `3` | Number of repositories to scan concurrently. |
 | `--concurrency` | `-c` | CPU count | Worker concurrency within each repository scan. |
+| `--exclude <pattern>` | — | — | Glob pattern for blob paths to exclude, applied to every repository. Repeatable. |
 
 #### Examples
 

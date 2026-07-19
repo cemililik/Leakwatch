@@ -5,7 +5,9 @@ package stripe
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
@@ -68,6 +70,15 @@ func (v *TestKeyVerifier) Verify(ctx context.Context, raw detector.RawFinding) f
 // verifyStripeKey performs the Stripe API key verification shared by both the
 // live and test verifiers. Stripe authenticates the key as the Basic auth
 // username (with an empty password) and reports validity by status code.
+//
+// The Stripe detector matches both full secret keys (sk_live_/sk_test_) and
+// restricted keys (rk_live_/rk_test_) under the same detector IDs. A
+// restricted key scoped without Balance-read access gets 403 from
+// GET /v1/balance rather than the 200 a full key or a fully-scoped restricted
+// key gets — but a 403 only happens after Stripe has authenticated the key; an
+// invalid/revoked key gets 401 (the shared default InactiveStatuses), never
+// 403. So 403 is treated as an active outcome distinct from a hard verify
+// error: the key is live, just insufficiently scoped for this probe.
 func verifyStripeKey(ctx context.Context, apiURL string, httpClient *http.Client, raw detector.RawFinding, keyType string) finding.VerificationResult {
 	token := string(raw.Raw)
 	resolved := httpx.BaseURL(apiURL, defaultAPIURL)
@@ -78,8 +89,30 @@ func verifyStripeKey(ctx context.Context, apiURL string, httpClient *http.Client
 			URL:           resolved + "/v1/balance",
 			BasicAuthUser: token,
 		},
+		ActiveStatuses:  []int{http.StatusOK, http.StatusForbidden},
 		ActiveMessage:   fmt.Sprintf("Stripe %s API key is active", keyType),
 		InactiveMessage: fmt.Sprintf("Stripe %s API key is invalid or revoked", keyType),
-		ActiveExtra:     map[string]string{"key_type": keyType},
+		Decode:          decodeBalance(keyType),
 	})
+}
+
+// decodeBalance distinguishes a genuine GET /v1/balance success body from the
+// error body Stripe returns on 403 for a restricted key lacking Balance-read
+// permission, without needing the response status code (which DecodeFunc does
+// not receive): a balance response has no "error" object.
+func decodeBalance(keyType string) func(io.Reader) (map[string]string, string, error) {
+	return func(body io.Reader) (map[string]string, string, error) {
+		var resp struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.NewDecoder(body).Decode(&resp); err != nil {
+			return nil, "", err
+		}
+		if resp.Error != nil {
+			return map[string]string{"key_type": keyType, "scope": "restricted"}, "", nil
+		}
+		return map[string]string{"key_type": keyType}, "", nil
+	}
 }

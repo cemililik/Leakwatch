@@ -32,7 +32,7 @@ Each remediation entry includes the following fields:
 | `urgency` | How quickly to act: `"immediate"`, `"high"`, or `"medium"` |
 | `checklist` | Post-rotation verification steps (e.g. review audit logs, notify the security team) |
 
-Leakwatch ships 63 remediation entries — one for every built-in detector. All 63 entries are included in the binary; no network calls are made to fetch guidance.
+Leakwatch ships 64 remediation entries — one for every built-in detector. All 64 entries are included in the binary; no network calls are made to fetch guidance.
 
 ## How it appears in each format
 
@@ -46,7 +46,7 @@ leakwatch scan fs . --remediation --format json
 
 ```json
 {
-  "id": "a3f9c12d-8e4b-4c7a-9f2e-1b5d3a7c9e0f",
+  "id": "447b5d2846d08ce25dd3d638cfe911ad",
   "detector_id": "github-token",
   "severity": "critical",
   "redacted": "ghp_****************************Xk9R",
@@ -92,9 +92,9 @@ leakwatch scan fs . --remediation --format table
 ```
 
 ```text
-SEVERITY   DETECTOR       FILE                REDACTED          STATUS           REMEDIATION
---------   --------       ----                --------          ------           -----------
-CRITICAL   github-token   scripts/deploy.sh   ghp_****Xk9R      verified_active  Revoke GitHub Token
+SEVERITY  DETECTOR      FILE                LINE  REDACTED      STATUS           REMEDIATION
+--------  --------      ----                ----  --------      ------           -----------
+CRITICAL  github-token  scripts/deploy.sh   14    ghp_****Xk9R  verified_active  Revoke GitHub Token
 
 Found 1 secret (1 critical).
 ```
@@ -104,7 +104,7 @@ Use `--remediation --format json` when you need the full structured guidance for
 :::
 
 :::note
-Enrichment runs only when `--remediation` is set. Without the flag, the `remediation` field is absent from JSON and SARIF output, and the CSV and table `remediation` columns are empty. The flag does not modify the original scan results — it adds a layer on top.
+Enrichment runs only when `--remediation` is set. Without the flag, the `remediation` field is absent from JSON and SARIF output, the CSV `remediation` column is empty, and the table `REMEDIATION` column shows `-`. The flag does not modify the original scan results — it adds a layer on top.
 :::
 
 ## See also

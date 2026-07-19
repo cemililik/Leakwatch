@@ -153,7 +153,7 @@ output:
 
 # ── Custom Rules ──────────────────────────────────────────────
 custom-rules:
-  # Leakwatch ships with 63 detectors (60 packages). Use YAML custom rules
+  # Leakwatch ships with 64 detectors (60 packages). Use YAML custom rules
   # to detect secrets not covered by built-in detectors.
   # Each rule can contain the following fields:
   - id: "internal-api-key"
@@ -629,7 +629,7 @@ const slackToken = "xoxb-example-token" // leakwatch:ignore:slack-token
 | Fake secret in a test file | Exclude the entire file with `.leakwatchignore` |
 | False positive on a single line | `# leakwatch:ignore` |
 | Excluding an entire directory | `.leakwatchignore` or `filter.exclude-paths` |
-| A specific detector produces too many false positives | `filter.exclude-detectors` |
+| A specific detector produces too many false positives | `filter.exclude-detectors` (persistent, in `.leakwatch.yaml`) or `--exclude-detectors` (one-off, e.g. `--exclude-detectors aws-access-key-id,generic-api-key`) |
 | Fake secret in examples/documentation | `# leakwatch:ignore` |
 
 ---
@@ -642,8 +642,10 @@ Leakwatch automatically validates the configuration file when loading it. Invali
 |------------|------|---------------|
 | `concurrency` | >= 1 | `invalid concurrency value: N` |
 | `max-file-size` | >= 1 | `invalid max-file-size value: N` |
-| `output.format` | `json`, `sarif`, `csv`, `table` | `unsupported output format: X` |
+| `output.format` | `json`, `sarif`, `csv`, `table`, `github` | `unsupported output format: X` |
 | `entropy.threshold` | 0.0 - 8.0 | `invalid entropy threshold: X (must be 0-8)` |
+
+A **malformed `.leakwatch.yaml`** (invalid YAML syntax, or an explicit `--config` path that cannot be read) is a **fatal error** (exit code `2`) rather than a warning — detection scope can never silently diverge from what you configured. A simply-absent config file on the search path is not an error; Leakwatch falls back to defaults.
 
 ```bash
 # Testing configuration in debug mode

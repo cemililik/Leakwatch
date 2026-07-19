@@ -1,25 +1,25 @@
 ---
 title: "Dedektör Kataloğu"
-description: "Kategorilere göre gruplanmış tüm 63 yerleşik dedektör; ID'leri, ne tespit ettikleri ve varsayılan şiddet seviyeleri ile."
+description: "Kategorilere göre gruplanmış tüm 64 yerleşik dedektör; ID'leri, ne tespit ettikleri ve varsayılan önem dereceleri ile."
 ---
 
 # Dedektör Kataloğu
 
-Leakwatch, bulut sağlayıcısı erişim anahtarlarından ve yapay zekâ API token'larından veritabanı bağlantı dizelerine ve özel kriptografik anahtarlara kadar geniş bir kimlik bilgisi türü yelpazesini kapsayan **63 yerleşik dedektör** ile gelir. Her dedektörün kararlı bir ID'si, varsayılan bir şiddet seviyesi ve (çoğu için) bulunan sırrın hâlâ canlı olup olmadığını teyit edebilen eşleştirilmiş bir doğrulayıcısı vardır.
+Leakwatch, bulut sağlayıcısı erişim anahtarlarından ve yapay zekâ API token'larından veritabanı bağlantı dizelerine ve özel kriptografik anahtarlara kadar geniş bir kimlik bilgisi türü yelpazesini kapsayan **64 yerleşik dedektör** ile gelir. Her dedektörün kararlı bir ID'si, varsayılan bir önem derecesi ve (çoğu için) bulunan sırrın hâlâ canlı olup olmadığını teyit edebilen eşleştirilmiş bir doğrulayıcısı vardır.
 
 Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın. Kendi kalıplarınızı eklemek için [Özel Kurallar](#/detectors/custom-rules) bölümüne bakın.
 
 ## Bu katalogu nasıl okuyacaksınız
 
-- **ID** — yapılandırma ve çıktıda kullanılan kararlı dize tanımlayıcısı. Bir dedektörü atlamak için `filter.exclude-detectors` listesine ekleyin veya `--min-severity` filtrelemesiyle birlikte kullanın ([Şiddet ve Filtreleme](#/configuration/severity-and-filtering)).
+- **ID** — yapılandırma ve çıktıda kullanılan kararlı dize tanımlayıcısı. Bir dedektörü atlamak için `filter.exclude-detectors` listesine ekleyin veya `--min-severity` filtrelemesiyle birlikte kullanın ([Önem Derecesi & Filtreleme](#/configuration/severity-and-filtering)).
 - **Tespit eder** — dedektörün ne aradığı.
-- **Şiddet** — `Critical` (Kritik), `High` (Yüksek) veya `Medium` (Orta). Bu varsayılandır; `--min-severity` bayrağını ve `output.severity-threshold` yapılandırma anahtarını besler.
+- **Önem Derecesi** — `Critical` (Kritik), `High` (Yüksek) veya `Medium` (Orta). Bu varsayılandır; `--min-severity` bayrağını ve `output.severity-threshold` yapılandırma anahtarını besler.
 
 ---
 
 ## Bulut ve Altyapı
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `aws-access-key-id` | AWS Access Key ID | Critical |
 | `gcp-service-account` | GCP Servis Hesabı Anahtarı | Critical |
@@ -31,11 +31,11 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | `vercel-token` | Vercel API Token'ı | High |
 | `terraform-cloud-token` | Terraform Cloud/Enterprise API Token'ı | Critical |
 | `hashicorp-vault-token` | HashiCorp Vault Token'ı | Critical |
-| `doppler-token` | Doppler Servis Token'ı | Critical |
+| `doppler-token` | Doppler Token — servis (`dp.st.`), kişisel (`dp.pt.`), CLI/yapılandırma (`dp.ct.`) ve SCIM (`dp.scim.`) token'ları | Critical |
 
 ## Yapay Zekâ / Makine Öğrenimi
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `openai-api-key` | OpenAI API Anahtarı | Critical |
 | `anthropic-api-key` | Anthropic API Anahtarı | Critical |
@@ -44,7 +44,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## Ödemeler ve Ticaret
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `stripe-api-key-live` | Stripe Canlı API Anahtarı | Critical |
 | `stripe-api-key-test` | Stripe Test API Anahtarı | High |
@@ -53,11 +53,11 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## Geliştirme Araçları, CI ve Paketler
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
-| `github-token` | GitHub Kişisel Erişim Token'ı | Critical |
+| `github-token` | GitHub Kişisel Erişim Token'ı — hem klasik `ghp_` PAT hem de ince taneli `github_pat_` PAT | Critical |
 | `github-oauth-token` | GitHub OAuth2 ve kurulum (installation) token'ı — `gho_`/`ghu_`/`ghr_`/`ghs_`, yeni durumsuz (JWT biçimli) `ghs_` kurulum token'ları dâhil | Critical |
-| `gitlab-pat` | GitLab Kişisel Erişim Token'ı | Critical |
+| `gitlab-pat` | GitLab Kişisel Erişim Token'ı — klasik `glpat-` token'ı artı yeni yönlendirilebilir önekler: dağıtım (`gldt-`), runner (`glrt-`), CI/CD derleme ve tetikleyici (`glcbt-`/`glptt-`), OAuth uygulama sırrı (`gloas-`) ve besleme (`glft-`) token'ları; yakınında bulunduğunda kendi barındırılan (self-hosted) GitLab sunucuları doğrulama için tespit edilir | Critical |
 | `bitbucket-app-password` | Bitbucket Uygulama Parolası | Critical |
 | `circleci-token` | CircleCI Kişisel API Token'ı | High |
 | `npm-token` | NPM Erişim Token'ı | High |
@@ -71,12 +71,13 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## İletişim ve İşbirliği
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `slack-token` | Slack Bot/Kullanıcı Token'ı | Critical |
 | `slack-webhook` | Slack Webhook URL'si | High |
 | `teams-webhook` | Microsoft Teams Gelen Webhook URL'si | High |
 | `discord-bot-token` | Discord Bot Token'ı | Critical |
+| `discord-webhook-url` | Discord Webhook URL'si | Critical |
 | `telegram-bot-token` | Telegram Bot Token'ı | High |
 | `notion-token` | Notion Dahili Entegrasyon Token'ı | High |
 | `linear-api-key` | Linear API Anahtarı | High |
@@ -85,7 +86,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## E-posta ve Mesajlaşma Teslimatı
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `sendgrid-api-key` | SendGrid API Anahtarı | Critical |
 | `mailgun-api-key` | Mailgun API Anahtarı | Critical |
@@ -94,7 +95,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## İzleme ve Gözlemlenebilirlik
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `datadog-api-key` | Datadog API Anahtarı | Critical |
 | `newrelic-api-key` | New Relic API Anahtarı | High |
@@ -104,7 +105,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## Veritabanları ve Bağlantı Dizeleri
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `database-connection-string` | Veritabanı Bağlantı Dizesi | Critical |
 | `redis-connection-string` | Redis Bağlantı Dizesi | Critical |
@@ -114,7 +115,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## Kimlik ve Erişim
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `auth0-management-token` | Auth0 Yönetim API Token'ı | Critical |
 | `okta-api-token` | Okta API Token'ı | Critical |
@@ -122,26 +123,26 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 
 ## Web3
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `infura-api-key` | Infura API Anahtarı | High |
 
 ## Genel ve Kriptografik
 
-| ID | Tespit eder | Şiddet |
+| ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `generic-api-key` | Genel API Anahtarı | Medium |
 | `jwt` | JSON Web Token | High |
-| `private-key` | Özel Anahtar (RSA, SSH, DSA, EC, PGP) | Critical |
+| `private-key` | Özel Anahtar (RSA, SSH, DSA, EC, PGP); PKCS8 `PRIVATE KEY` ve parola korumalı `ENCRYPTED PRIVATE KEY` zarfı dahil | Critical |
 | `ftp-credentials` | FTP/SFTP Kimlik Bilgileri | Critical |
 
 ---
 
-**Toplam: 63 yerleşik dedektör.**
+**Toplam: 64 yerleşik dedektör.**
 
-## Şiddete göre filtreleme
+## Önem derecesine göre filtreleme
 
-Bulgular, komut satırında `--min-severity` veya yapılandırmada `output.severity-threshold` kullanılarak şiddet seviyesine göre filtrelenebilir. Yalnızca belirtilen seviyede veya üzerindeki bulgular çıktıya dahil edilir. Ayrıntılar için [Şiddet ve Filtreleme](#/configuration/severity-and-filtering) bölümüne bakın.
+Bulgular, komut satırında `--min-severity` veya yapılandırmada `output.severity-threshold` kullanılarak önem derecesine göre filtrelenebilir. Yalnızca belirtilen seviyede veya üzerindeki bulgular çıktıya dahil edilir. Ayrıntılar için [Önem Derecesi & Filtreleme](#/configuration/severity-and-filtering) bölümüne bakın.
 
 ## Belirli dedektörleri hariç tutma
 
@@ -154,14 +155,14 @@ filter:
     - jwt
 ```
 
-Tam filtreleme referansı için [Şiddet ve Filtreleme](#/configuration/severity-and-filtering) bölümüne bakın.
+Tam filtreleme referansı için [Önem Derecesi & Filtreleme](#/configuration/severity-and-filtering) bölümüne bakın.
 
 ## Doğrulama kapsamı
 
-Bazı dedektörlerin canlı doğrulayıcısı vardır; bazıları yalnızca format doğrulamasına tabi tutulur; dokuzu ise hiç doğrulayıcıya sahip değildir. Tam döküm için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın.
+Bazı dedektörlerin canlı doğrulayıcısı vardır; bazıları yalnızca format doğrulamasına tabi tutulur; onu ise hiç doğrulayıcıya sahip değildir. Tam döküm için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın.
 
 ## Ayrıca bakın
 
 - [Özel Kurallar](#/detectors/custom-rules) — YAML ile kendi tespit kalıplarınızı tanımlayın.
 - [Doğrulama Kapsamı](#/verification/verification-coverage) — hangi dedektörlerin canlı doğrulanabileceği.
-- [Şiddet ve Filtreleme](#/configuration/severity-and-filtering) — bulguları şiddet seviyesine veya dedektöre göre filtreleme.
+- [Önem Derecesi & Filtreleme](#/configuration/severity-and-filtering) — bulguları önem derecesine veya dedektöre göre filtreleme.

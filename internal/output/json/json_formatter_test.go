@@ -154,6 +154,75 @@ func TestFormatter_Format_DefaultShape_MatchesStandardFindingMarshal(t *testing.
 		"raw secret must never appear in default output")
 }
 
+func TestFormatter_Format_ShowRawFalse_ExtraDataNotInOutput(t *testing.T) {
+	f := &Formatter{ShowRaw: false}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			ID:        "test-1",
+			Redacted:  "****",
+			ExtraData: map[string]string{"host": "api.example.com"},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var rawJSON []map[string]interface{}
+	err = json.Unmarshal(buf.Bytes(), &rawJSON)
+	require.NoError(t, err)
+
+	_, hasExtraData := rawJSON[0]["extra_data"]
+	assert.False(t, hasExtraData, "extra_data must not appear when ShowRaw=false")
+}
+
+func TestFormatter_Format_ShowRawTrue_IncludesExtraDataInOutput(t *testing.T) {
+	f := &Formatter{ShowRaw: true}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{
+			ID:        "test-1",
+			Redacted:  "****",
+			ExtraData: map[string]string{"host": "api.example.com", "username": "alice"},
+		},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var rawJSON []map[string]interface{}
+	err = json.Unmarshal(buf.Bytes(), &rawJSON)
+	require.NoError(t, err)
+
+	extraData, hasExtraData := rawJSON[0]["extra_data"]
+	require.True(t, hasExtraData, "extra_data should appear when ShowRaw=true and populated")
+	extraDataMap, ok := extraData.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "api.example.com", extraDataMap["host"])
+	assert.Equal(t, "alice", extraDataMap["username"])
+}
+
+func TestFormatter_Format_ShowRawTrue_OmitsExtraDataWhenNil(t *testing.T) {
+	f := &Formatter{ShowRaw: true}
+	var buf bytes.Buffer
+
+	findings := []finding.Finding{
+		{ID: "test-1", Redacted: "****"},
+	}
+
+	err := f.Format(&buf, findings)
+	require.NoError(t, err)
+
+	var rawJSON []map[string]interface{}
+	err = json.Unmarshal(buf.Bytes(), &rawJSON)
+	require.NoError(t, err)
+
+	_, hasExtraData := rawJSON[0]["extra_data"]
+	assert.False(t, hasExtraData, "extra_data should be omitted when nil, even with ShowRaw=true")
+}
+
 func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 	f := &Formatter{ShowRaw: false}
 	var buf bytes.Buffer

@@ -2,8 +2,8 @@
 package redis
 
 import (
+	"bytes"
 	"context"
-	"net/url"
 	"regexp"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
@@ -30,7 +30,8 @@ func (d *Detector) Keywords() []string {
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
 // Scan searches the data for Redis Connection String patterns.
-// The password portion of the URL is redacted in the finding output.
+// The password portion of the URL is redacted in the finding output via the
+// shared, fail-safe detector.RedactURLPassword helper.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	matches := redisConnPattern.FindAll(data, -1)
 	if len(matches) == 0 {
@@ -41,26 +42,11 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range matches {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
-			Redacted:   redactPassword(string(match)),
+			Raw:        bytes.Clone(match),
+			Redacted:   detector.RedactURLPassword(string(match)),
 		})
 	}
 	return findings
-}
-
-// redactPassword masks the password portion in a Redis connection URL.
-// Uses net/url.Parse for proper parsing, then reconstructs with masked password.
-func redactPassword(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "****"
-	}
-	if u.User == nil {
-		return raw
-	}
-	username := u.User.Username()
-	u.User = nil
-	return u.Scheme + "://" + username + ":****@" + u.Host + u.RequestURI()
 }
 
 func init() {

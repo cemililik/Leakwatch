@@ -164,6 +164,38 @@ func TestVerify_TransportError_DoesNotLeakWebhookURL(t *testing.T) {
 	assert.Contains(t, result.Message, "[REDACTED]")
 }
 
+// TestVerify_CancelledContext_ReturnsVerifyError mirrors vtest.Run's
+// "cancelled_context_is_not_inactive" case for this hand-rolled verifier: a
+// pre-cancelled context must yield StatusVerifyError, and must NEVER be
+// reported as StatusVerifiedInactive or StatusVerifiedActive (a network
+// failure is not evidence either way).
+func TestVerify_CancelledContext_ReturnsVerifyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	v := &Verifier{httpClient: server.Client()}
+
+	raw := detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte(server.URL),
+		Redacted:   "https://outlook.office.com/webhook/****",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	result := v.Verify(ctx, raw)
+
+	require.NotEqual(t, finding.StatusVerifiedInactive, result.Status,
+		"a cancelled context must NOT be reported as verified-inactive")
+	require.NotEqual(t, finding.StatusVerifiedActive, result.Status,
+		"a cancelled context must NOT be reported as verified-active")
+	assert.Equal(t, finding.StatusVerifyError, result.Status,
+		"a cancelled context must be a verify error")
+}
+
 func TestVerify_Type_ReturnsCorrectID(t *testing.T) {
 	v := &Verifier{}
 	assert.Equal(t, "teams-webhook", v.Type())

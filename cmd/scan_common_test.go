@@ -12,59 +12,7 @@ import (
 	jsonout "github.com/HodeTech/leakwatch/internal/output/json"
 	sarifout "github.com/HodeTech/leakwatch/internal/output/sarif"
 	tableout "github.com/HodeTech/leakwatch/internal/output/table"
-	"github.com/HodeTech/leakwatch/pkg/finding"
 )
-
-func TestParseSeverity_ValidInputs_ReturnsCorrectSeverity(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected finding.Severity
-	}{
-		{
-			name:     "low",
-			input:    "low",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "medium",
-			input:    "medium",
-			expected: finding.SeverityMedium,
-		},
-		{
-			name:     "high",
-			input:    "high",
-			expected: finding.SeverityHigh,
-		},
-		{
-			name:     "critical",
-			input:    "critical",
-			expected: finding.SeverityCritical,
-		},
-		{
-			name:     "unknown defaults to low",
-			input:    "unknown",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "empty string defaults to low",
-			input:    "",
-			expected: finding.SeverityLow,
-		},
-		{
-			name:     "uppercase defaults to low",
-			input:    "HIGH",
-			expected: finding.SeverityLow,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := parseSeverity(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
 
 func TestSelectFormatter_AllFormats_ReturnsCorrectType(t *testing.T) {
 	tests := []struct {
@@ -169,18 +117,12 @@ func TestScanCommand_NoSubcommand_ShowsHelp(t *testing.T) {
 	assert.Contains(t, output, "Usage")
 }
 
-func TestScanFsCommand_NoArgs_AcceptsZeroArgs(t *testing.T) {
-	// Verify the command accepts 0 args (defaults to ".")
-	// We only test argument validation, not the full scan pipeline.
-	assert.Equal(t, "fs [path]", scanFsCmd.Use)
-}
-
-func TestScanFsCommand_TooManyArgs_ReturnsError(t *testing.T) {
-	buf := new(bytes.Buffer)
-	rootCmd.SetOut(buf)
-	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"scan", "fs", "/path1", "/path2"})
-
-	err := rootCmd.Execute()
-	assert.Error(t, err)
+func TestScanFsCommand_AcceptsMultiplePathArgs(t *testing.T) {
+	// The command now accepts zero or more path arguments (files or dirs).
+	assert.Equal(t, "fs [path...]", scanFsCmd.Use)
+	// ArbitraryArgs never rejects on arity; validating that here keeps the
+	// contract explicit without running the full scan pipeline.
+	require.NotNil(t, scanFsCmd.Args)
+	assert.NoError(t, scanFsCmd.Args(scanFsCmd, []string{"/path1", "/path2"}))
+	assert.NoError(t, scanFsCmd.Args(scanFsCmd, nil))
 }

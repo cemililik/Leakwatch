@@ -171,6 +171,30 @@ func TestMatch_ConcurrentCallers_ReturnsAllMatches(t *testing.T) {
 	assert.Empty(t, failures, "concurrent Match calls must never drop detector matches")
 }
 
+// TestMatch_BufferReuse_HandlesVaryingChunkSizes is a regression test for the
+// lowerBufPool buffer-reuse path: repeated Match calls with chunks of
+// different sizes (large-then-small-then-large) must never leak stale bytes
+// from a previous, longer call into a shorter result.
+func TestMatch_BufferReuse_HandlesVaryingChunkSizes(t *testing.T) {
+	m := New([]detector.Detector{
+		&stubDetector{id: "aws", keywords: []string{"AKIA"}},
+	})
+
+	large := []byte(strings.Repeat("x", 10000) + "AKIA" + strings.Repeat("y", 10000))
+	small := []byte("no match")
+
+	for i := 0; i < 5; i++ {
+		require.Len(t, m.Match(large), 1, "iteration %d: large chunk should match", i)
+		assert.Empty(t, m.Match(small), "iteration %d: small chunk must not inherit stale match", i)
+	}
+}
+
+func TestToLowerASCII_MixedCase_LowercasesOnlyASCIILetters(t *testing.T) {
+	dst := make([]byte, 0)
+	got := toLowerASCII(dst, []byte("AKIA_Test-123!"))
+	assert.Equal(t, "akia_test-123!", string(got))
+}
+
 func BenchmarkMatch_40Keywords(b *testing.B) {
 	dets := make([]detector.Detector, 20)
 	for i := range dets {
@@ -184,6 +208,35 @@ func BenchmarkMatch_40Keywords(b *testing.B) {
 	data := []byte("this text contains keyworda somewhere in a large file with lots of content")
 
 	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.Match(data)
+	}
+}
+
+// BenchmarkMatch_LargeChunk exercises Match on a 1MB+ chunk to quantify the
+// effect of lowerBufPool's buffer reuse (run with -benchmem to see
+// allocs/op; prior to buffer reuse this allocated a fresh len(data)-sized
+// slice via bytes.ToLower on every call).
+func BenchmarkMatch_LargeChunk(b *testing.B) {
+	dets := make([]detector.Detector, 20)
+	for i := range dets {
+		dets[i] = &stubDetector{
+			id:       "det-" + string(rune('a'+i)),
+			keywords: []string{"keyword" + string(rune('a'+i)), "pattern" + string(rune('a'+i))},
+		}
+	}
+	m := New(dets)
+
+	const chunkSize = 1 << 20 // 1MB
+	data := make([]byte, chunkSize)
+	filler := []byte("this line contains no interesting content whatsoever\n")
+	for i := 0; i < len(data); i += len(filler) {
+		copy(data[i:], filler)
+	}
+	copy(data[chunkSize/2:], []byte("keyworda"))
+
+	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		m.Match(data)
 	}

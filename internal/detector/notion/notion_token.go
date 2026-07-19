@@ -17,12 +17,6 @@ var (
 	// secretPattern matches the legacy secret_ prefix tokens.
 	// Requires "notion" context keyword to avoid false positives.
 	secretPattern = regexp.MustCompile(`secret_[A-Za-z0-9]{43,}`)
-
-	notionContextKeywords = [][]byte{
-		[]byte("notion"),
-		[]byte("Notion"),
-		[]byte("NOTION"),
-	}
 )
 
 // Detector detects Notion Internal Integration Tokens.
@@ -50,33 +44,23 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	for _, match := range ntnPattern.FindAll(data, -1) {
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
-			Raw:        match,
+			Raw:        bytes.Clone(match),
 			Redacted:   detector.RedactBytes(match),
 		})
 	}
 
 	// Match secret_ tokens only if a Notion context keyword is present.
-	if hasNotionContext(data) {
+	if detector.HasAnyKeyword(data, "notion") {
 		for _, match := range secretPattern.FindAll(data, -1) {
 			findings = append(findings, detector.RawFinding{
 				DetectorID: d.ID(),
-				Raw:        match,
+				Raw:        bytes.Clone(match),
 				Redacted:   detector.RedactBytes(match),
 			})
 		}
 	}
 
 	return findings
-}
-
-// hasNotionContext checks whether the data contains a Notion-related keyword.
-func hasNotionContext(data []byte) bool {
-	for _, kw := range notionContextKeywords {
-		if bytes.Contains(data, kw) {
-			return true
-		}
-	}
-	return false
 }
 
 func init() {

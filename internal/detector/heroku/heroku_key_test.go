@@ -55,6 +55,20 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 			redacted: "****7890",
 		},
 		{
+			name:     "PascalCase key name",
+			input:    "Heroku_Api_Key=" + syntheticUUID,
+			expected: 1,
+			redacted: "****7890",
+			rawUUID:  syntheticUUID,
+		},
+		{
+			name:     "mixed case bare heroku with colon",
+			input:    `Heroku: "` + syntheticUUID + `"`,
+			expected: 1,
+			redacted: "****7890",
+			rawUUID:  syntheticUUID,
+		},
+		{
 			name:     "no match - bare UUID without context",
 			input:    syntheticUUID,
 			expected: 0,
@@ -95,4 +109,39 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDetector_Scan_MultipleMatches verifies every occurrence in a single
+// chunk is reported, each with an independently-clean redaction/raw pair.
+func TestDetector_Scan_MultipleMatches(t *testing.T) {
+	uuidA := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	uuidB := "11111111-2222-3333-4444-555555555555"
+	input := "HEROKU_API_KEY=" + uuidA + "\nheroku_api_key=" + uuidB
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 2)
+	assert.Equal(t, uuidA, string(findings[0].Raw))
+	assert.Equal(t, "****7890", findings[0].Redacted)
+	assert.Equal(t, uuidB, string(findings[1].Raw))
+	assert.Equal(t, "****5555", findings[1].Redacted)
+}
+
+// TestDetector_Scan_RawIsClonedNotAliased verifies Raw/RawV2 do not alias the
+// scanned chunk buffer, so the buffer is GC-eligible once Scan returns rather
+// than pinned for the whole scan (memory/aliasing hardening).
+func TestDetector_Scan_RawIsClonedNotAliased(t *testing.T) {
+	syntheticUUID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	data := []byte("HEROKU_API_KEY=" + syntheticUUID)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1)
+
+	rawBefore, rawV2Before := string(findings[0].Raw), string(findings[0].RawV2)
+	for i := range data {
+		data[i] = 'x'
+	}
+	assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
+	assert.Equal(t, rawV2Before, string(findings[0].RawV2), "RawV2 must be a clone, not an alias of the scanned buffer")
 }

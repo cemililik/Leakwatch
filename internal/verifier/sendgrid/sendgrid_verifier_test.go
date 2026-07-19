@@ -15,12 +15,12 @@ import (
 
 func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v3/user/profile", r.URL.Path)
+		assert.Equal(t, "/v3/scopes", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"username":"sendgriduser","email":"user@example.com"}`))
+		_, _ = w.Write([]byte(`{"scopes":["mail.send","alerts.read","alerts.create"]}`))
 	}))
 	defer server.Close()
 
@@ -39,7 +39,7 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, "SendGrid API key is active", result.Message)
-	assert.Equal(t, "sendgriduser", result.ExtraData["username"])
+	assert.Equal(t, "3", result.ExtraData["scope_count"])
 }
 
 func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
@@ -66,7 +66,11 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "SendGrid API key is invalid or revoked", result.Message)
 }
 
-func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
+// TestVerify_ForbiddenKey_IsNotInactive verifies that a 403 (which a valid but
+// restricted-scope key can trigger) is never reported as invalid/revoked. On
+// the scope-independent /v3/scopes endpoint a 403 is unexpected, so it surfaces
+// as an indeterminate verify error rather than a false negative.
+func TestVerify_ForbiddenKey_IsNotInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"errors":[{"message":"access forbidden"}]}`))
@@ -86,8 +90,37 @@ func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
 
 	result := v.Verify(context.Background(), raw)
 
-	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "SendGrid API key is invalid or revoked", result.Message)
+	require.NotEqual(t, finding.StatusVerifiedInactive, result.Status,
+		"a 403 must never read as invalid/revoked")
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+}
+
+// TestVerify_RestrictedKey_ReturnsActive verifies that a valid restricted-scope
+// key (which can still read its own scopes) is correctly reported active.
+func TestVerify_RestrictedKey_ReturnsActive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v3/scopes", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"scopes":["mail.send"]}`))
+	}))
+	defer server.Close()
+
+	v := &Verifier{
+		apiURL:     server.URL,
+		httpClient: server.Client(),
+	}
+
+	raw := detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte("SG.restrictedkey1234567890123456789012345678901"),
+		Redacted:   "SG.****8901",
+	}
+
+	result := v.Verify(context.Background(), raw)
+
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "1", result.ExtraData["scope_count"])
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

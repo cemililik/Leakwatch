@@ -4,13 +4,25 @@ package snowflake
 import (
 	"context"
 	"regexp"
-	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var snowflakeCredPattern = regexp.MustCompile(`snowflakecomputing\.com[^\s]*(?:password|pwd|PWD|PASSWORD)\s*=\s*([^&\s'"]+)`)
+// snowflakeMask is the placeholder written in place of a redacted password value.
+const snowflakeMask = "****"
+
+// snowflakeCredPattern matches a Snowflake connection string that carries an
+// embedded password. The prefix wildcard is length-bounded (was unbounded) so a
+// single match cannot run away across an entire compact line; any password-family
+// parameter caught inside the bounded span is masked by redactSnowflake.
+var snowflakeCredPattern = regexp.MustCompile(`snowflakecomputing\.com[^\s]{0,512}(?:password|pwd|PWD|PASSWORD)\s*=\s*([^&\s'"]+)`)
+
+// snowflakePwdRedactPattern matches every password/pwd parameter (any case,
+// any whitespace around "=") so redaction masks the value using the exact same
+// whitespace semantics as the detection regex above. Masking is applied to all
+// occurrences so an earlier decoy credential cannot survive in cleartext.
+var snowflakePwdRedactPattern = regexp.MustCompile(`(?i)(password|pwd)(\s*=\s*)[^&\s'"]+`)
 
 // Detector detects Snowflake Connection Credentials with embedded passwords.
 type Detector struct{}
@@ -42,38 +54,33 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 		fullMatch := groups[0]
 		passwordValue := groups[1]
 
+		// NOTE: the raw password is intentionally NOT placed into ExtraData.
+		// ExtraData is serialized into default (non --show-raw) output, so it
+		// must never carry secret material. The plaintext value is exposed only
+		// through Raw, which is gated behind the --show-raw opt-in downstream.
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        passwordValue,
 			RawV2:      fullMatch,
 			Redacted:   redactSnowflake(string(fullMatch)),
-			ExtraData: map[string]string{
-				"password": string(passwordValue),
-			},
 		})
 	}
 	return findings
 }
 
-// redactSnowflake replaces the password value in the matched string with ****.
-// It locates the password/pwd parameter and masks everything after the = sign.
+// redactSnowflake masks every password/pwd value in the matched string.
+//
+// It uses the same whitespace-tolerant semantics as the detection regex, so any
+// input the detector accepts (including tab, newline, or multi-space around
+// "=") is redacted. The function fails safe: if no password parameter can be
+// located it returns a full mask rather than the input verbatim, so redactor
+// drift can never leak a secret into the (always-emitted) Redacted field.
 func redactSnowflake(match string) string {
-	for _, param := range []string{"PASSWORD", "password", "PWD", "pwd"} {
-		idx := strings.Index(match, param+"=")
-		if idx == -1 {
-			idx = strings.Index(match, param+" =")
-		}
-		if idx == -1 {
-			continue
-		}
-		eqIdx := strings.Index(match[idx:], "=")
-		if eqIdx == -1 {
-			continue
-		}
-		prefix := match[:idx+eqIdx+1]
-		return prefix + "****"
+	redacted := snowflakePwdRedactPattern.ReplaceAllString(match, "${1}${2}"+snowflakeMask)
+	if redacted == match {
+		return snowflakeMask
 	}
-	return match
+	return redacted
 }
 
 func init() {

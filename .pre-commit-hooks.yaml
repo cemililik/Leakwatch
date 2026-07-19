@@ -1,6 +1,10 @@
 - id: leakwatch
   name: Leakwatch Secret Scanner
+  description: Scan staged files for leaked secrets before commit
   entry: leakwatch scan fs
   language: golang
   types: [file]
-  pass_filenames: false
+  # pass_filenames defaults to true, so pre-commit appends the staged
+  # filenames as arguments to `leakwatch scan fs`. The filesystem source
+  # accepts one or more file/directory paths, so the hook scans only the
+  # staged files rather than the whole repository.

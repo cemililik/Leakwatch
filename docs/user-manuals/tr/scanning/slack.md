@@ -50,23 +50,24 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 | `--exclude-channels` | string | — | Atlanacak kanal adlarının virgülle ayrılmış listesi. |
 | `--since` | string (YYYY-MM-DD) | — | Bu tarihte veya sonrasında gönderilen mesajları tara. |
 | `--include-dms` | bool | `false` | Doğrudan mesajları ve grup DM'lerini de tara. |
-| `--rate-limit` | float | `20` | Saniye başına maksimum Slack API istek sayısı. |
+| `--rate-limit` | float | `1` | Saniye başına maksimum Slack API istek sayısı. |
 
 ### Ortak tarama bayrakları
 
 | Bayrak | Kısa | Varsayılan | Açıklama |
 |--------|------|------------|----------|
-| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`. |
+| `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı çalışan sayısı. |
 | `--max-file-size` | — | `10485760` (10 MB) | Dahili parça boyutu sınırı (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
+| `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri. Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
 | `--only-verified` | — | `false` | Yalnızca doğrulama ile aktif olduğu onaylanan bulguları raporla. |
 | `--min-severity` | — | `low` | Raporlanacak minimum önem: `low`, `medium`, `high`, `critical`. |
 | `--remediation` | — | `false` | Her bulguya düzeltme rehberi ekle. |
 
-`--config` ve `--log-level` (varsayılan `warn`) kök bayrakları da geçerlidir.
+`--config` ve `--log-level` (varsayılan `warn`) kök bayrakları da geçerlidir. Diğer her tarama alt komutunun aksine, `scan slack` komutunda `--exclude` yol-kalıbı bayrağı yoktur — bunun yerine tüm kanalları atlamak için `--exclude-channels` kullanın.
 
 ## Örnekler
 
@@ -114,13 +115,17 @@ Slack taramasından elde edilen her bulgu mesaj ve kanal meta verisi içerir:
 
 | Alan | Açıklama |
 |------|----------|
-| `channel` | Bulgunun tespit edildiği kanal adı. |
+| `channel` | Bulgunun tespit edildiği Slack kanalının **kimliği** (örn. `C0123456`) — okunabilir ad değil. |
+| `channel_name` | `channel` alanından ayrı, okunabilir kanal adı (örn. `engineering`). |
+| `message_user` | Mesaj yazarının Slack kullanıcı kimliği. Slack bulguları için `author` alanı yoktur. |
 | `message_ts` | Slack mesaj zaman damgası (benzersiz mesaj kimliği). |
-| `author` | Mesaj yazarının Slack kullanıcı kimliği. |
+| `thread_ts` | Yalnızca bulgu bir ileti dizisi yanıtındaysa bulunan, üst mesajın zaman damgası. |
 
 ## Performans değerlendirmeleri
 
-Slack API istekleri, Slack tarafından uygulanan hız sınırlarına tabidir. `--rate-limit` bayrağı (varsayılan saniyede `20` istek), Leakwatch'ın istekleri ne kadar agresif yapacağını kontrol eder. Özellikle büyük çalışma alanlarında `429 Too Many Requests` hatası alıyorsanız bu değeri düşürün.
+Slack API istekleri, Slack tarafından uygulanan hız sınırlarına tabidir. `--rate-limit` bayrağı (varsayılan saniyede `1` istek), Leakwatch'ın istekleri ne kadar agresif yapacağını kontrol eder. Cömert hız sınırlarına sahip bir çalışma alanında daha hızlı bir tarama için dikkatli bir şekilde artırın, ya da `429 Too Many Requests` hatası görüyorsanız daha da düşürün.
+
+Slack `429 Too Many Requests` ile yanıt verdiğinde, Leakwatch `Retry-After` başlığına otomatik olarak uyar ve taramayı tamamen başarısız kılmak yerine isteği yeniden dener.
 
 Her çalıştırmada tüm çalışma alanını taramak yerine belirli kanalları hedeflemek için `--channels` kullanın. Mesajları artımlı biçimde taramak için `--since` ile birleştirin.
 
@@ -131,10 +136,11 @@ Her çalıştırmada tüm çalışma alanını taramak yerine belirli kanalları
 | `0` | Tarama tamamlandı, bulgu yok. |
 | `1` | Tarama tamamlandı, bulgular raporlandı. |
 | `2` | Tarama başarısız oldu (eksik token, kimlik doğrulama hatası, vb.). |
+| `3` | Tarama tamamlanmadan kesildi (`Ctrl+C` / `SIGTERM`) ve hiçbir bulgu raporlanmamıştı. |
 
 Her çalıştırmanın ardından stderr'e bir tarama özeti yazdırılır. Taramalar SIGINT/SIGTERM sinyalinde düzgün biçimde iptal edilir.
 
-## Ayrıca bakınız
+## Ayrıca bakın
 
 - [Hızlı Başlangıç](#/getting-started/quick-start) — ilk taramanızı bir dakikadan kısa sürede çalıştırın.
 - [Yapılandırma Dosyası](#/configuration/config-file) — `.leakwatch.yaml` ile varsayılanları yapılandırın.

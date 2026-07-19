@@ -29,13 +29,13 @@ func TestDetector_Scan_MatchesValidWebhooks(t *testing.T) {
 			name:     "valid teams webhook URL",
 			input:    "https://mycompany.webhook.office.com/webhookb2/abcdef01-2345-6789-abcd-ef0123456789/IncomingWebhook/abcdef0123456789abcdef0123456789/abcdef01-2345-6789-abcd-ef0123456789",
 			expected: 1,
-			redacted: "https://****webhook.office.com/webhookb2/****",
+			redacted: "https://mycompany.webhook.office.com/webhookb2/****",
 		},
 		{
 			name:     "webhook in config",
 			input:    `TEAMS_WEBHOOK="https://tenant-name.webhook.office.com/webhookb2/abcdef01-2345-6789-abcd-ef0123456789/IncomingWebhook/abcdef0123456789/abcdef01-2345-6789-abcd-ef0123456789"`,
 			expected: 1,
-			redacted: "https://****webhook.office.com/webhookb2/****",
+			redacted: "https://tenant-name.webhook.office.com/webhookb2/****",
 		},
 		{
 			name:     "webhook with hyphenated subdomain",
@@ -65,6 +65,36 @@ func TestDetector_Scan_MatchesValidWebhooks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetector_Scan_Redacted_DistinguishesDifferentSubdomains(t *testing.T) {
+	input := "https://tenant-a.webhook.office.com/webhookb2/11111111-1111-1111-1111-111111111111/IncomingWebhook/aaaa1111bbbb2222/11111111-1111-1111-1111-111111111111 https://tenant-b.webhook.office.com/webhookb2/22222222-2222-2222-2222-222222222222/IncomingWebhook/cccc3333dddd4444/22222222-2222-2222-2222-222222222222"
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 2)
+
+	// Two genuinely different webhooks must not render identically in output.
+	assert.NotEqual(t, findings[0].Redacted, findings[1].Redacted)
+	assert.Equal(t, "https://tenant-a.webhook.office.com/webhookb2/****", findings[0].Redacted)
+	assert.Equal(t, "https://tenant-b.webhook.office.com/webhookb2/****", findings[1].Redacted)
+}
+
+func TestDetector_Scan_Raw_DoesNotAliasInputBuffer(t *testing.T) {
+	input := []byte("https://mycompany.webhook.office.com/webhookb2/abcdef01-2345-6789-abcd-ef0123456789/IncomingWebhook/abcdef0123456789/abcdef01-2345-6789-abcd-ef0123456789")
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), input)
+	require.Len(t, findings, 1)
+
+	raw := findings[0].Raw
+	original := string(raw)
+
+	for i := range input {
+		input[i] = 'x'
+	}
+
+	assert.Equal(t, original, string(raw))
 }
 
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {

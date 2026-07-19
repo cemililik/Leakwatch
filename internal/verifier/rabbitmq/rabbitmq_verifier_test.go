@@ -1,7 +1,9 @@
 package rabbitmq
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -124,4 +126,45 @@ func TestVerify_InvalidURL_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Contains(t, result.Message, "format invalid")
+}
+
+// TestVerify_MalformedURL_NeverLeaksRawSecret guards the secret-safety
+// regression: net/url wraps parse failures in a *url.Error whose Error() embeds
+// the entire input string (including the plaintext password). The verifier must
+// never route that error text to a logger, and the raw password must appear
+// neither in any emitted log line nor in the returned VerificationResult.
+func TestVerify_MalformedURL_NeverLeaksRawSecret(t *testing.T) {
+	const password = "s3cr3tP4ss" // synthetic
+
+	// An unescaped "%zz" in the password makes url.Parse fail with a *url.Error
+	// that embeds the whole connection string.
+	connStr := "amqp://user:" + password + "%zz@host:5672/vhost"
+
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	prev := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	v := &Verifier{}
+	raw := detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte(connStr),
+		Redacted:   "amqp://user:****@host:5672/vhost",
+	}
+
+	result := v.Verify(context.Background(), raw)
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Contains(t, result.Message, "format invalid")
+
+	logOutput := buf.String()
+	assert.NotEmpty(t, logOutput, "expected a debug log line to be emitted")
+	assert.NotContains(t, logOutput, password, "raw password leaked into log output")
+	assert.NotContains(t, logOutput, connStr, "raw connection string leaked into log output")
+
+	assert.NotContains(t, result.Message, password, "raw password leaked into result message")
+	for k, val := range result.ExtraData {
+		assert.NotContains(t, val, password, "raw password leaked into ExtraData[%s]", k)
+	}
 }

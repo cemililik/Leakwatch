@@ -32,7 +32,7 @@ Her düzeltme girişi aşağıdaki alanları içerir:
 | `urgency` | Ne kadar hızlı harekete geçileceği: `"immediate"`, `"high"` veya `"medium"` |
 | `checklist` | Döndürme sonrası doğrulama adımları (örn. denetim günlüklerini inceleyin, güvenlik ekibini bilgilendirin) |
 
-Leakwatch, her yerleşik dedektör için bir tane olmak üzere 63 düzeltme girişiyle birlikte gelir. 63 girişin tamamı ikili dosyaya dahildir; rehberliği almak için herhangi bir ağ çağrısı yapılmaz. Bu, çevrimdışı ortamlarda veya hava boşluklu ağlarda bile düzeltme rehberliğinin sorunsuz çalışması anlamına gelir.
+Leakwatch, her yerleşik dedektör için bir tane olmak üzere 64 düzeltme girişiyle birlikte gelir. 64 girişin tamamı ikili dosyaya dahildir; rehberliği almak için herhangi bir ağ çağrısı yapılmaz.
 
 ## Her formatta nasıl görünür
 
@@ -46,7 +46,7 @@ leakwatch scan fs . --remediation --format json
 
 ```json
 {
-  "id": "a3f9c12d-8e4b-4c7a-9f2e-1b5d3a7c9e0f",
+  "id": "447b5d2846d08ce25dd3d638cfe911ad",
   "detector_id": "github-token",
   "severity": "critical",
   "redacted": "ghp_****************************Xk9R",
@@ -92,9 +92,9 @@ leakwatch scan fs . --remediation --format table
 ```
 
 ```text
-SEVERITY   DETECTOR       FILE                REDACTED          STATUS           REMEDIATION
---------   --------       ----                --------          ------           -----------
-CRITICAL   github-token   scripts/deploy.sh   ghp_****Xk9R      verified_active  Revoke GitHub Token
+SEVERITY  DETECTOR      FILE                LINE  REDACTED      STATUS           REMEDIATION
+--------  --------      ----                ----  --------      ------           -----------
+CRITICAL  github-token  scripts/deploy.sh   14    ghp_****Xk9R  verified_active  Revoke GitHub Token
 
 Found 1 secret (1 critical).
 ```
@@ -104,12 +104,8 @@ Otomatik olay müdahale iş akışları için tam yapılandırılmış rehberli�
 :::
 
 :::note
-Zenginleştirme yalnızca `--remediation` ayarlandığında çalışır. Bayrak olmadan, `remediation` alanı JSON ve SARIF çıktısında yoktur ve CSV ile tablo `remediation` sütunları boştur. Bayrak, orijinal tarama sonuçlarını değiştirmez — bunların üzerine bir katman ekler.
+Zenginleştirme yalnızca `--remediation` ayarlandığında çalışır. Bayrak olmadan, `remediation` alanı JSON ve SARIF çıktısında yoktur, CSV `remediation` sütunu boştur ve tablo `REMEDIATION` sütunu `-` gösterir. Bayrak, orijinal tarama sonuçlarını değiştirmez — bunların üzerine bir katman ekler.
 :::
-
-## Özel kurallar ve düzeltme
-
-Özel kural tanımları bir `remediation` bloğunu desteklemez — düzeltme rehberliği yalnızca yerleşik dedektörler için mevcuttur. Özel bir kural tarafından tetiklenen bulgu için `--remediation` bayrağı geçildiğinde, o bulgunun `remediation` alanı boş kalır; diğer alanlar etkilenmez.
 
 ## Ayrıca bakın
 

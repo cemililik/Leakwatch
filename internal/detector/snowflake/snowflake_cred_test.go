@@ -57,8 +57,29 @@ func TestDetector_Scan_MatchesValidCredentials(t *testing.T) {
 			name:     "URL with spaces around equals",
 			input:    "snowflakecomputing.com?password = spaced123",
 			expected: 1,
-			redacted: "snowflakecomputing.com?password =****",
+			redacted: "snowflakecomputing.com?password = ****",
 			password: "spaced123",
+		},
+		{
+			name:     "tab before equals is redacted (fail-safe)",
+			input:    "snowflakecomputing.com?password\t=tabbed123",
+			expected: 1,
+			redacted: "snowflakecomputing.com?password\t=****",
+			password: "tabbed123",
+		},
+		{
+			name:     "double space before equals is redacted (fail-safe)",
+			input:    "snowflakecomputing.com?password  =doublesp1",
+			expected: 1,
+			redacted: "snowflakecomputing.com?password  =****",
+			password: "doublesp1",
+		},
+		{
+			name:     "newline before equals is redacted (fail-safe)",
+			input:    "snowflakecomputing.com?password\n=newline12",
+			expected: 1,
+			redacted: "snowflakecomputing.com?password\n=****",
+			password: "newline12",
 		},
 	}
 
@@ -71,10 +92,41 @@ func TestDetector_Scan_MatchesValidCredentials(t *testing.T) {
 				require.NotEmpty(t, findings)
 				assert.Equal(t, tt.redacted, findings[0].Redacted)
 				assert.Equal(t, tt.password, string(findings[0].Raw))
-				assert.Equal(t, tt.password, findings[0].ExtraData["password"])
+				// The raw password must NEVER be carried in ExtraData: it is
+				// serialized into default (non --show-raw) output.
+				assert.Empty(t, findings[0].ExtraData)
+				assert.NotContains(t, findings[0].Redacted, tt.password)
 			}
 		})
 	}
+}
+
+// TestRedactSnowflake_MasksEveryPasswordParam verifies that when a single match
+// spans multiple password-family parameters (e.g. a decoy PWD followed by the
+// real password), every value is masked and none survives in cleartext.
+func TestRedactSnowflake_MasksEveryPasswordParam(t *testing.T) {
+	input := "snowflakecomputing.com/db?PWD=decoyvalue&password=realvalue"
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(input))
+	require.NotEmpty(t, findings)
+
+	redacted := findings[0].Redacted
+	assert.NotContains(t, redacted, "decoyvalue")
+	assert.NotContains(t, redacted, "realvalue")
+	assert.Contains(t, redacted, "PWD=****")
+	assert.Contains(t, redacted, "password=****")
+}
+
+// TestRedactSnowflake_FailsSafeWhenNoPasswordParamFound exercises the
+// documented fail-safe path directly: if the matched span somehow carries no
+// password/pwd parameter for snowflakePwdRedactPattern to mask (a case the
+// detection regex itself always prevents in practice, since it only matches
+// spans that already contain a password param), redactSnowflake must return
+// a full mask rather than echo the input verbatim.
+func TestRedactSnowflake_FailsSafeWhenNoPasswordParamFound(t *testing.T) {
+	result := redactSnowflake("snowflakecomputing.com/db?user=admin")
+	assert.Equal(t, snowflakeMask, result)
 }
 
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {

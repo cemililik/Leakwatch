@@ -33,6 +33,15 @@ var validSeverities = map[string]bool{
 // decoded as 30 nanoseconds instead of the intended duration.
 const minVerificationTimeout = time.Millisecond
 
+// maxFileSizeCeiling bounds the largest single file Leakwatch will read into
+// memory during a scan. Every source (filesystem, git, container, s3, gcs)
+// fully buffers a file/blob/object up to scan.max-file-size in one []byte per
+// in-flight job, so an unbounded limit lets a misconfiguration hold many
+// multi-gigabyte buffers in memory simultaneously (concurrency * 2 in-flight
+// jobs). 1GB comfortably covers legitimate large-file use cases while keeping
+// worst-case memory usage bounded.
+const maxFileSizeCeiling = 1 * 1024 * 1024 * 1024 // 1GB
+
 // Config represents the complete application configuration.
 type Config struct {
 	Scan         ScanConfig         `mapstructure:"scan"`
@@ -99,6 +108,7 @@ func setDefaults(v *viper.Viper) {
 	// about). The empty values keep behavior unchanged when nothing is set.
 	v.SetDefault("output.severity-threshold", "")
 	v.SetDefault("filter.exclude-detectors", []string{})
+	v.SetDefault("filter.exclude-paths", []string{})
 }
 
 // LoadFrom reads configuration from a specific Viper instance and returns a
@@ -127,6 +137,9 @@ func (c *Config) validate() error {
 	}
 	if c.Scan.MaxFileSize < 1 {
 		return fmt.Errorf("invalid max-file-size value: %d", c.Scan.MaxFileSize)
+	}
+	if c.Scan.MaxFileSize > maxFileSizeCeiling {
+		return fmt.Errorf("invalid max-file-size value: %d exceeds maximum of %d bytes (%dMB); per-file scanning is fully in-memory, so raising this limit risks large per-job memory usage", c.Scan.MaxFileSize, maxFileSizeCeiling, maxFileSizeCeiling/(1024*1024))
 	}
 	if !validFormats[c.Output.Format] {
 		return fmt.Errorf("unsupported output format: %s", c.Output.Format)

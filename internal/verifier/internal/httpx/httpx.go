@@ -18,8 +18,16 @@
 //   - Response bodies are read through a bounded reader (LimitReader) so a
 //     malicious or misbehaving endpoint cannot exhaust memory.
 //
-//   - The client sets an explicit Timeout as a hard ceiling, in addition to
-//     the per-request context deadline applied by the verification engine.
+//   - The client does NOT set an http.Client.Timeout wall-clock ceiling.
+//     Request duration is governed solely by the per-request context deadline
+//     the verification engine applies (derived from the operator-configured
+//     verification.timeout). A client-level Timeout would silently cap that
+//     configured value and cannot be reconciled with it here, so it is omitted;
+//     callers MUST pass a context with a deadline.
+//
+//   - The client asserts an explicit TLS 1.2 minimum version rather than
+//     relying on the crypto/tls default, as defense-in-depth and
+//     self-documentation.
 //
 // This helper deliberately does NOT implement retry, backoff, or per-provider
 // rate limiting. Those concerns are handled (or deferred) elsewhere; keeping
@@ -27,22 +35,18 @@
 package httpx
 
 import (
+	"crypto/tls"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
-	"time"
 )
 
 // MaxBodyBytes is the maximum number of response-body bytes a verifier reads.
 // It caps memory usage when decoding provider responses. 1 MiB is far larger
 // than any legitimate verification response.
 const MaxBodyBytes int64 = 1 << 20
-
-// DefaultTimeout is the hard ceiling applied to a single verification request.
-// The verification engine also applies a per-request context deadline; this
-// timeout guards against a missing or overly generous deadline.
-const DefaultTimeout = 30 * time.Second
 
 var (
 	clientOnce   sync.Once
@@ -71,12 +75,22 @@ func Client() *http.Client {
 		// http.DefaultTransport.
 		transport := http.DefaultTransport
 		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-			transport = dt.Clone()
+			cloned := dt.Clone()
+			// Assert an explicit TLS floor instead of relying on the crypto/tls
+			// default, both as defense-in-depth against a future stdlib default
+			// change and as self-documentation.
+			if cloned.TLSClientConfig == nil {
+				cloned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+			} else {
+				cloned.TLSClientConfig.MinVersion = tls.VersionTLS12
+			}
+			transport = cloned
 		}
 		sharedClient = &http.Client{
 			Transport:     transport,
 			CheckRedirect: noRedirect,
-			Timeout:       DefaultTimeout,
+			// No Timeout: request duration is bounded by the per-request context
+			// deadline the verification engine applies (see package doc).
 		}
 	})
 	return sharedClient
@@ -119,5 +133,31 @@ func RedactError(err error, secret string) string {
 	if secret == "" {
 		return msg
 	}
-	return strings.ReplaceAll(msg, secret, "[REDACTED]")
+	// Redact the raw secret and its URL-encoded representations. A credential
+	// embedded in a request URL may be percent-encoded by net/url before it
+	// surfaces inside a transport error's message, so matching only the raw
+	// value could silently miss a transformed occurrence.
+	for _, form := range redactionForms(secret) {
+		msg = strings.ReplaceAll(msg, form, "[REDACTED]")
+	}
+	return msg
+}
+
+// redactionForms returns the distinct non-empty textual forms a secret may take
+// in error text: the raw value plus its path- and query-escaped encodings.
+func redactionForms(secret string) []string {
+	candidates := []string{secret, url.PathEscape(secret), url.QueryEscape(secret)}
+	seen := make(map[string]struct{}, len(candidates))
+	forms := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		forms = append(forms, c)
+	}
+	return forms
 }

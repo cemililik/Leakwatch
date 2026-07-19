@@ -31,7 +31,27 @@
     ci: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M8.5 18H15a3 3 0 0 0 3-3v-2"/>',
     book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 0 2 2h13"/>'
   };
-  var COPY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+  var COPY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+
+  /* ---- Manual bags (lazy-loaded per language) ------------------------------
+     js/manuals/en.js and js/manuals/tr.js are generated, sizeable (~300KB
+     each) globals-setting scripts (window.LW_MANUAL[lang] = {...}), not ES
+     modules. Only the currently active language is fetched up front; the
+     other one is fetched on first switch, mirroring the Mermaid lazy-load
+     pattern above. */
+  var _manualLoads = {};
+  function loadManual(l) {
+    if (window.LW_MANUAL && window.LW_MANUAL[l]) return Promise.resolve();
+    if (_manualLoads[l]) return _manualLoads[l];
+    _manualLoads[l] = new Promise(function (resolve) {
+      var s = document.createElement("script");
+      s.src = "js/manuals/" + l + ".js";
+      s.onload = function () { resolve(); };
+      s.onerror = function () { resolve(); }; // render() falls back to a "not found" state
+      document.head.appendChild(s);
+    });
+    return _manualLoads[l];
+  }
 
   function lang() { return window.LWI18n ? window.LWI18n.getLang() : (INDEX.default || "en"); }
   function t(key) { return window.LWI18n ? window.LWI18n.t(key) : key; }
@@ -62,7 +82,7 @@
 
       var title = document.createElement("div");
       title.className = "docs-nav-title";
-      title.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + (ICONS[s.icon] || "") + "</svg><span>" + escapeHtml(titleFor(s)) + "</span>";
+      title.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">' + (ICONS[s.icon] || "") + "</svg><span>" + escapeHtml(titleFor(s)) + "</span>";
       sec.appendChild(title);
 
       var ul = document.createElement("ul");
@@ -169,7 +189,9 @@
   var _mermaid = null;
   function loadMermaid() {
     if (_mermaid) return Promise.resolve(_mermaid);
-    return import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")
+    // Pinned to an exact version (not a floating "@11") so a CDN release
+    // can't silently change what code runs on this page.
+    return import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs")
       .then(function (mod) {
         _mermaid = mod.default;
         _mermaid.initialize({
@@ -286,6 +308,10 @@
   }
 
   /* ---- Boot --------------------------------------------------------------- */
+  // Kick off the active language's manual fetch immediately (don't wait on
+  // DOMContentLoaded) so it's in flight as early as possible.
+  var manualReady = loadManual(lang());
+
   function init() {
     buildNav();
     initSearch();
@@ -298,16 +324,22 @@
 
     window.addEventListener("hashchange", render);
     window.addEventListener("scroll", function () { updateProgress(); updateTocActive(); }, { passive: true });
-    document.addEventListener("lw:langchange", function () {
+    document.addEventListener("lw:langchange", function (e) {
       _mermaid = null; // re-init theme/locale on next diagram
-      buildNav();
-      if (searchEl) searchEl.value = "";
-      render();
+      var l = (e.detail && e.detail.lang) || lang();
+      loadManual(l).then(function () {
+        buildNav();
+        if (searchEl) searchEl.value = "";
+        render();
+      });
     });
   }
+  function boot() {
+    manualReady.then(init);
+  }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", boot);
   } else {
-    init();
+    boot();
   }
 })();

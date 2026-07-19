@@ -20,8 +20,6 @@ func TestLiveVerify_SharedSafetySuite(t *testing.T) {
 			Raw:        []byte("sk_live_abcdef1234567890abcdef12"),
 			Redacted:   "sk_live_****ef12",
 		},
-		// The Stripe verifier checks only the status code on success.
-		SkipMalformed: true,
 	})
 }
 
@@ -36,6 +34,5 @@ func TestTestVerify_SharedSafetySuite(t *testing.T) {
 			Raw:        []byte("sk_test_abcdef1234567890abcdef12"),
 			Redacted:   "sk_test_****ef12",
 		},
-		SkipMalformed: true,
 	})
 }

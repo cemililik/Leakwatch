@@ -21,10 +21,24 @@ func HasInlineIgnore(line string) bool {
 // It also returns true when the generic "leakwatch:ignore" marker (without a
 // detector suffix) is present.
 func HasInlineIgnoreForDetector(line string, detectorID string) bool {
-	// Check for detector-specific marker first.
+	// Check for detector-specific marker first. A boundary check is required
+	// immediately after the match so a detectorID that is a prefix of another
+	// registered ID (plausible for a short custom-rule ID) cannot falsely
+	// match: e.g. "leakwatch:ignore:aws-access-key-id" must not satisfy
+	// detectorID "aws" via a bare substring check.
 	specific := inlineIgnoreTag + ":" + detectorID
-	if strings.Contains(line, specific) {
-		return true
+	searchFrom := 0
+	for {
+		idx := strings.Index(line[searchFrom:], specific)
+		if idx == -1 {
+			break
+		}
+		idx += searchFrom
+		afterSpecific := idx + len(specific)
+		if afterSpecific >= len(line) || !isMarkerIDChar(line[afterSpecific]) {
+			return true
+		}
+		searchFrom = idx + 1
 	}
 
 	// A bare "leakwatch:ignore" (not followed by ':') covers all detectors.
@@ -39,6 +53,16 @@ func HasInlineIgnoreForDetector(line string, detectorID string) bool {
 	}
 	// If the character right after the tag is not ':', it is a generic ignore.
 	return line[afterTag] != ':'
+}
+
+// isMarkerIDChar reports whether b can be part of a detector ID within an
+// inline ignore marker (letters, digits, and hyphens — the character set
+// used by all built-in and custom detector IDs).
+func isMarkerIDChar(b byte) bool {
+	return b == '-' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 // LineHasInlineIgnore reports whether the 1-based lineNum in data carries an

@@ -62,6 +62,24 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 			input:    "dp.st." + suffix40 + " dp.st." + suffix50,
 			expected: 2,
 		},
+		{
+			name:     "personal token type",
+			input:    "dp.pt." + suffix40,
+			expected: 1,
+			redacted: "dp.pt.****1234",
+		},
+		{
+			name:     "config/cli token type",
+			input:    "dp.ct." + suffix40,
+			expected: 1,
+			redacted: "dp.ct.****1234",
+		},
+		{
+			name:     "scim token type",
+			input:    "dp.scim." + suffix40,
+			expected: 1,
+			redacted: "dp.scim.****1234",
+		},
 	}
 
 	d := &Detector{}
@@ -77,6 +95,24 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 	}
 }
 
+func TestDetector_Scan_Raw_DoesNotAliasInputBuffer(t *testing.T) {
+	suffix40 := strings.Repeat("AbCd1234", 5)
+	input := []byte("dp.st." + suffix40)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), input)
+	require.Len(t, findings, 1)
+
+	raw := findings[0].Raw
+	original := string(raw)
+
+	for i := range input {
+		input[i] = 'x'
+	}
+
+	assert.Equal(t, original, string(raw))
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -85,6 +121,10 @@ func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 		{
 			name:  "wrong prefix",
 			input: "dp.xx." + strings.Repeat("AbCd1234", 5),
+		},
+		{
+			name:  "unrecognized token type",
+			input: "dp.unknown." + strings.Repeat("AbCd1234", 5),
 		},
 		{
 			name:  "too short suffix",

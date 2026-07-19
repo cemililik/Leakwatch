@@ -72,6 +72,24 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 	}
 }
 
+func TestDetector_Scan_Raw_DoesNotAliasInputBuffer(t *testing.T) {
+	suffix43 := strings.Repeat("Ab1Cd2Ef3", 4) + "Gh1Ij2K"
+	input := []byte("ntn_" + suffix43)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), input)
+	require.Len(t, findings, 1)
+
+	raw := findings[0].Raw
+	original := string(raw)
+
+	for i := range input {
+		input[i] = 'x'
+	}
+
+	assert.Equal(t, original, string(raw))
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	suffix43 := strings.Repeat("Ab1Cd2Ef3", 4) + "Gh1Ij2K"
 

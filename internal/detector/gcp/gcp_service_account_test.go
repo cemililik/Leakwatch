@@ -155,6 +155,102 @@ func TestDetector_Scan_TwoAccounts_ReturnsDistinctFindingsWithoutKeyLeak(t *test
 	assert.NotEqual(t, string(findings[0].RawV2), string(findings[1].RawV2))
 }
 
+// TestDetector_Scan_BraceInsideQuotedStringValue verifies that a literal '{'
+// or '}' inside a JSON string value (e.g. a free-text "description" field)
+// does not confuse the brace-depth counter used to scope the enclosing
+// object. Before the quote-aware fix, a stray '}' inside a string value could
+// terminate brace counting early, truncating the scoped block and dropping
+// fields (like client_email) that appear after it.
+func TestDetector_Scan_BraceInsideQuotedStringValue(t *testing.T) {
+	input := `{
+  "type": "service_account",
+  "description": "build } complete { still going",
+  "private_key_id": "aaaa1111bbbb2222cccc3333dddd4444eeee5555",
+  "client_email": "svc@proj.iam.gserviceaccount.com"
+}`
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	assert.Equal(t, "aaaa1111bbbb2222cccc3333dddd4444eeee5555", findings[0].ExtraData["private_key_id"])
+	assert.Equal(t, "svc@proj.iam.gserviceaccount.com", findings[0].ExtraData["client_email"])
+	assert.Equal(t, "****@*.iam.gserviceaccount.com", findings[0].Redacted)
+}
+
+// TestDetector_Scan_BraceInsideQuotedStringValue_EscapedQuote verifies the
+// quoted-span tracker correctly handles an escaped quote inside a string
+// value (so the escaped quote does not prematurely end the string span and
+// misclassify a following brace as structural).
+func TestDetector_Scan_BraceInsideQuotedStringValue_EscapedQuote(t *testing.T) {
+	input := `{
+  "type": "service_account",
+  "description": "quote \" then } brace",
+  "private_key_id": "1234567890abcdef1234567890abcdef12345678",
+  "client_email": "svc2@proj.iam.gserviceaccount.com"
+}`
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	assert.Equal(t, "1234567890abcdef1234567890abcdef12345678", findings[0].ExtraData["private_key_id"])
+	assert.Equal(t, "svc2@proj.iam.gserviceaccount.com", findings[0].ExtraData["client_email"])
+}
+
+// TestDetector_Scan_MalformedOrTruncatedJSON exercises the two previously
+// untested fallback branches of the brace-scoping helpers: no enclosing brace
+// found at all (findEnclosingOpenBrace returns -1), and an unbalanced/
+// truncated object with no matching closing brace (findMatchingCloseBrace
+// returns -1). Both must produce a finding with no panic, never spanning the
+// whole input.
+func TestDetector_Scan_MalformedOrTruncatedJSON(t *testing.T) {
+	t.Run("marker with no enclosing brace at all", func(t *testing.T) {
+		// findEnclosingOpenBrace has nothing to find; enclosingObject falls back
+		// to the bare marker span.
+		input := `"type": "service_account", "client_email": "no-brace@example.com"`
+
+		d := &Detector{}
+		findings := d.Scan(context.Background(), []byte(input))
+		require.Len(t, findings, 1)
+		assert.NotPanics(t, func() { _ = findings[0].RawV2 })
+	})
+
+	t.Run("truncated JSON missing closing brace", func(t *testing.T) {
+		// findMatchingCloseBrace walks off the end of data without finding a
+		// balancing '}'; enclosingObject falls back to data[open:].
+		input := `{
+  "type": "service_account",
+  "private_key_id": "abc123abc123abc123abc123abc123abc123abcd",
+  "client_email": "truncated@proj.iam.gserviceaccount.com"`
+
+		d := &Detector{}
+		findings := d.Scan(context.Background(), []byte(input))
+		require.Len(t, findings, 1)
+		assert.Equal(t, "abc123abc123abc123abc123abc123abc123abcd", findings[0].ExtraData["private_key_id"])
+		assert.Equal(t, "truncated@proj.iam.gserviceaccount.com", findings[0].ExtraData["client_email"])
+	})
+}
+
+// TestDetector_Scan_RawIsClonedNotAliased verifies Raw does not alias the
+// scanned chunk buffer, so the buffer is GC-eligible once Scan returns rather
+// than pinned for the whole scan (memory/aliasing hardening).
+func TestDetector_Scan_RawIsClonedNotAliased(t *testing.T) {
+	data := []byte(`{
+  "type": "service_account",
+  "private_key_id": "abcdef1234567890abcdef1234567890abcdef12",
+  "client_email": "svc@proj.iam.gserviceaccount.com"
+}`)
+
+	d := &Detector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1)
+
+	rawBefore := string(findings[0].Raw)
+	for i := range data {
+		data[i] = 'x'
+	}
+	assert.Equal(t, rawBefore, string(findings[0].Raw), "Raw must be a clone, not an alias of the scanned buffer")
+}
+
 func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string

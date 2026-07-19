@@ -2,6 +2,20 @@ version: 2
 
 project_name: leakwatch
 
+# release.yml's "Update major version tag" step explicitly anticipates
+# hyphenated prerelease tags (e.g. v1.7.0-rc.1); `prerelease: auto` makes
+# GoReleaser itself flag such a GitHub release as a prerelease instead of
+# publishing it as a normal release. Combined with `skip_push: auto` /
+# `skip_upload: auto` below on dockers/docker_manifests/brews, a prerelease
+# tag never becomes the `latest` Docker tag or the default `brew install`
+# target.
+release:
+  prerelease: auto
+
+# windows/amd64 and windows/arm64 are built here but never exercised by this
+# file alone — .github/workflows/ci.yml's `test` job cross-compiles
+# `GOOS=windows GOARCH=amd64 go build ./...` on every push/PR, so a
+# Windows-breaking change is caught long before a tag reaches this pipeline.
 builds:
   - binary: leakwatch
     env:
@@ -30,6 +44,34 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
+# SBOM for each release archive (SPDX JSON via syft), so consumers can inspect
+# exactly what went into a given release artifact. The `sboms` pipe shells out
+# to a `syft` binary that release.yml installs before this step runs.
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless signing (cosign via GitHub Actions OIDC — no long-lived private key
+# is stored anywhere). release.yml grants `id-token: write` and installs
+# cosign before the goreleaser-action step runs.
+#
+# Signs checksums.txt (which itself hashes every archive), so one signature
+# covers the integrity of the whole release. Verify with:
+#   cosign verify-blob --certificate-identity-regexp '.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --signature checksums.txt.sig --certificate checksums.txt.pem checksums.txt
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${artifact}.sig"
+      - "--output-certificate=${artifact}.pem"
+      - "${artifact}"
+    artifacts: checksum
+
 brews:
   - repository:
       owner: HodeTech
@@ -39,6 +81,9 @@ brews:
     homepage: https://github.com/HodeTech/Leakwatch
     description: High-performance secret scanner for codebases, Git histories, and container images
     license: MIT
+    # Never publish a prerelease (e.g. v1.7.0-rc.1) as the default `brew
+    # install HodeTech/tap/leakwatch` target.
+    skip_upload: auto
     test: |
       system "#{bin}/leakwatch", "version"
 
@@ -49,6 +94,8 @@ dockers:
     use: buildx
     goos: linux
     goarch: amd64
+    # Never push a prerelease image (see the `release:` block above).
+    skip_push: auto
     build_flag_templates:
       - --platform=linux/amd64
       - --label=org.opencontainers.image.title={{ .ProjectName }}
@@ -63,6 +110,7 @@ dockers:
     use: buildx
     goos: linux
     goarch: arm64
+    skip_push: auto
     build_flag_templates:
       - --platform=linux/arm64
       - --label=org.opencontainers.image.title={{ .ProjectName }}
@@ -73,19 +121,36 @@ dockers:
 
 docker_manifests:
   - name_template: ghcr.io/hodetech/leakwatch:{{ .Version }}
+    skip_push: auto
     image_templates:
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-amd64
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-arm64
 
   - name_template: ghcr.io/hodetech/leakwatch:latest
+    # The most important guard: a release-candidate tag must never become the
+    # `docker pull ghcr.io/hodetech/leakwatch:latest` target.
+    skip_push: auto
     image_templates:
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-amd64
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-arm64
 
   - name_template: ghcr.io/hodetech/leakwatch:v{{ .Major }}.{{ .Minor }}
+    skip_push: auto
     image_templates:
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-amd64
       - ghcr.io/hodetech/leakwatch:{{ .Version }}-arm64
+
+# Keyless-sign each pushed per-arch image (not just the manifest list) so
+# `cosign verify` works against any of the digests consumers might pull.
+# Skipped automatically alongside the images themselves on a prerelease tag.
+docker_signs:
+  - cmd: cosign
+    artifacts: images
+    output: true
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}"
 
 changelog:
   sort: asc
