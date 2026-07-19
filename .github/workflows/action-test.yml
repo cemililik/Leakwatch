@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _lwtest _lwclean
-          printf 'AWS_ACCESS_KEY_ID=%s%s\n' 'AKIA' 'IOSFODNN7EXAMPLE' > _lwtest/leak.env
+          printf 'AWS_ACCESS_KEY_ID=%s%s\n' 'AKIA' 'QYRTZ4XN2WV6H8LM' > _lwtest/leak.env
           echo 'just some harmless text, no secrets here' > _lwclean/ok.txt
 
       - name: Scan dirty fixture (expect a finding)
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p _fx
-          printf 'AWS_ACCESS_KEY_ID=%s%s\n' 'AKIA' 'IOSFODNN7EXAMPLE' > _fx/leak.env
+          printf 'AWS_ACCESS_KEY_ID=%s%s\n' 'AKIA' 'QYRTZ4XN2WV6H8LM' > _fx/leak.env
           # leakwatch exits 1 on findings (expected here); capture the code so the
           # step doesn't abort under bash -e, but still fail on a real error (>=2).
           # Explicit if/else makes the exit-code capture obvious (an assignment's
