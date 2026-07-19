@@ -173,6 +173,14 @@ func (s *FilesystemSource) walkRoot(ctx context.Context, root string, ch chan<- 
 			return nil
 		}
 
+		// Only regular files are readable as content. Named pipes, sockets and
+		// device files can block indefinitely on open/read, and symlinks are not
+		// followed, so skip anything that is not a regular file. This also guards
+		// a non-regular path passed directly as a scan target.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
 		if s.shouldSkip(path, d, relBase) {
 			return nil
 		}

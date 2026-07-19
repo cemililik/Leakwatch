@@ -172,6 +172,13 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
 	}
 
+	// Deliberately NOT go-git's Repository.ResolveRevision: it resolves a hash
+	// prefix by collecting every candidate and returning the first that resolves,
+	// with no ambiguity signal (there is no ErrAmbiguousRevision in go-git). For a
+	// secret scanner, silently starting the history walk from an arbitrary one of
+	// several matching commits could skip real history, so we scan for the prefix
+	// ourselves and report ambiguity as an error — matching git's own strictness.
+	// The full-hash fast path above avoids this walk in the common case.
 	lower := strings.ToLower(ref)
 	iter, err := s.repo.CommitObjects()
 	if err != nil {

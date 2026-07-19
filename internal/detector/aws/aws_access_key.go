@@ -142,10 +142,36 @@ func findSecretKey(data []byte, keyStart, keyEnd int) []byte {
 	if m := awsSecretKeyedPattern.FindSubmatch(window); m != nil {
 		return bytes.Clone(m[1])
 	}
-	if m := awsSecretBarePattern.FindSubmatch(window); m != nil {
-		return bytes.Clone(m[1])
+	// awsSecretBarePattern's ^/$ alternatives anchor to the WINDOW, not to data.
+	// A window edge that falls inside a longer base64-like token would otherwise
+	// satisfy them and carve a spurious 40-character "secret" out of the middle
+	// of that token. Map the capture back to absolute offsets and re-check the
+	// real neighbours in data against the pattern's own character class.
+	if locs := awsSecretBarePattern.FindSubmatchIndex(window); locs != nil {
+		start, end := winStart+locs[2], winStart+locs[3]
+		if isSecretBounded(data, start, end) {
+			return bytes.Clone(data[start:end])
+		}
 	}
 	return nil
+}
+
+// isSecretBounded reports whether data[start:end] is delimited by bytes outside
+// the Secret Access Key character class, i.e. the match is a standalone token
+// rather than a slice of a longer base64-like string.
+func isSecretBounded(data []byte, start, end int) bool {
+	if start > 0 && isSecretKeyByte(data[start-1]) {
+		return false
+	}
+	if end < len(data) && isSecretKeyByte(data[end]) {
+		return false
+	}
+	return true
+}
+
+// isSecretKeyByte matches awsSecretBarePattern's [A-Za-z0-9/+] class.
+func isSecretKeyByte(b byte) bool {
+	return isAlphaNum(b) || b == '/' || b == '+'
 }
 
 func init() {

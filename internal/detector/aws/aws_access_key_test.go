@@ -176,3 +176,26 @@ func TestAccessKeyID_Scan_PairsCoLocatedSecret(t *testing.T) {
 		})
 	}
 }
+
+// TestScan_SecretPairing_DoesNotCarveSecretFromLongerToken guards the window
+// anchoring bug: awsSecretBarePattern's ^/$ alternatives anchor to the sliced
+// pairing window rather than to the full buffer, so a window edge landing
+// inside a longer base64-like token could satisfy ^ and carve a spurious
+// 40-character "Secret Access Key" out of the middle of that token.
+//
+// Layout is exact: a 140-char opaque token at offset 0, non-token padding, then
+// the Access Key ID at offset 612. The pairing window therefore starts at
+// 612-512=100, leaving exactly 40 token bytes (100..140) before a space — the
+// one shape that satisfies the window-anchored ^...[^class] match. In the full
+// buffer those 40 bytes are preceded by a token byte, so they are a slice of a
+// longer token, not a standalone secret, and must not be paired.
+func TestScan_SecretPairing_DoesNotCarveSecretFromLongerToken(t *testing.T) {
+	longToken := strings.Repeat("ab12CD34", 17) + "wxyz" // exactly 140 chars
+	require.Len(t, longToken, 140)
+	data := []byte(longToken + strings.Repeat(" ", 472) + "AKIAQYRTZ4XN2WV6H8LM")
+
+	findings := (&AccessKeyID{}).Scan(context.Background(), data)
+	require.Len(t, findings, 1, "the access key ID itself must still be detected")
+	assert.Nil(t, findings[0].RawV2,
+		"a 40-char slice carved out of a longer token must not be paired as a secret key")
+}

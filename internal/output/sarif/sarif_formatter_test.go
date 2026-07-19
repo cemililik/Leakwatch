@@ -447,3 +447,32 @@ func TestFormatter_Format_PartialFingerprints_LocationIndependent(t *testing.T) 
 	assert.Equal(t, fp(0), fp(1), "same secret + same file, different line → same fingerprint")
 	assert.NotEqual(t, fp(0), fp(2), "different file → different fingerprint")
 }
+
+// TestSyntheticArtifactURI_StripsChannelHash pins that a Slack channel name is
+// not emitted with its leading '#': in a URI '#' starts the fragment, so
+// "slack://#general/..." would parse as an empty authority plus a fragment.
+func TestSyntheticArtifactURI_StripsChannelHash(t *testing.T) {
+	tests := []struct {
+		name string
+		meta finding.SourceMetadata
+		want string
+	}{
+		{
+			name: "channel name with leading hash",
+			meta: finding.SourceMetadata{SourceType: "slack", ChannelName: "#general", MessageTS: "1700000000.1"},
+			want: "slack://general/1700000000.1",
+		},
+		{
+			name: "falls back to channel id, also stripped",
+			meta: finding.SourceMetadata{SourceType: "slack", Channel: "#C123", MessageTS: "1700000000.2"},
+			want: "slack://C123/1700000000.2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := syntheticArtifactURI(tt.meta)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "#", "a '#' would be parsed as a URI fragment")
+		})
+	}
+}

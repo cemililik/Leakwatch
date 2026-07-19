@@ -146,9 +146,12 @@ func (f *Formatter) driverVersion() string {
 func syntheticArtifactURI(m finding.SourceMetadata) string {
 	switch m.SourceType {
 	case "slack":
-		channel := m.ChannelName
+		// Strip a leading '#': it is the URI fragment delimiter, so
+		// "slack://#general/..." would be parsed as an empty authority plus a
+		// fragment by SARIF consumers.
+		channel := strings.TrimPrefix(m.ChannelName, "#")
 		if channel == "" {
-			channel = m.Channel
+			channel = strings.TrimPrefix(m.Channel, "#")
 		}
 		if channel == "" {
 			channel = "unknown"
