@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9
-	github.com/aws/smithy-go v1.24.2
+	github.com/aws/smithy-go v1.27.4
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/google/go-containerregistry v0.21.3
