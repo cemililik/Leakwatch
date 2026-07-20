@@ -1,13 +1,48 @@
 version: 2
 
+# Update policy
+#
+# Grouping rule: minor and patch updates are bundled into a small number of
+# grouped pull requests, while MAJOR updates are deliberately left ungrouped so
+# each one arrives as its own reviewable PR. Majors are where the breaking
+# changes live (eslint 9 -> 10 needs flat-config work; a Go toolchain bump has
+# to move in go.mod, CI and both Dockerfiles together), so they must never ride
+# along silently inside a batch.
+#
+# Why this exists: enabling Dependabot on this repo opened 17 PRs at once, each
+# of which invalidated the others under the "branch must be up to date"
+# branch-protection rule. open-pull-requests-limit caps the blast radius if a
+# backlog ever builds up again.
+
 updates:
-  # Root Go module.
+  # Root Go module. Split into vendor-shaped groups so an AWS SDK sweep (which
+  # releases several coordinated modules together) lands as one PR instead of
+  # five.
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      aws-sdk:
+        patterns:
+          - "github.com/aws/*"
+        update-types: ["minor", "patch"]
+      google-cloud:
+        patterns:
+          - "cloud.google.com/*"
+          - "google.golang.org/*"
+        update-types: ["minor", "patch"]
+      go-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github.com/aws/*"
+          - "cloud.google.com/*"
+          - "google.golang.org/*"
+        update-types: ["minor", "patch"]
 
   # Isolated site-build tool module (docs/user-manuals -> site/js compiler);
   # deliberately not part of the root Go module, so it needs its own entry.
@@ -15,16 +50,28 @@ updates:
     directory: "/tools/site-build"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      site-build:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
 
   # VS Code extension.
   - package-ecosystem: "npm"
     directory: "/vscode"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      vscode:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
 
   # GitHub Actions used across all workflows (this repo SHA-pins every
   # third-party action; Dependabot opens the version-bump PR with the new
@@ -33,14 +80,28 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
 
   # Dockerfile / Dockerfile.goreleaser base images (both digest-pinned; keeps
-  # the pinned digests current).
+  # the pinned digests current). Only patch bumps are grouped here: an Alpine
+  # or Go toolchain MINOR is a behavioural change for the shipped image (and a
+  # Go minor must move with go.mod and CI), so it gets its own PR.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      base-images:
+        patterns:
+          - "*"
+        update-types: ["patch"]
