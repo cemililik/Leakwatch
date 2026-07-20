@@ -56,19 +56,24 @@ sboms:
 # cosign before the goreleaser-action step runs.
 #
 # Signs checksums.txt (which itself hashes every archive), so one signature
-# covers the integrity of the whole release. Verify with:
-#   cosign verify-blob --certificate-identity-regexp '.*' \
+# covers the integrity of the whole release.
+#
+# cosign >= 3 emits a Sigstore bundle and has deprecated the separate
+# --output-signature/--output-certificate flags (they are ignored under the
+# default --new-bundle-format, which then fails on an empty --bundle path), so
+# the bundle — carrying both the signature and the Fulcio certificate — is the
+# single signing artifact published alongside checksums.txt. Verify with:
+#   cosign verify-blob --bundle checksums.txt.bundle \
+#     --certificate-identity-regexp '^https://github.com/HodeTech/Leakwatch/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-#     --signature checksums.txt.sig --certificate checksums.txt.pem checksums.txt
+#     checksums.txt
 signs:
   - cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
       - "--yes"
-      - "--output-signature=${artifact}.sig"
-      - "--output-certificate=${artifact}.pem"
+      - "--bundle=${artifact}.bundle"
       - "${artifact}"
     artifacts: checksum
 
