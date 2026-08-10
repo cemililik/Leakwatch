@@ -1,13 +1,13 @@
 ---
 title: "Verification Coverage"
-description: "Which of the 64 built-in detectors are live-verified, format-validated only, or not verifiable — and what that means for triage."
+description: "Which of the 65 built-in detectors are live-verified, context-required, format-only, or not verifiable — and what that means for triage."
 ---
 
 # Verification Coverage
 
-Leakwatch ships 64 built-in detectors and 54 verifiers, giving a coverage rate of **84.4%** (54 of 64 detector types have some form of verification — either live or format-only). This page maps every detector to its verification status so you know what to expect in your output.
+Leakwatch ships **65 built-in detectors** and 54 registered verifier implementations. Registry presence is not the same as live capability: **45** detectors can make a live check in the normal production path, **3** require trusted operator or companion context, **6** perform offline format validation only, and **11** have no verifier. This page maps every detector to its actual verification contract.
 
-## Live-verified (48 detector types)
+## Live-verified (45 detector types)
 
 For these types, Leakwatch makes a controlled, read-only API call to the provider and returns `verified_active` or `verified_inactive`. No data is created or modified; the call uses the minimum endpoint needed to confirm identity.
 
@@ -22,7 +22,7 @@ For these types, Leakwatch makes a controlled, read-only API call to the provide
 | `anthropic-api-key` | Anthropic API |
 | `deepseek-api-key` | DeepSeek API |
 | `huggingface-token` | Hugging Face API |
-| `sendgrid-api-key` | SendGrid Web API (a `403` from a narrowly scoped/restricted key is treated as `verified_active`, not inactive, since the key itself is valid — only `401` maps to `verified_inactive`) |
+| `sendgrid-api-key` | SendGrid Web API (`401` is inactive; `403`, including permission denial, remains `verify_error`) |
 | `mailgun-api-key` | Mailgun API (auto-detects and calls the correct EU vs. US regional endpoint) |
 | `postmark-server-token` | Postmark API |
 | `stripe-api-key-live` | Stripe API |
@@ -41,15 +41,12 @@ For these types, Leakwatch makes a controlled, read-only API call to the provide
 | `telegram-bot-token` | Telegram Bot API |
 | `sentry-token` | Sentry API |
 | `pagerduty-api-key` | PagerDuty API |
-| `newrelic-api-key` | New Relic API |
-| `grafana-api-key` | Grafana API |
+| `newrelic-api-key` | New Relic NerdGraph (bounded official US/EU fallback; inactive only when both regions return `401`) |
 | `datadog-api-key` | Datadog API |
 | `snyk-api-key` | Snyk API |
-| `twilio-api-key` | Twilio API (authenticates with the API Key SID paired to its API Key Secret; without the paired secret the result is `unverified`, never a false `verified_inactive`) |
 | `doppler-token` | Doppler API |
 | `launchdarkly-sdk-key` | LaunchDarkly API |
 | `sonarcloud-token` | SonarCloud API |
-| `shopify-access-token` | Shopify Admin API |
 | `notion-token` | Notion API |
 | `linear-api-key` | Linear API |
 | `figma-pat` | Figma REST API |
@@ -61,6 +58,16 @@ For these types, Leakwatch makes a controlled, read-only API call to the provide
 | `supabase-service-key` | Supabase API |
 | `infura-api-key` | Infura API |
 | `teams-webhook` | Microsoft Teams |
+
+## Requires trusted or companion context (3 detector types)
+
+These implementations are registered, but a bare detector finding is not enough to choose a safe issuer or authenticate the verification request. When the required context is absent, Leakwatch makes no unsafe guess and returns `unverified`.
+
+| Detector ID | Required context | Production behavior |
+|-------------|------------------|---------------------|
+| `grafana-api-key` | Trusted Grafana instance origin supplied with `--grafana-instance-url` | Calls only the validated HTTPS instance. Repository content and finding metadata cannot choose the target; `401` is inactive only on that trusted issuer. |
+| `twilio-api-key` | Account SID and the API Key Secret paired with the detected `SK...` Key SID | The detector may find a nearby Account SID but does not expose the paired API Key Secret, so ordinary findings remain `unverified`. |
+| `shopify-access-token` | Store domain that issued the token | The current detector emits only the token; without a trusted store domain the verifier makes no request and returns `unverified`. |
 
 ## Format-validated only (6 detector types)
 
@@ -75,7 +82,7 @@ These verifiers run entirely offline. No network request is made. Because a vali
 | `azure-entra-secret` | Format check | Client credential flow would create sessions |
 | `coinbase-api-key` | Character-set and length check | Coinbase's legacy API authenticates with HMAC-SHA256 request signing that requires the paired secret, which the detector cannot reliably associate with the key; live verification is not attempted so a real key is never misreported as inactive |
 
-## Not verifiable (10 detector types)
+## Not verifiable (11 detector types)
 
 These detector types have no verifier at all. Findings from them are always `unverified`. This is **not** because they are unimportant — they are detected and reported in full — but because no public verification API exists, or because any verification attempt would have side effects.
 
@@ -91,20 +98,22 @@ These detector types have no verifier at all. Findings from them are always `unv
 | `slack-webhook` | Confirming a webhook is active requires sending a message |
 | `hashicorp-vault-token` | Vault token validation requires knowing the Vault endpoint |
 | `discord-webhook-url` | Confirming a webhook is active requires posting a message to it |
+| `structured-config-secret` | Contextual fallback can identify a secret role but not the credential provider or issuer |
 
 :::note
-"Not verifiable" does not mean "not found". All 10 of these types are still detected and appear in your output. They require manual triage to determine whether the credential is live and whether it needs rotation.
+"Not verifiable" does not mean "not found". All 11 of these types are still detected and appear in your output. They require manual triage to determine whether the credential is live and whether it needs rotation.
 :::
 
 ## Coverage summary
 
 | Category | Count |
 |----------|-------|
-| Live-verified | 48 |
+| Live-verified | 45 |
+| Requires trusted/companion context | 3 |
 | Format-validated only | 6 |
-| Not verifiable | 10 |
-| **Total detectors** | **64** |
-| **Verifiers (any coverage)** | **54 (84.4%)** |
+| Not verifiable | 11 |
+| **Total detectors** | **65** |
+| **Registered verifier implementations** | **54 (83.1%)** |
 
 ## See also
 

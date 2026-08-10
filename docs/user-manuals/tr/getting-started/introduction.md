@@ -13,8 +13,8 @@ Go ile yazılmıştır, çalışma zamanı bağımlılığı olmayan tek bir sta
 
 Tek bir commit'te sızan bir kimlik bilgisi — sonradan silinse bile — Git geçmişinde sonsuza dek erişilebilir kalabilir ve push edildikten dakikalar sonra istismar edilebilir. Leakwatch, bu sırları erken yakalamak ve hangilerinin *gerçekten tehlikeli* olduğunu söylemek için tasarlanmıştır:
 
-- **Geniş tespit** — bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını ve daha fazlasını kapsayan 64 yerleşik dedektör; ayrıca kendi YAML özel kurallarınız.
-- **Yalnızca tespit değil, doğrulama** — 54 dedektör türü için Leakwatch, bulunan bir sırrın *hâlâ etkin* olup olmadığını sağlayıcıya kontrollü, salt-okunur bir çağrı yaparak teyit edebilir. Etkin olduğu doğrulanmış bir anahtar bir olaydır; etkin olmayan bir anahtar ise gürültüdür.
+- **Geniş tespit** — bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını, yapılandırılmış config dosyalarını ve daha fazlasını kapsayan 65 yerleşik dedektör; ayrıca kendi YAML özel kurallarınız.
+- **Dürüst doğrulama kabiliyeti** — 45 dedektör türü doğrudan canlı kontrole sahiptir, 3'ü güvenilir veya eşlik eden bağlam gerektirir, 6'sı çevrimdışı format doğrular. Registry sayısı hiçbir zaman canlı kapsam gibi sunulmaz.
 - **Çok sayıda kaynak** — yerel dosya sistemi, eksiksiz bir Git geçmişi, bir OCI/Docker imajı, AWS S3, Google Cloud Storage ve Slack mesajları.
 - **CI-uyumlu çıktı** — JSON, SARIF (GitHub Code Scanning için), CSV, renklendirilmiş bir terminal tablosu ve satır içi GitHub Actions ek açıklamaları.
 - **Tasarımı gereği sır-güvenli** — bulunan sırlar varsayılan olarak maskelenir ve asla loglanmaz, önbelleğe alınmaz veya diske yazılmaz.

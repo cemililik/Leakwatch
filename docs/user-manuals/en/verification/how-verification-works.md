@@ -14,15 +14,19 @@ After the scan engine collects findings, the verifier pool picks them up. Each f
 - If a verifier exists, it runs and returns a status.
 - If no verifier is registered for that detector type, the finding passes through unchanged with status `unverified`.
 
-## Two verification modes
+## Three verification modes
 
-Not all secrets can be verified the same way. Leakwatch uses two distinct approaches depending on what is safe for each credential type.
+Not all secrets can be verified the same way. Leakwatch distinguishes direct live checks, checks that require trusted or companion context, and offline format validation. Registry presence is therefore not treated as proof of live capability.
 
 ### Live API verification
 
-For 48 detector types, Leakwatch makes a **controlled, read-only API call** to the provider — for example, calling `sts:GetCallerIdentity` for AWS keys or `GET /user` for GitHub tokens. The call uses only the minimum endpoint required to confirm identity; it never modifies data, creates resources, or triggers billing events.
+For 45 detector types, Leakwatch can make a **controlled, read-only API call** in the normal production path — for example, calling `sts:GetCallerIdentity` for AWS keys or `GET /user` for GitHub tokens. The call uses only the minimum endpoint required to confirm identity; it never modifies data, creates resources, or triggers billing events.
 
-If the provider returns a success response, the finding is marked `verified_active`. If the provider rejects the credential (for example with HTTP 401, or HTTP 403 for a provider whose scoped-key errors are folded into "inactive"), the finding is marked `verified_inactive`. A few verifiers (for example SendGrid) distinguish a 403 caused by a narrowly scoped-but-valid key from a genuine rejection and still report `verified_active` in that case — see [Verification Coverage](#/verification/verification-coverage) for provider-specific notes.
+If the provider returns a contract-valid success response, the finding is marked `verified_active`. A finding is marked `verified_inactive` only when the provider response is definitive under that verifier's contract. Permission denial and ambiguous responses remain `verify_error`; for example, SendGrid treats only HTTP `401` as inactive, while `403` remains inconclusive.
+
+### Trusted or companion context required
+
+Three registered implementations cannot safely make a live request from a bare detector finding. Grafana requires a trusted instance origin; Twilio requires the Account SID and paired API Key Secret; Shopify requires the issuing store domain. Without that context Leakwatch sends no request and returns `unverified`, rather than guessing an issuer or misreporting a real credential as inactive.
 
 ### Format validation only
 
@@ -49,7 +53,7 @@ Every finding in Leakwatch output carries one of four statuses:
 |--------|---------|-------------------|
 | `verified_active` | The secret was confirmed live by the provider. | Treat as an active incident. Rotate immediately. |
 | `verified_inactive` | The provider rejected the credential. | Likely already rotated. Review context and close. |
-| `unverified` | No verifier exists for this type, or format validation returned no result, or verification was disabled. | Triage manually; context determines risk. |
+| `unverified` | No verifier exists, required context is absent, a format-only verifier cannot prove liveness, or verification was disabled. | Triage manually; context determines risk. |
 | `verify_error` | The verifier ran but encountered a network error, timeout, or unexpected response. | Treat as potentially active. Retry or triage manually. |
 
 ## The verification engine

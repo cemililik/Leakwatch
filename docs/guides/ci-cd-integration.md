@@ -735,7 +735,7 @@ leakwatch scan fs . --min-severity critical
 
 ### 7.2 Reducing False Positives with `--only-verified`
 
-Leakwatch ships with 54 verifiers (51 packages) covering 84.4% of all detector types, confirming whether discovered secrets are still active via API calls. With the `--only-verified` parameter, you can report only verified (active) secrets:
+Leakwatch has 45 direct-live capabilities, 3 context-required capabilities, 6 format-only validators, and 11 detector types without a verifier. With `--only-verified`, you report only findings actually confirmed `verified_active`:
 
 ```bash
 # Report only verified secrets
@@ -745,7 +745,7 @@ leakwatch scan git . --only-verified
 leakwatch scan git . --since-commit HEAD~1 --only-verified --min-severity medium
 ```
 
-**Note:** With 54 verifiers (51 packages) and 84.4% coverage, `--only-verified` is effective for most secret types. However, the remaining ~16% of detectors (e.g., generic private keys) do not have verifiers, so those findings will not be reported. For full coverage, periodically run a full scan without `--only-verified`.
+**Note:** `--only-verified` intentionally excludes context-required findings when their context is absent, every format-only finding, all 11 no-verifier types, and inconclusive `verify_error` results. It is a prioritization view, not a complete security scan. Run without it for full detection coverage.
 
 > **Important:** `--only-verified` has **no effect** when `--no-verify` is also set (or when `verification.enabled: false` in config), because verification is disabled and all findings remain in the `unverified` state. To use `--only-verified` meaningfully, ensure verification is enabled by omitting `--no-verify` and setting `verification.enabled: true` in your config.
 

@@ -14,15 +14,19 @@ Tarama motoru bulguları topladıktan sonra doğrulayıcı havuzu onları işlem
 - Bir doğrulayıcı mevcutsa çalışır ve bir durum döndürür.
 - O dedektör türü için kayıtlı bir doğrulayıcı yoksa bulgu değiştirilmeden `unverified` durumuyla geçer.
 
-## İki doğrulama modu
+## Üç doğrulama modu
 
-Tüm sırlar aynı şekilde doğrulanamaz. Leakwatch, her kimlik bilgisi türü için güvenli olan yaklaşıma göre iki farklı yöntem kullanır.
+Tüm sırlar aynı şekilde doğrulanamaz. Leakwatch doğrudan canlı kontrolleri, güvenilir veya eşlik eden bağlam gerektiren kontrolleri ve çevrimdışı format doğrulamasını birbirinden ayırır. Bu nedenle registry kaydı canlı kabiliyetin kanıtı sayılmaz.
 
 ### Canlı API doğrulaması
 
-48 dedektör türü için Leakwatch, sağlayıcıya **kontrollü, salt-okunur bir API çağrısı** yapar — örneğin AWS anahtarları için `sts:GetCallerIdentity`, GitHub token'ları için `GET /user`. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez, kaynak oluşturmaz veya faturalandırma olayı tetiklemez.
+45 dedektör türü için Leakwatch normal üretim yolunda sağlayıcıya **kontrollü, salt-okunur bir API çağrısı** yapabilir — örneğin AWS anahtarları için `sts:GetCallerIdentity`, GitHub token'ları için `GET /user`. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez, kaynak oluşturmaz veya faturalandırma olayı tetiklemez.
 
-Sağlayıcı başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Sağlayıcı kimlik bilgisini reddederse (örneğin HTTP 401 veya kapsamlı-anahtar hatalarını "inaktif" içinde birleştiren bir sağlayıcı için HTTP 403 ile) bulgu `verified_inactive` olarak işaretlenir. Birkaç doğrulayıcı (örneğin SendGrid), kapsamı daraltılmış ama geçerli bir anahtardan kaynaklanan bir 403'ü gerçek bir reddediliş yanıtından ayırt eder ve bu durumda yine `verified_active` bildirir — sağlayıcıya özgü notlar için [Doğrulama Kapsamı](#/verification/verification-coverage) sayfasına bakın.
+Sağlayıcı sözleşmeye uygun başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Bir bulgu yalnızca sağlayıcı yanıtı ilgili doğrulayıcı sözleşmesine göre kesin olduğunda `verified_inactive` olur. İzin reddi ve belirsiz yanıtlar `verify_error` olarak kalır; örneğin SendGrid yalnız HTTP `401` yanıtını inaktif sayar, `403` ise sonuçsuzdur.
+
+### Güvenilir veya eşlik eden bağlam gerekli
+
+Kayıtlı üç implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Grafana güvenilir instance origin'i, Twilio Account SID ile eşleşen API Key Secret'ı, Shopify ise token'ı yayınlayan mağaza domain'ini gerektirir. Bu bağlam olmadan Leakwatch issuer tahmin etmek veya gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
 
 ### Yalnızca format doğrulaması
 
@@ -49,7 +53,7 @@ Leakwatch çıktısındaki her bulgu dört durumdan birini taşır:
 |-------|-------|----------------|
 | `verified_active` | Sırrın sağlayıcı tarafından canlı olduğu teyit edildi. | Aktif bir olay olarak ele alın. Hemen döndürün. |
 | `verified_inactive` | Sağlayıcı kimlik bilgisini reddetti. | Muhtemelen zaten döndürülmüş. Bağlamı gözden geçirin ve kapatın. |
-| `unverified` | Bu tür için doğrulayıcı yok, format doğrulaması sonuç vermedi veya doğrulama devre dışı bırakıldı. | Manuel olarak inceleyin; risk bağlama göre belirlenir. |
+| `unverified` | Doğrulayıcı yoktur, gerekli bağlam eksiktir, yalnız-format doğrulayıcısı canlılığı kanıtlayamaz veya doğrulama devre dışıdır. | Manuel olarak inceleyin; risk bağlama göre belirlenir. |
 | `verify_error` | Doğrulayıcı çalıştı ancak ağ hatası, zaman aşımı veya beklenmedik yanıtla karşılaştı. | Potansiyel olarak aktif kabul edin. Yeniden deneyin veya manuel olarak inceleyin. |
 
 ## Doğrulama motoru

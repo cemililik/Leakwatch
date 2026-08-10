@@ -28,11 +28,11 @@ flowchart LR
         E4[Custom Rules]
     end
 
-    subgraph Verifiers["Verifiers (54 verifiers, 51 packages, 84.4% coverage)"]
+    subgraph Verifiers["Verification (45 direct-live + 3 context-required + 6 format-only)"]
         V1[AWS STS]
         V2[GitHub API]
         V3[Slack API]
-        V4[Stripe, JWT, ...]
+        V4[Stripe, context & format checks]
     end
 
     subgraph Output["Output"]

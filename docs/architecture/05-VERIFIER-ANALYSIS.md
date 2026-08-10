@@ -1,23 +1,24 @@
 # Leakwatch - Secret Verifier Analysis
 
-> **Document Version:** 2.0
-> **Date:** 2026-03-25
+> **Document Version:** 2.1
+> **Date:** 2026-08-10
 > **Status:** Completed
 
 ## 1. Current State
 
-Leakwatch has **64 built-in detectors (60 packages)** and **54 verifiers (51 packages)** covering 84.4% of all detectors.
+Leakwatch has **65 built-in detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry coverage is 54/65 (83.1%), but this is not live capability: 45 detectors are direct-live, 3 require trusted or companion context, 6 are format-only, and 11 have no verifier.
 
 All counts are verified by inspecting `detector.Register(` and `verifier.Register(` call sites.
 
 | Metric | Value | Source |
 |--------|-------|--------|
-| Total Detectors | 64 (60 packages) | `grep -r "detector.Register" internal/detector/` |
+| Total Detectors | 65 (61 packages) | runtime registry guard (`cmd/stats_test.go`) |
 | Verifiers Implemented | 54 (51 packages) | `grep -r "verifier.Register" internal/verifier/` |
-| Verification Coverage | 54/64 (84.4%) | |
-| Live API Verifiers | 48 | Make real network/SDK calls |
+| Registered-verifier coverage | 54/65 (83.1%) | Not a live-capability metric |
+| Direct-live capabilities | 45 | Make real network/SDK calls in the normal production path |
+| Context-required capabilities | 3 | Grafana, Twilio, Shopify |
 | Format-Only Verifiers | 6 | Structural/format checks only |
-| Detectors Without Verifiers | 10 | Listed in section 2 |
+| Detectors Without Verifiers | 11 | Listed in section 2 |
 | Verifier Architecture | `init()` + compile-time registration via `verifier.Register()` | |
 | Verification Interface | `Verifier.Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult` | `internal/verifier/verifier.go` |
 
@@ -31,7 +32,7 @@ All current verifiers follow a consistent pattern:
 
 ## 2. Verifier Classification
 
-All 64 detectors are classified into tiers based on verification feasibility. **All 54 verifiers listed in Tiers 1–3 are implemented and registered.**
+All 65 detectors are classified by verification feasibility. **All 54 implementations listed in Tiers 1–3 are registered, but Grafana, Twilio, and Shopify are context-required rather than direct-live capability.**
 
 ### Tier 1 --- Easy (Simple API call, single credential, no extra context)
 
@@ -70,7 +71,7 @@ These detectors can be verified with a single HTTP request using only the detect
 | 29 | `deepseek-api-key` | `https://api.deepseek.com/models` | GET | `Bearer {token}` | Easy | P2 | Returns model list; 401 if invalid |
 | 30 | `launchdarkly-sdk-key` | `https://app.launchdarkly.com/api/v2/caller-identity` | GET | `Authorization: {key}` | Easy | P2 | Returns caller identity |
 
-**Total Tier 1: 30 detectors (all implemented)**
+**Total Tier 1: 30 implementations — 29 direct-live and 1 context-required (`grafana-api-key`)**
 
 ### Tier 2 --- Medium (Needs extra context, specific auth flow, or domain extraction)
 
@@ -97,7 +98,7 @@ These require either extracting additional information from the finding context 
 | 17 | `teams-webhook` | `POST {webhookURL}` | POST | None (URL is the credential) | Medium | P1 | Sends minimal payload; 400 treated as active (valid URL, empty payload rejected). Live probe — no real message content posted. |
 | 18 | `infura-api-key` | `https://mainnet.infura.io/v3/{token}` | POST | Token in URL path | Medium | P1 | JSON-RPC `web3_clientVersion` call. Consumes a small amount of API quota. |
 
-**Total Tier 2: 18 detectors (all implemented)**
+**Total Tier 2: 18 implementations — 16 direct-live and 2 context-required (`twilio-api-key`, `shopify-access-token`)**
 
 > **Note:** `hashicorp-vault-token` was previously listed in this tier (Tier 2 P2) but has no verifier implementation. It has been moved to Tier 4 (no verifier). See section 2 Tier 4 for rationale. `coinbase-api-key` was previously listed here but is a format-only (Tier 3) check — see below.
 
@@ -118,7 +119,7 @@ These detectors have verifier implementations that perform structural/format val
 
 ### Tier 4 --- No Verifier Implemented
 
-These 10 detectors currently have no verifier. The reasons range from "no public API" to "side effects on verification" to "planned but not yet built."
+These 11 detectors currently have no verifier. The reasons range from "no public API" to "side effects on verification" to "provider/issuer cannot be determined safely."
 
 | # | Detector ID | Reason / Status |
 |---|-------------|-----------------|
@@ -132,22 +133,22 @@ These 10 detectors currently have no verifier. The reasons range from "no public
 | 8 | `discord-webhook-url` | Discord incoming-webhook URLs. Any call would POST a message to a real channel (side effect). Read-only verification is not possible. |
 | 9 | `jwt` | JSON Web Tokens. Cannot verify the signature without the signing key. Can only check expiry and structural validity — no live state can be confirmed. Planned. |
 | 10 | `hashicorp-vault-token` | Vault tokens. Live check requires the Vault server address extracted from context, which is typically not available in a static finding. Planned. |
+| 11 | `structured-config-secret` | Strong field context identifies a secret role, but the provider and issuer cannot be determined safely. |
 
-**Total Tier 4: 10 detectors (no verifier)**
+**Total Tier 4: 11 detectors (no verifier)**
 
 ### Verified Tier Summary
 
 | Tier | Count | Description |
 |------|-------|-------------|
-| Tier 1 — Live (Easy) | 30 | Simple Bearer/API-key, single HTTP request |
-| Tier 2 — Live (Medium) | 16 | Context extraction, multi-step auth, or SDK |
-| Tier 2b — Live (Side-effect probe) | 2 | `teams-webhook`, `infura-api-key` — live but consume quota or trigger side effects |
+| Direct live | 45 | Safe live request is available in the normal production path |
+| Requires trusted/companion context | 3 | Registered, but a bare finding cannot safely make a live request |
 | Tier 3 — Format-Only | 6 | Structural validation; no network call |
-| Tier 4 — No Verifier | 10 | Not implemented |
-| **Total Detectors** | **64** | |
-| **Total Verifiers** | **54** | Live: 48 · Format-only: 6 |
+| Tier 4 — No Verifier | 11 | Not implemented |
+| **Total Detectors** | **65** | |
+| **Registered verifier implementations** | **54** | Direct-live: 45 · context-required: 3 · format-only: 6 |
 
-> **Coverage:** 54/64 = **84.4%**
+> **Registry coverage:** 54/65 = **83.1%**. **Direct-live capability:** 45/65 = **69.2%**.
 
 **Notes:**
 - `teams-webhook` (`internal/verifier/teams`): Live HTTP POST probe. A 400 response (valid URL but empty payload rejected) is treated as active. This is a deliberate non-destructive probe — no readable message is posted.
@@ -173,7 +174,7 @@ All 5 sprints have been completed. Two additional verifiers (`teams-webhook`, `i
 | Post-roadmap additions | 2 | 54/63 (85.7%) | teams-webhook, infura-api-key (live probes added in fix/wire-custom-rules-and-inline-ignore) |
 | **Total** | **51** | **54/63 (85.7%)** | |
 
-> **Historical snapshot:** the sprint table above reflects the state as of 2026-05-22, before the `discord-webhook-url` detector was added and the `coinbase-api-key` verifier was reclassified from a Tier 2 live check to a Tier 3 format-only check (it never made a real live call — see Tier 3, section 2). **Current totals are 64 detectors / 54 verifiers = 84.4% coverage** (section 1); the sprint-by-sprint history is preserved here unchanged for traceability.
+> **Historical snapshot:** the sprint table above reflects the state as of 2026-05-22, before the `discord-webhook-url` and `structured-config-secret` detectors were added and before capability was separated from registry presence. **Current totals are 65 detectors / 54 registered implementations = 83.1% registry coverage, with 45 direct-live capabilities** (section 1); the sprint-by-sprint history is preserved here unchanged for traceability.
 
 ## 4. Security Considerations
 

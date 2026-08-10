@@ -19,7 +19,7 @@ Open source (MIT) · single binary · built for CI.
 
 ## What is Leakwatch?
 
-Leaked API keys, tokens, and passwords are one of the most common causes of breaches. **Leakwatch** finds them across your **codebase, full Git history, container images, and cloud storage** — and then *verifies whether each secret is still live*, so you spend time on real incidents instead of triaging noise.
+Leaked API keys, tokens, and passwords are one of the most common causes of breaches. **Leakwatch** finds them across your **codebase, full Git history, container images, and cloud storage** — and, where the provider contract and required context allow it, *checks whether a secret is still live*, so you can prioritize confirmed incidents without hiding unverified risk.
 
 ```console
 $ leakwatch scan fs .
@@ -56,8 +56,8 @@ $ leakwatch scan fs .
 ## Features
 
 - **6 scan sources** — filesystem, Git history (every commit), container images, AWS S3, Google Cloud Storage, Slack
-- **64 built-in detectors** + **YAML custom rules** (no Go code needed)
-- **54 live verifiers (84.4%)** — confirms whether a secret is *still active*, not just present
+- **65 built-in detectors** + **YAML custom rules** (no Go code needed)
+- **45 direct live checks** + **3 context-required checks** + **6 offline format validators** — registry presence is never overstated as live capability
 - **5 output formats** — JSON, SARIF, CSV, terminal table, and **GitHub inline annotations**
 - **Drop-in distribution** — GitHub Action (Marketplace), Docker image, Homebrew, `go install`, single static binary
 - **Secret-safe** — redacted output by default; secrets are never logged or stored
@@ -126,18 +126,19 @@ Detection is only half the job — a key that was already rotated isn't an incid
 
 | Tier | What it means | Coverage |
 |------|---------------|----------|
-| **Live verified** | Read-only API call confirms the key is active / inactive | ~48 detectors |
+| **Direct live** | Read-only API call can confirm the key in the normal production path | 45 detectors |
+| **Context required** | A safe issuer or paired credential must be supplied first | 3 detectors |
 | **Format checked** | Structurally validated where no safe live check exists | 6 detectors |
-| **Not verifiable** | No public API (e.g. JWTs, private keys) — detected & triaged manually | 10 detectors |
+| **Not verifiable** | No safe provider check (e.g. JWTs, private keys) — detected & triaged manually | 11 detectors |
 
-That's **54 of 64 detectors (84.4%)** with verification. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
+Leakwatch registers verifier implementations for **54 of 65 detectors (83.1%)**, but only **45** are direct live checks. The remaining registered implementations are context-required or format-only and therefore must not be interpreted as proof of live coverage. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
 
 ## Why Leakwatch?
 
 | | **Leakwatch** | TruffleHog | Gitleaks |
 |---|---|---|---|
 | License | **MIT** | AGPL-3.0 | MIT [^gl] |
-| Live secret verification | **Yes (54 verifiers, 84.4%)** | Yes | No |
+| Live secret verification | **Yes (45 direct-live; 3 context-required)** | Yes | No |
 | Container image scanning | **Yes** | Yes | No |
 | Cloud sources (S3 / GCS / Slack) | **Yes** | No | No |
 | SARIF output | **Yes** | No [^th] | Yes |
@@ -151,7 +152,7 @@ That's **54 of 64 detectors (84.4%)** with verification. Verification is on by d
 
 ## Detectors
 
-**64 built-in detectors** across these categories, plus your own [YAML custom rules](docs/guides/custom-rules.md):
+**65 built-in detectors** across these categories, plus your own [YAML custom rules](docs/guides/custom-rules.md):
 
 | Category | Examples |
 |----------|----------|
@@ -167,7 +168,7 @@ That's **54 of 64 detectors (84.4%)** with verification. Verification is on by d
 | **Generic & Custom** | high-entropy generic keys · LaunchDarkly · SonarCloud · your YAML rules |
 
 <details>
-<summary><b>Full detector catalog (64) with IDs, severity &amp; verification</b></summary>
+<summary><b>Full detector catalog (65) with IDs, severity &amp; verification</b></summary>
 
 | Category | Detector | ID | Severity |
 |----------|----------|----|----------|
@@ -235,6 +236,7 @@ That's **54 of 64 detectors (84.4%)** with verification. Verification is on by d
 | SaaS | Figma PAT | `figma-pat` | High |
 | SaaS | Airtable PAT | `airtable-pat` | High |
 | Generic | Generic API Key | `generic-api-key` | Medium |
+| Generic | Structured Configuration Secret | `structured-config-secret` | High |
 
 </details>
 
@@ -295,9 +297,10 @@ flowchart LR
         E2["Regex"]
         E3["Shannon entropy"]
     end
-    subgraph Verify["Verification (54 verifiers)"]
-        V1["Live API"]
-        V2["Format validation"]
+    subgraph Verify["Verification (54 registered implementations)"]
+        V1["45 direct live"]
+        V2["3 context-required"]
+        V3["6 format-only"]
     end
     Sources -->|chunks| Engine
     Engine -->|findings| Verify

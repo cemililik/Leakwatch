@@ -154,7 +154,7 @@ output:
 
 # ── Custom Rules ──────────────────────────────────────────────
 custom-rules:
-  # Leakwatch ships with 64 detectors (60 packages). Use YAML custom rules
+  # Leakwatch ships with 65 detectors (61 packages). Use YAML custom rules
   # to detect secrets not covered by built-in detectors.
   # Each rule can contain the following fields:
   - id: "internal-api-key"

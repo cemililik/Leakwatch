@@ -49,7 +49,7 @@ Taramalar `SIGINT` / `SIGTERM`'e yanıt verir: iptal sinyali geldiğinde bağlam
 
 ## 3. Aho-Corasick anahtar kelime ön-filtresi
 
-Her parça üzerinde 64 regex desenini çalıştırmak yavaş olur. Bunun yerine motor, başlangıçta her dedektörün bildirdiği anahtar kelime listelerinden tek bir **Aho-Corasick çok-desenli otomat** oluşturur. Her parça için bu otomat tek bir doğrusal geçiş yapar ve yalnızca anahtar kelimeleri parçanın baytlarında görünen dedektörleri döndürür.
+Her parça üzerinde 65 dedektör desenini çalıştırmak yavaş olur. Bunun yerine motor, başlangıçta her dedektörün bildirdiği anahtar kelime listelerinden tek bir **Aho-Corasick çok-desenli otomat** oluşturur. Her parça için bu otomat tek bir doğrusal geçiş yapar ve yalnızca anahtar kelimeleri parçanın baytlarında görünen dedektörleri döndürür.
 
 Bu, çoğu dedektörün çoğu parça üzerinde regex'ini hiç çalıştırmadığı anlamına gelir. Anahtar kelime bildirmeyen dedektörler her zaman çalışır (ön filtreyi atlayarak doğrudan regex'e geçerler).
 
@@ -63,7 +63,7 @@ Kısa listeye alınan her dedektör, derlenmiş **düzenli ifadesini** parça ba
 - Çıktı için güvenli olan **maskelenmiş** bir gösterim.
 - İsteğe bağlı ek meta veri (örneğin bir AWS anahtarı için hesap kimliği).
 
-Leakwatch, 60 paket genelinde **64 yerleşik dedektör** ile birlikte gelir; bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını, sürüm kontrolünü ve daha fazlasını kapsar. [Özel YAML kuralları](#/detectors/custom-rules) aracılığıyla kendi desenlerinizi ekleyebilirsiniz.
+Leakwatch, 61 paket genelinde **65 yerleşik dedektör** ile birlikte gelir; bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını, sürüm kontrolünü, yapılandırılmış config dosyalarını ve daha fazlasını kapsar. [Özel YAML kuralları](#/detectors/custom-rules) aracılığıyla kendi desenlerinizi ekleyebilirsiniz.
 
 Tüm dedektörler, Go'nun `init()` işlevi ve boş importlar kullanılarak derleme zamanında kaydedilir (ADR-0004). Çalışma zamanında eklenti yükleyici veya dinamik keşif yoktur.
 
@@ -92,7 +92,7 @@ Tüm parçalar için tespit tamamlandıktan sonra motor, bulguları ayrı bir **
 - Sağlayıcıya yalnızca **salt-okunur, yıkıcı olmayan** çağrılar yapar (örneğin AWS anahtarları için `sts:GetCallerIdentity`).
 - Her bulguyu dört durumdan biriyle işaretler: `verified_active`, `verified_inactive`, `unverified` veya `verify_error`.
 
-Leakwatch **54 doğrulayıcı** ile birlikte gelir; 64 yerleşik dedektör türünün %84,4'ünü kapsar. Kalan 10 tür (JWT'ler ve genel API anahtarları gibi) güvenli biçimde doğrulanamaz ve her zaman `unverified` olarak raporlanır.
+Leakwatch 65 dedektör türü için **54 doğrulayıcı implementasyonu** kaydeder (%83,1); ancak registry kaydı canlı kapsam değildir: 45'i doğrudan canlı, 3'ü güvenilir veya eşlik eden bağlam gerektiren, 6'sı yalnız-format doğrulayıcısıdır. Kalan 11 türün doğrulayıcısı yoktur. Bağlam-gerektiren, yalnız-format ve doğrulayıcısız bulgular, belirtilen canlı doğrulama önkoşulları karşılanmadıkça `unverified` kalır.
 
 Bu aşamayı tamamen atlamak için `--no-verify` geçirin — hızlı, çevrimdışı taramalar için kullanışlıdır.
 

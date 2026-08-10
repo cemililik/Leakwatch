@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
@@ -21,6 +22,40 @@ var (
 func init() {
 	detectorsAtInit = detector.All()
 	verifiersAtInit = verifier.All()
+}
+
+// TestCapabilityManifest_MatchesRuntimeRegistries prevents registry count from
+// being confused with product capability. Every detector must have exactly one
+// manifest entry, and only live/format/context-required entries may have a
+// registered verifier.
+func TestCapabilityManifest_MatchesRuntimeRegistries(t *testing.T) {
+	capabilities := meta.VerificationCapabilities()
+	manifestDetectorIDs := make([]string, 0, len(capabilities))
+	manifestVerifierIDs := make([]string, 0, meta.Verifiers)
+	for _, capability := range capabilities {
+		manifestDetectorIDs = append(manifestDetectorIDs, capability.DetectorID)
+		if capability.VerifierKind != meta.VerifierNone {
+			manifestVerifierIDs = append(manifestVerifierIDs, capability.DetectorID)
+		}
+	}
+	sort.Strings(manifestDetectorIDs)
+	sort.Strings(manifestVerifierIDs)
+
+	runtimeDetectorIDs := make([]string, 0, len(detectorsAtInit))
+	for _, registered := range detectorsAtInit {
+		runtimeDetectorIDs = append(runtimeDetectorIDs, registered.ID())
+	}
+	runtimeVerifierIDs := make([]string, 0, len(verifiersAtInit))
+	for _, registered := range verifiersAtInit {
+		runtimeVerifierIDs = append(runtimeVerifierIDs, registered.Type())
+	}
+	sort.Strings(runtimeDetectorIDs)
+	sort.Strings(runtimeVerifierIDs)
+
+	assert.Equal(t, runtimeDetectorIDs, manifestDetectorIDs,
+		"capability manifest must classify every registered detector exactly once")
+	assert.Equal(t, runtimeVerifierIDs, manifestVerifierIDs,
+		"registered verifier IDs must equal all non-none capability entries")
 }
 
 // TestMetaCounts_MatchRuntime guards the published counts in internal/meta

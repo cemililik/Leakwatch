@@ -1,7 +1,9 @@
-// Package meta holds the canonical, human-maintained project counts that are
-// published in the README banner, the social-preview image, and the docs.
+// Package meta holds canonical project counts and verification-capability
+// metadata published in the README banner, social-preview image, and docs.
 //
-// These constants are the single source of truth for the published numbers:
+// These constants are the single source of truth for registry/output counts.
+// VerificationCapabilities is the separate source of truth for direct-live,
+// context-required, format-only, and no-verifier capability counts:
 //
 //   - Detectors and Verifiers are guarded at test time against the live
 //     registries (detector.All() / verifier.All()), so adding or removing one

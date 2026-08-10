@@ -49,7 +49,7 @@ Scans respond to `SIGINT` / `SIGTERM`: when a cancellation signal arrives, the c
 
 ## 3. Aho-Corasick keyword pre-filter
 
-Running 64 regex patterns on every chunk would be slow. Instead, the engine builds a single **Aho-Corasick multi-pattern automaton** at startup from the keyword lists declared by each detector. For each chunk, this automaton does a single linear pass and returns only the detectors whose keywords appeared in the chunk's bytes.
+Running 65 detector patterns on every chunk would be slow. Instead, the engine builds a single **Aho-Corasick multi-pattern automaton** at startup from the keyword lists declared by each detector. For each chunk, this automaton does a single linear pass and returns only the detectors whose keywords appeared in the chunk's bytes.
 
 This means most detectors never run their regex on most chunks. Detectors that declare no keywords always run (they skip the pre-filter and proceed directly to regex).
 
@@ -63,7 +63,7 @@ Each shortlisted detector runs its compiled **regular expression** against the c
 - A **redacted** representation safe for output.
 - Optional extra metadata (e.g. account ID for an AWS key).
 
-Leakwatch ships **64 built-in detectors** across 60 packages, covering cloud providers, AI APIs, payment platforms, databases, messaging tools, version control, and more. You can add your own patterns via [custom YAML rules](#/detectors/custom-rules).
+Leakwatch ships **65 built-in detectors** across 61 packages, covering cloud providers, AI APIs, payment platforms, databases, messaging tools, version control, structured configuration, and more. You can add your own patterns via [custom YAML rules](#/detectors/custom-rules).
 
 All detectors are registered at compile time using Go's `init()` function and blank imports (ADR-0004). There is no plugin loader or dynamic discovery at runtime.
 
@@ -92,7 +92,7 @@ After detection completes for all chunks, the engine passes findings to a separa
 - Makes only **read-only, non-destructive** calls to the provider (e.g. `sts:GetCallerIdentity` for AWS keys).
 - Marks each finding with one of four statuses: `verified_active`, `verified_inactive`, `unverified`, or `verify_error`.
 
-Leakwatch ships **54 verifiers**, covering 84.4% of the 64 built-in detector types. The remaining 10 types (such as JWTs and generic API keys) cannot be safely verified and are always reported as `unverified`.
+Leakwatch registers **54 verifier implementations** for 65 detector types (83.1%), but registry presence is not live coverage: 45 are direct-live, 3 require trusted or companion context, and 6 are format-only. The remaining 11 types have no verifier. Context-required, format-only, and no-verifier findings remain `unverified` unless their stated live-verification preconditions are met.
 
 Pass `--no-verify` to skip this stage entirely — useful for fast, offline scans.
 

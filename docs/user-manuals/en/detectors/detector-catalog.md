@@ -1,11 +1,11 @@
 ---
 title: "Detector Catalog"
-description: "All 64 built-in detectors grouped by category, with their IDs, what they detect, and their default severity."
+description: "All 65 built-in detectors grouped by category, with their IDs, what they detect, and their default severity."
 ---
 
 # Detector Catalog
 
-Leakwatch ships **64 built-in detectors** that cover a wide range of credential types — from cloud provider access keys and AI API tokens to database connection strings and private cryptographic keys. Each detector has a stable ID, a default severity, and (for most) a paired verifier that can confirm whether a found secret is still live.
+Leakwatch ships **65 built-in detectors** that cover a wide range of credential types — from cloud provider access keys and AI API tokens to database connection strings and private cryptographic keys. Each detector has a stable ID and default severity. Verification capability is classified separately as direct-live, context-required, format-only, or unavailable; a registered verifier does not by itself prove live coverage.
 
 This page lists every built-in detector. For verification coverage details see [Verification Coverage](#/verification/verification-coverage). To add your own patterns, see [Custom Rules](#/detectors/custom-rules).
 
@@ -132,13 +132,14 @@ This page lists every built-in detector. For verification coverage details see [
 | ID | Detects | Severity |
 |----|---------|----------|
 | `generic-api-key` | Generic API Key | Medium |
+| `structured-config-secret` | Contextual secret value in JSON, YAML, TOML, XML, `.env`, or INI-style configuration | High |
 | `jwt` | JSON Web Token | High |
 | `private-key` | Private Key (RSA, SSH, DSA, EC, PGP), including PKCS8 `PRIVATE KEY` and password-protected `ENCRYPTED PRIVATE KEY` armor | Critical |
 | `ftp-credentials` | FTP/SFTP Credentials | Critical |
 
 ---
 
-**Total: 64 built-in detectors.**
+**Total: 65 built-in detectors.**
 
 ## Filtering by severity
 
@@ -159,7 +160,7 @@ See [Severity and Filtering](#/configuration/severity-and-filtering) for the ful
 
 ## Verification coverage
 
-Some detectors have a live verifier; others are format-validated only; ten have no verifier at all. See [Verification Coverage](#/verification/verification-coverage) for the complete breakdown.
+Some detectors have a direct-live verifier, some need trusted or companion context, others are format-only, and eleven have no verifier. See [Verification Coverage](#/verification/verification-coverage) for the complete breakdown.
 
 ## See also
 

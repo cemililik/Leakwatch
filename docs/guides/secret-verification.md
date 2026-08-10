@@ -1,17 +1,18 @@
 # Leakwatch - Secret Verification Guide
 
-> **Document Version:** 1.1
-> **Date:** 2026-03-25
+> **Document Version:** 1.2
+> **Date:** 2026-08-10
 > **Status:** Approved
 
 ---
 
 ## 1. What is Secret Verification?
 
-Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **54 verifiers (51 packages)** covering **84.4% of its 64 detectors (60 packages)**, making it one of the most comprehensive verification systems available under an MIT license.
+Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **45** detectors support a direct live check, **3** require trusted or companion context, **6** are format-only, and **11** have no verifier.
 
-Verification is performed through two methods:
-- **Live API verification** (48 detectors) -- controlled, non-destructive API calls to the service that issued the credential
+Verification is classified into three methods:
+- **Direct live API verification** (45 detectors) -- controlled, non-destructive API calls available in the normal production path
+- **Context-required verification** (3 detectors) -- a trusted issuer or paired credential is required before any safe request
 - **Format validation** (6 detectors) -- structural checks (decode, parse, validate format) without network calls
 
 **Why it matters:**
@@ -50,8 +51,8 @@ Every finding in Leakwatch carries a verification status. Understanding these st
 | Status | Description | Action Required |
 |--------|-------------|-----------------|
 | `verified_active` | Secret is **valid and active** -- the provider confirmed it works | **Immediate rotation required** |
-| `verified_inactive` | Secret is **invalid or revoked** -- the provider rejected it | Low priority; may still warrant cleanup |
-| `unverified` | Verification was not performed (no verifier available, or `--no-verify` was used) | Manual review recommended |
+| `verified_inactive` | Secret is **invalid or revoked** -- the provider gave a definitive authentication rejection under that verifier's contract | Low priority; may still warrant cleanup |
+| `unverified` | Verification was not performed (no verifier, missing context, format-only capability, or `--no-verify`) | Manual review recommended |
 | `verify_error` | An error occurred during verification (network timeout, rate limit, etc.) | Retry or verify manually |
 
 ```mermaid
@@ -68,9 +69,9 @@ stateDiagram-v2
 
 ## 3. Verified Detectors
 
-Leakwatch provides 54 verifiers (51 packages) across three verification types. The following table shows all verified detectors grouped by verification method.
+Leakwatch provides 54 registered verifier implementations (51 packages) across three verification types. The following tables classify capability rather than equating registry count with live coverage.
 
-### Live API Verification (48 detectors)
+### Direct Live API Verification (45 detectors)
 
 These verifiers make a controlled, non-destructive API call to the provider to confirm whether the secret is active or inactive. The majority use HTTP GET; a small number (e.g., the Teams webhook verifier) use a non-destructive POST to a validation endpoint.
 
@@ -99,7 +100,7 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Communication** | Discord Bot Token | `discord-bot-token` | `discord.com/api/v10/users/@me` |
 | **Communication** | Telegram Bot Token | `telegram-bot-token` | `api.telegram.org/bot{token}/getMe` |
 | **Communication** | MS Teams Webhook | `teams-webhook` | `{webhook-url}` (non-destructive empty `{}` POST; 400 = active, 404 = inactive) |
-| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/scopes` (needs no specific scope, so a restricted-permission key is not misread as revoked) |
+| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/scopes` (`401` is inactive; `403`, including permission denial, remains `verify_error`) |
 | **Email** | Mailgun API Key | `mailgun-api-key` | `api.mailgun.net/v3/domains`, retrying `api.eu.mailgun.net/v3/domains` if the US host reports inactive (US/EU are separate tenants) |
 | **Email** | Postmark Server Token | `postmark-server-token` | `api.postmarkapp.com/server` |
 | **Payment** | Stripe Live Key | `stripe-api-key-live` | `api.stripe.com/v1/charges?limit=1` |
@@ -109,21 +110,28 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
 | **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
 | **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
-| **Monitoring** | Grafana service-account token | `grafana-api-key` | Issuing instance `/api/access-control/user/permissions`; pass the trusted HTTPS origin with `--grafana-instance-url`. Without it Leakwatch makes no request and returns `unverified`; repository config and finding metadata cannot set this target. |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
 | **Monitoring** | New Relic user API key | `newrelic-api-key` | Read-only NerdGraph `requestContext { userId }`; fixed official US/EU endpoints with bounded fallback. Only all-region 401 is inactive; 403 and partial failures remain inconclusive. |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
 | **Security** | Snyk API Key | `snyk-api-key` | `api.snyk.io/rest/self` |
-| **Security** | Twilio API Key | `twilio-api-key` | `api.twilio.com/2010-04-01/Accounts.json` (Basic auth paired as API Key SID + API Key Secret, not Account SID + Auth Token) |
 | **Secrets Mgmt** | Doppler Service Token | `doppler-token` | `api.doppler.com/v3/me` |
 | **Feature Flags** | LaunchDarkly SDK Key | `launchdarkly-sdk-key` | `app.launchdarkly.com/api/v2/caller-identity` |
 | **Code Quality** | SonarCloud Token | `sonarcloud-token` | `sonarcloud.io/api/authentication/validate` |
-| **SaaS** | Shopify Access Token | `shopify-access-token` | `{shop}.myshopify.com/admin/api/2024-01/shop.json` -- requires a store domain the detector does not currently capture, so findings resolve to `unverified` until this wiring lands (see [ROADMAP](../05-ROADMAP.md)) |
 | **SaaS** | Notion Token | `notion-token` | `api.notion.com/v1/users/me` |
 | **SaaS** | Linear API Key | `linear-api-key` | `api.linear.app/graphql` |
 | **SaaS** | Figma PAT | `figma-pat` | `api.figma.com/v1/me` |
 | **SaaS** | Airtable PAT | `airtable-pat` | `api.airtable.com/v0/meta/whoami` |
 | **Blockchain** | Infura API Key | `infura-api-key` | `mainnet.infura.io/v3/{key}` |
+
+### Requires Trusted or Companion Context (3 detectors)
+
+These implementations are registered, but a bare detector finding cannot safely select the issuer or authenticate the verification request. Missing context produces `unverified` without a network request.
+
+| Detector | Detector ID | Required context and behavior |
+|----------|-------------|-------------------------------|
+| Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
+| Twilio API Key | `twilio-api-key` | Account SID plus the API Key Secret paired with the detected `SK...` Key SID; the normal detector finding does not supply the paired secret |
+| Shopify Access Token | `shopify-access-token` | Trusted issuing store domain; the normal detector finding emits only the token, so no request is made without operator context |
 
 ### Format Validation (6 detectors)
 
@@ -138,7 +146,7 @@ These verifiers perform structural validation without making network calls. They
 | Snowflake Credentials | `snowflake-credentials` | Connection string format and credential structure validation |
 | Coinbase API Key | `coinbase-api-key` | Key-shape validation only; live verification needs HMAC-SHA256 request signing with the paired secret, which the detector cannot reliably supply, so the result is always `unverified` -- never a false active/inactive |
 
-### Not Verifiable (10 detectors)
+### Not Verifiable (11 detectors)
 
 These detectors have no registered verifier, so their findings are always reported as `unverified`.
 
@@ -154,6 +162,7 @@ These detectors have no registered verifier, so their findings are always report
 | LDAP Credentials | `ldap-credentials` | Requires direct connection to LDAP directory server |
 | Slack Webhook | `slack-webhook` | Verification would send a message (side effect) |
 | Discord Webhook URL | `discord-webhook-url` | Verification would post a message (side effect) |
+| Structured Configuration Secret | `structured-config-secret` | Field context can identify a secret role but cannot determine the credential provider or issuer |
 
 ---
 
