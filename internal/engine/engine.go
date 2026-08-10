@@ -48,10 +48,13 @@ type Config struct {
 	// to be reported. When EnableEntropy is set the engine computes
 	// Finding.Entropy for every match (informational), but only drops a finding
 	// when its detector opts into the gate via EntropyBased() — i.e. the generic
-	// API-key detector and other high-entropy-string heuristics. Structural
-	// detectors (AWS, GitHub, Stripe, …) are never entropy-gated, so a valid but
-	// low-entropy key is always reported. When EnableEntropy is false no entropy
-	// is computed and no gating is applied. Defaulted to defaultEntropyThreshold.
+	// API-key detector and other high-entropy-string heuristics. A mixed detector
+	// may refine that decision per finding via EntropyGated(raw), preserving the
+	// gate for heuristic matches while exempting strong structural context.
+	// Structural detectors (AWS, GitHub, Stripe, …) are never entropy-gated, so a
+	// valid but low-entropy key is always reported. When EnableEntropy is false no
+	// entropy is computed and no gating is applied. Defaulted to
+	// defaultEntropyThreshold.
 	EntropyThreshold float64
 	ShowRaw          bool
 	Clock            func() time.Time // Optional; defaults to time.Now
@@ -106,10 +109,25 @@ type entropyBased interface {
 	EntropyBased() bool
 }
 
+// findingEntropyGate is an optional refinement for mixed detectors that emit
+// both heuristic and structurally contextual findings. It lets the detector
+// retain the global entropy gate for heuristic matches while exempting only a
+// specific raw finding backed by strong structure.
+type findingEntropyGate interface {
+	EntropyGated(raw detector.RawFinding) bool
+}
+
 // isEntropyBased reports whether the detector opts into the engine entropy gate.
 func isEntropyBased(d detector.Detector) bool {
 	eb, ok := d.(entropyBased)
 	return ok && eb.EntropyBased()
+}
+
+func isEntropyGated(d detector.Detector, raw detector.RawFinding) bool {
+	if policy, ok := d.(findingEntropyGate); ok {
+		return policy.EntropyGated(raw)
+	}
+	return isEntropyBased(d)
 }
 
 // Scan scans the given source and returns results.
@@ -372,12 +390,12 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 
 				// Entropy gating: the Shannon-entropy floor applies ONLY to
 				// heuristic detectors that opt in via EntropyBased() (e.g. the
-				// generic API-key detector). Structural detectors — AWS, GitHub,
-				// Stripe, etc. — have precise formats and are never dropped on
-				// entropy, so a valid but low-entropy key (an AWS access-key ID
-				// is ~3.9 bits) is always reported.
+				// generic API-key detector), subject to an optional per-finding
+				// EntropyGated refinement for mixed structural/heuristic detectors.
+				// Structural findings — AWS, GitHub, Stripe, explicit provider
+				// header contexts, etc. — are never dropped on entropy.
 				if e.config.EnableEntropy && len(raw.Raw) > 0 &&
-					isEntropyBased(det) && f.Entropy < e.config.EntropyThreshold {
+					isEntropyGated(det, raw) && f.Entropy < e.config.EntropyThreshold {
 					continue
 				}
 

@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -96,8 +97,48 @@ func TestAPIKeyDetector_Scan(t *testing.T) {
 			expected: 1,
 		},
 		{
+			name:     "official APISIX header with low entropy hex value",
+			input:    `{"X-API-KEY": "01234567012345670123456701234567"}`,
+			expected: 1,
+		},
+		{
+			name:     "multiline JSON whitespace",
+			input:    "{\r\n  \"X-API-KEY\"\r\n  :\r\n  \"01234567012345670123456701234567\"\r\n}",
+			expected: 1,
+		},
+		{
 			name:     "sensitive header list entry is not an assignment",
 			input:    `{"SensitiveHeaders": ["Authorization", "X-APISIX-KEY"]}`,
+			expected: 0,
+		},
+		{
+			name:     "mismatched key quotes",
+			input:    `{"X-APISIX-KEY': "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV"}`,
+			expected: 0,
+		},
+		{
+			name:     "mismatched value quotes",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV'}`,
+			expected: 0,
+		},
+		{
+			name:     "unterminated quoted value",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV}`,
+			expected: 0,
+		},
+		{
+			name:     "disallowed value suffix",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY.invalid"}`,
+			expected: 0,
+		},
+		{
+			name:     "unquoted disallowed value suffix",
+			input:    `X-APISIX-KEY = Q7mN2pL9rT4vW8xY.invalid`,
+			expected: 0,
+		},
+		{
+			name:     "overlong allowed value is rejected not truncated",
+			input:    `{"X-APISIX-KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"}`,
 			expected: 0,
 		},
 	}
@@ -333,6 +374,33 @@ func TestAPIKeyDetector_AppsettingsJSON_DirectAndMatcherParity(t *testing.T) {
 	}
 }
 
+func TestAPIKeyDetector_APISIXSpellings_IsolatedMatcherParity(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "official header hyphen", key: "X-API-KEY"},
+		{name: "official header underscore", key: "X_API_KEY"},
+		{name: "local header", key: "X-APISIX-KEY"},
+		{name: "admin key underscore", key: "APISIX_ADMIN_KEY"},
+		{name: "admin key compact", key: "APISIXADMINKEY"},
+		{name: "apisix key mixed separators", key: "APISIX-KEY"},
+	}
+
+	d := &APIKeyDetector{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(`{"` + tt.key + `": "01234567012345670123456701234567"}`)
+			direct := d.Scan(context.Background(), input)
+			viaMatcher := testutil.ScanViaMatcher(d, input)
+			require.Len(t, direct, 1)
+			require.Equal(t, direct, viaMatcher, "each accepted spelling must independently select the detector")
+			assert.Equal(t, tt.key, direct[0].ExtraData["key_name"])
+			assert.False(t, d.EntropyGated(direct[0]), "explicit APISIX context must bypass entropy gating")
+		})
+	}
+}
+
 func TestAPIKeyDetector_AppsettingsJSON_FullEngine(t *testing.T) {
 	data := readSyntheticAppsettings(t)
 	d := &APIKeyDetector{}
@@ -356,7 +424,34 @@ func TestAPIKeyDetector_AppsettingsJSON_FullEngine(t *testing.T) {
 		assert.Empty(t, got.Raw, "raw values must not be exposed by the default engine result")
 		lines = append(lines, got.SourceMetadata.Line)
 	}
-	assert.Equal(t, []int{31, 37, 43}, lines)
+	assert.Equal(t, linesContaining(data, []byte(`"X-APISIX-KEY":`)), lines)
+}
+
+func TestAPIKeyDetector_APISIXLowEntropy_SurvivesFullEngine(t *testing.T) {
+	data := []byte("{\n  \"X-API-KEY\": \"01234567012345670123456701234567\"\n}\n")
+	d := &APIKeyDetector{}
+	eng := engine.New(engine.Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{d},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1, "strong APISIX context must survive the generic entropy thresholds")
+	assert.Less(t, result.Findings[0].Entropy, 3.8, "fixture must prove the low-entropy structural path")
+	assert.Equal(t, 2, result.Findings[0].SourceMetadata.Line)
+}
+
+func linesContaining(data, marker []byte) []int {
+	var lines []int
+	for i, line := range bytes.Split(data, []byte{'\n'}) {
+		if bytes.Contains(line, marker) {
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
 }
 
 func TestAPIKeyDetector_EntropyBased(t *testing.T) {
@@ -364,4 +459,8 @@ func TestAPIKeyDetector_EntropyBased(t *testing.T) {
 	// strings), so it must opt into the engine's entropy floor.
 	assert.True(t, (&APIKeyDetector{}).EntropyBased(),
 		"generic-api-key must be entropy-based so the engine gates it on entropy")
+
+	d := &APIKeyDetector{}
+	heuristic := detector.RawFinding{ExtraData: map[string]string{"key_name": "api_key"}}
+	assert.True(t, d.EntropyGated(heuristic), "ordinary generic assignments must retain engine entropy gating")
 }

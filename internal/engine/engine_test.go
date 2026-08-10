@@ -59,6 +59,15 @@ func (m *mockDetector) Severity() finding.Severity                             {
 func (m *mockDetector) Scan(_ context.Context, _ []byte) []detector.RawFinding { return m.findings }
 func (m *mockDetector) EntropyBased() bool                                     { return m.entropyBased }
 
+type mixedEntropyDetector struct {
+	*mockDetector
+	gateFinding bool
+}
+
+func (m *mixedEntropyDetector) EntropyGated(_ detector.RawFinding) bool {
+	return m.gateFinding
+}
+
 var fixedClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 // --- Tests ---
@@ -774,6 +783,43 @@ func TestScan_EntropyGating_StructuralDetectorNeverGated(t *testing.T) {
 	result, err := eng.Scan(context.Background(), src)
 	require.NoError(t, err)
 	assert.Len(t, result.Findings, 1, "structural detectors must never be entropy-gated")
+}
+
+func TestScan_EntropyGating_PerFindingPolicy(t *testing.T) {
+	low := "01234567012345670123456701234567"
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: []byte(low), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	base := &mockDetector{
+		id:           "mixed",
+		findings:     []detector.RawFinding{{DetectorID: "mixed", Raw: []byte(low), Redacted: "r***"}},
+		entropyBased: true,
+	}
+
+	for _, tc := range []struct {
+		name        string
+		gateFinding bool
+		wantCount   int
+	}{
+		{name: "strong contextual finding bypasses gate", gateFinding: false, wantCount: 1},
+		{name: "heuristic finding retains gate", gateFinding: true, wantCount: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &mixedEntropyDetector{mockDetector: base, gateFinding: tc.gateFinding}
+			eng := New(Config{
+				Concurrency:      1,
+				Detectors:        []detector.Detector{det},
+				EnableEntropy:    true,
+				EntropyThreshold: 4.0,
+				Clock:            fixedClock,
+			})
+			result, err := eng.Scan(context.Background(), src)
+			require.NoError(t, err)
+			assert.Len(t, result.Findings, tc.wantCount)
+		})
+	}
 }
 
 func TestScan_EntropyDisabled_NoGating(t *testing.T) {
