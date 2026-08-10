@@ -2,9 +2,15 @@ package generic
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/detector/testutil"
+	"github.com/HodeTech/leakwatch/internal/engine"
+	"github.com/HodeTech/leakwatch/internal/source"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +84,21 @@ func TestAPIKeyDetector_Scan(t *testing.T) {
 			name:     "base64 value",
 			input:    `api_key = "dGhpcyBpcyBhIHRlc3Qga2V5IGZvciBsZWFrd2F0Y2g="`,
 			expected: 1,
+		},
+		{
+			name:     "double quoted JSON key",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV"}`,
+			expected: 1,
+		},
+		{
+			name:     "single quoted object key",
+			input:    `{'x-apisix-key' : 'Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV'}`,
+			expected: 1,
+		},
+		{
+			name:     "sensitive header list entry is not an assignment",
+			input:    `{"SensitiveHeaders": ["Authorization", "X-APISIX-KEY"]}`,
+			expected: 0,
 		},
 	}
 
@@ -268,6 +289,74 @@ func TestAPIKeyDetector_ScanViaMatcher_KeywordRegexAlignment(t *testing.T) {
 
 	require.Len(t, findings, 1, "realistic api_key assignment must survive the matcher gate")
 	assert.Equal(t, "generic-api-key", findings[0].DetectorID)
+}
+
+type fixtureSource struct {
+	data []byte
+}
+
+func (s *fixtureSource) Type() string    { return "fixture" }
+func (s *fixtureSource) Validate() error { return nil }
+func (s *fixtureSource) Err() error      { return nil }
+func (s *fixtureSource) Chunks(_ context.Context) <-chan source.Chunk {
+	chunks := make(chan source.Chunk, 1)
+	chunks <- source.Chunk{
+		Data: s.data,
+		SourceMetadata: finding.SourceMetadata{
+			SourceType: "filesystem",
+			FilePath:   "appsettings.synthetic.json",
+		},
+	}
+	close(chunks)
+	return chunks
+}
+
+func readSyntheticAppsettings(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "appsettings.synthetic.json"))
+	require.NoError(t, err)
+	return data
+}
+
+func TestAPIKeyDetector_AppsettingsJSON_DirectAndMatcherParity(t *testing.T) {
+	data := readSyntheticAppsettings(t)
+	d := &APIKeyDetector{}
+
+	direct := d.Scan(context.Background(), data)
+	viaMatcher := testutil.ScanViaMatcher(d, data)
+
+	require.Len(t, direct, 3, "the three APISIX assignments must be detected")
+	require.Equal(t, direct, viaMatcher, "quoted JSON assignments must survive the production matcher gate")
+	for _, got := range direct {
+		assert.Equal(t, "X-APISIX-KEY", got.ExtraData["key_name"])
+		assert.NotEqual(t, string(got.Raw), got.Redacted)
+	}
+}
+
+func TestAPIKeyDetector_AppsettingsJSON_FullEngine(t *testing.T) {
+	data := readSyntheticAppsettings(t)
+	d := &APIKeyDetector{}
+	eng := engine.New(engine.Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{d},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+		Clock: func() time.Time {
+			return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 3, "all APISIX assignments must survive matcher, detector, and entropy gates")
+
+	lines := make([]int, 0, len(result.Findings))
+	for _, got := range result.Findings {
+		assert.Equal(t, "generic-api-key", got.DetectorID)
+		assert.Empty(t, got.Raw, "raw values must not be exposed by the default engine result")
+		lines = append(lines, got.SourceMetadata.Line)
+	}
+	assert.Equal(t, []int{31, 37, 43}, lines)
 }
 
 func TestAPIKeyDetector_EntropyBased(t *testing.T) {

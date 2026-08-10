@@ -2,6 +2,9 @@
 # These are NOT real secrets — they are fixtures that match regex patterns.
 **/*_test.go
 
+# Detector testdata contains synthetic, intentionally matchable credentials.
+internal/detector/**/testdata/**
+
 # Verifier implementations contain API URL patterns that may match detectors.
 internal/verifier/**
 

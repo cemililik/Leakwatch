@@ -18,7 +18,12 @@ import (
 // vendor-specific secret in the codebase gets its own package, so a future
 // cleanup extracting `apisix` into its own detector would be consistent with
 // that convention, but is not required by this change.
-var apiKeyPattern = regexp.MustCompile(`(?i)(api[_\-]?key|api[_\-]?secret|secret[_\-]?key|x[_\-]?apisix[_\-]?key|apisix[_\-]?key|apisix[_\-]?admin[_\-]?key)[ \t]*[:=][ \t]*['"]?([a-zA-Z0-9/+=\-_]{16,64})['"]?`)
+// apiKeyPattern accepts both shell/YAML-style assignments (`api_key = "…"`)
+// and quoted object keys (`"api_key": "…"`). The optional leading/trailing
+// key quotes are deliberately adjacent to the key: this preserves the
+// key-value assignment requirement and does not turn string-list entries such
+// as `"X-APISIX-KEY",` into findings.
+var apiKeyPattern = regexp.MustCompile(`(?i)['"]?(api[_\-]?key|api[_\-]?secret|secret[_\-]?key|x[_\-]?apisix[_\-]?key|apisix[_\-]?key|apisix[_\-]?admin[_\-]?key)['"]?[ \t]*[:=][ \t]*['"]?([a-zA-Z0-9/+=\-_]{16,64})['"]?`)
 
 // APIKeyDetector detects generic API key assignments.
 type APIKeyDetector struct{}
