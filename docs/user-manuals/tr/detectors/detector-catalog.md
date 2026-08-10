@@ -91,7 +91,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | `sendgrid-api-key` | SendGrid API Anahtarı | Critical |
 | `mailgun-api-key` | Mailgun API Anahtarı | Critical |
 | `postmark-server-token` | Postmark Sunucu API Token'ı | High |
-| `twilio-api-key` | Twilio API Anahtarı | Critical |
+| `twilio-api-key` | Yakınındaki `SK...` Key SID ile açıkça eşleştirilmiş Twilio API Key Secret; tek başına SID gizli değildir ve raporlanmaz | Critical |
 
 ## İzleme ve Gözlemlenebilirlik
 

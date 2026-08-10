@@ -9,7 +9,7 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var shopifyTokenPattern = regexp.MustCompile(`shpat_[a-f0-9]{32}`)
+var shopifyTokenPattern = regexp.MustCompile(`\bshpat_[a-f0-9]{32}\b`)
 
 // Detector detects Shopify Access Tokens.
 type Detector struct{}

@@ -690,7 +690,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "shpat_[a-f0-9]{32}"
+        "src": "\\bshpat_[a-f0-9]{32}\\b"
       }
     ]
   },
@@ -840,10 +840,14 @@ window.LW_DETECTORS = [
     "keywords": [],
     "patterns": [
       {
-        "src": "SK[a-f0-9]{32}"
+        "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?secret[\"']?\\s*[:=]\\s*[\"']?([a-z0-9]{32})(?:[\"']|[\\s,;}#]|$)",
+        "flags": "i"
       },
       {
-        "src": "AC[a-f0-9]{32}"
+        "src": "\\bSK[0-9a-fA-F]{32}\\b"
+      },
+      {
+        "src": "\\bAC[0-9a-fA-F]{32}\\b"
       }
     ]
   },

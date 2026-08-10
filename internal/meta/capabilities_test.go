@@ -28,7 +28,8 @@ var validInactiveContracts = map[InactiveStatusContract]struct{}{
 	InactivePairedAuthRejection: {}, InactiveTrustedInstanceHTTP401: {},
 	InactiveTrustedIssuerHTTP401: {}, InactiveTrustedOriginHTTP401: {},
 	InactiveTrustedOriginRejection: {},
-	InactiveTrustedSiteRejection:   {}, InactiveTrustedStoreRejection: {},
+	InactiveTrustedSiteRejection:   {}, InactiveTrustedStoreHTTP401: {},
+	InactiveTrustedStoreRejection:    {},
 	InactiveTypedAuthenticationError: {},
 }
 
@@ -147,6 +148,29 @@ func TestVerificationCapabilities_SnykInactiveContractIsTrustedOrigin401Only(t *
 	t.Fatal("snyk-api-key capability missing")
 }
 
+func TestVerificationCapabilities_TwilioAndShopifyAreOperatorContextOnly(t *testing.T) {
+	want := map[string]struct {
+		inactive InactiveStatusContract
+		regions  []string
+	}{
+		"shopify-access-token": {inactive: InactiveTrustedStoreHTTP401},
+		"twilio-api-key":       {inactive: InactiveTrustedOriginHTTP401, regions: []string{"US1", "IE1", "AU1"}},
+	}
+	for _, capability := range VerificationCapabilities() {
+		expected, ok := want[capability.DetectorID]
+		if !ok {
+			continue
+		}
+		assert.Equal(t, VerifierRequiresContext, capability.VerifierKind, capability.DetectorID)
+		assert.Equal(t, EndpointOperatorContextProviderAPI, capability.EndpointClass, capability.DetectorID)
+		assert.Equal(t, expected.inactive, capability.InactiveStatusContract, capability.DetectorID)
+		assert.Equal(t, expected.regions, capability.ProviderRegions, capability.DetectorID)
+		assert.Equal(t, "2026-08-11", capability.LastContractReviewedAt, capability.DetectorID)
+		delete(want, capability.DetectorID)
+	}
+	assert.Empty(t, want)
+}
+
 func TestVerificationCapabilities_CriticalContextContracts(t *testing.T) {
 	want := map[string]struct {
 		kind    VerifierKind
@@ -161,8 +185,8 @@ func TestVerificationCapabilities_CriticalContextContracts(t *testing.T) {
 		"github-oauth-token":   {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"GitHub.com", "GHES"}},
 		"snyk-api-key":         {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"US1", "US2", "EU", "AU", "GOV", "PRIVATE"}},
 		"grafana-api-key":      {VerifierRequiresContext, []string{"trusted_instance_origin"}, nil},
-		"shopify-access-token": {VerifierRequiresContext, []string{"store_domain"}, nil},
-		"twilio-api-key":       {VerifierRequiresContext, []string{"account_sid", "api_key_secret"}, nil},
+		"shopify-access-token": {VerifierRequiresContext, []string{"trusted_store_origin"}, nil},
+		"twilio-api-key":       {VerifierRequiresContext, []string{"api_key_sid", "trusted_api_origin"}, []string{"US1", "IE1", "AU1"}},
 	}
 
 	got := make(map[string]VerificationCapability, len(want))

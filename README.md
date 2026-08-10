@@ -226,7 +226,7 @@ Leakwatch registers verifier implementations for **54 of 65 detectors (83.1%)**,
 | Monitoring | New Relic API Key | `newrelic-api-key` | High |
 | Monitoring | Sentry Auth Token | `sentry-token` | High |
 | Security | Snyk API Key | `snyk-api-key` | High |
-| Security | Twilio API Key | `twilio-api-key` | Critical |
+| Security | Twilio API Key Secret | `twilio-api-key` | Critical |
 | Secrets Mgmt | Doppler Service Token | `doppler-token` | Critical |
 | Feature Flags | LaunchDarkly SDK Key | `launchdarkly-sdk-key` | High |
 | Code Quality | SonarCloud Token | `sonarcloud-token` | High |

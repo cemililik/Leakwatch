@@ -2,159 +2,143 @@ package shopify
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
+	shopifydetector "github.com/HodeTech/leakwatch/internal/detector/shopify"
+	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/HodeTech/leakwatch/internal/detector"
-	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
+func shopifyFinding() detector.RawFinding {
+	return detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte("shpat_" + strings.Repeat("ab12cd34", 4)),
+		Redacted:   "shpat_****cd34",
+	}
+}
+
+func TestVerify_TrustedStoreUsesCurrentGraphQLContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, shopAPIPath, r.URL.Path)
-		assert.NotEmpty(t, r.Header.Get("X-Shopify-Access-Token"))
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/admin/api/2026-07/graphql.json", r.URL.Path)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, string(shopifyFinding().Raw), r.Header.Get("X-Shopify-Access-Token"))
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.JSONEq(t, shopIdentityQuery, string(body))
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"shop":{"name":"My Test Store"}}`))
+		_, _ = w.Write([]byte(`{"data":{"shop":{"name":"My Test Store"}}}`))
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte("shpat_abcdef1234567890abcdef1234567890"),
-		Redacted:   "shpat_****7890",
-	}
-
-	result := v.Verify(context.Background(), raw)
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), shopifyFinding(),
+	)
 
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "Shopify access token is active", result.Message)
+	assert.Equal(t, "Shopify access token is active on the trusted store", result.Message)
 	assert.Equal(t, "My Test Store", result.ExtraData["shop_name"])
 }
 
-func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"errors":"[API] Invalid API key or access token"}`))
+func TestVerify_WithoutTrustedStoreMakesNoRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
+	raw := shopifyFinding()
+	raw.ExtraData = map[string]string{"store_domain": strings.TrimPrefix(server.URL, "http://")}
+	result := (&Verifier{httpClient: server.Client()}).Verify(context.Background(), raw)
 
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte("shpat_invalidtoken1234567890abcdef1234"),
-		Redacted:   "shpat_****1234",
-	}
-
-	result := v.Verify(context.Background(), raw)
-
-	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "Shopify access token is invalid or revoked", result.Message)
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Shopify store origin is not configured", result.Message)
+	assert.Zero(t, requests, "finding-controlled store_domain must never select a request target")
 }
 
-func TestVerify_ServerError_ReturnsError(t *testing.T) {
+func TestVerify_RealDetectorFindingMatchesRequiresContextCapability(t *testing.T) {
+	findings := (&shopifydetector.Detector{}).Scan(context.Background(), shopifyFinding().Raw)
+	require.Len(t, findings, 1)
+
+	result := (&Verifier{}).Verify(context.Background(), findings[0])
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Shopify store origin is not configured", result.Message)
+}
+
+func TestVerify_Only401IsInactive(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   finding.VerificationStatus
+	}{
+		{name: "401 authentication rejection", status: http.StatusUnauthorized, want: finding.StatusVerifiedInactive},
+		{name: "403 authorization rejection", status: http.StatusForbidden, want: finding.StatusVerifyError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), shopifyFinding(),
+			)
+			assert.Equal(t, tc.want, result.Status)
+		})
+	}
+}
+
+func TestVerify_MalformedOrGraphQLErrorResponseIsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing data", contentType: "application/json", body: `{}`},
+		{name: "null shop", contentType: "application/json", body: `{"data":{"shop":null}}`},
+		{name: "GraphQL errors", contentType: "application/json", body: `{"errors":[{"message":"denied"}]}`},
+		{name: "wrong content type", contentType: "text/html", body: `{"data":{"shop":{"name":"Store"}}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), shopifyFinding(),
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
+}
+
+func TestVerify_ServerErrorReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"errors":"Internal server error"}`))
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte("shpat_sometoken12345678901234567890abcd"),
-		Redacted:   "shpat_****abcd",
-	}
-
-	result := v.Verify(context.Background(), raw)
-
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), shopifyFinding(),
+	)
 	assert.Equal(t, finding.StatusVerifyError, result.Status)
-	assert.Contains(t, result.Message, "500")
 }
 
-func TestVerify_Type_ReturnsCorrectID(t *testing.T) {
-	v := &Verifier{}
-	assert.Equal(t, "shopify-access-token", v.Type())
-}
-
-func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
-	v := &Verifier{}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(""),
-		Redacted:   "",
-	}
-
-	result := v.Verify(context.Background(), raw)
-
+func TestVerify_TypeAndEmptyToken(t *testing.T) {
+	assert.Equal(t, detectorID, (&Verifier{}).Type())
+	result := (&Verifier{}).Verify(context.Background(), detector.RawFinding{})
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
-}
-
-func TestVerify_NoDomain_ReturnsUnverified(t *testing.T) {
-	v := &Verifier{}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte("shpat_abcdef1234567890abcdef1234567890"),
-		Redacted:   "shpat_****7890",
-		ExtraData:  map[string]string{},
-	}
-
-	result := v.Verify(context.Background(), raw)
-
-	assert.Equal(t, finding.StatusUnverified, result.Status)
-	assert.Equal(t, "store domain required for verification", result.Message)
-}
-
-func TestVerify_WithDomain_UsesStoreDomain(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, shopAPIPath, r.URL.Path)
-		assert.NotEmpty(t, r.Header.Get("X-Shopify-Access-Token"))
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"shop":{"name":"Domain Store"}}`))
-	}))
-	defer server.Close()
-
-	// Use apiURL to simulate domain-based URL construction in tests.
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte("shpat_abcdef1234567890abcdef1234567890"),
-		Redacted:   "shpat_****7890",
-		ExtraData: map[string]string{
-			"store_domain": "mystore.myshopify.com",
-		},
-	}
-
-	result := v.Verify(context.Background(), raw)
-
-	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "Shopify access token is active", result.Message)
-	assert.Equal(t, "Domain Store", result.ExtraData["shop_name"])
 }

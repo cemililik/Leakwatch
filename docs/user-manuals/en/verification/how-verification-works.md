@@ -26,7 +26,7 @@ If the provider returns a contract-valid success response, the finding is marked
 
 ### Trusted or companion context required
 
-Seven registered implementations cannot safely make a live request from a bare detector finding. Grafana, GitHub/GHES, Datadog, and Snyk require a trusted issuer/site/API origin; Twilio requires the Account SID and paired API Key Secret; Shopify requires the issuing store domain. Without that context Leakwatch sends no request and returns `unverified`, rather than guessing an issuer or misreporting a real credential as inactive.
+Seven registered implementations cannot safely make a live request from a bare detector finding. Grafana, GitHub/GHES, Datadog, and Snyk require a trusted issuer/site/API origin. Twilio findings already contain the explicitly paired API Key Secret and non-secret Key SID, but still require a trusted regional origin. Shopify requires an operator-trusted issuing-store origin; finding metadata cannot select it. Without that context Leakwatch sends no request and returns `unverified`, rather than guessing an issuer or misreporting a real credential as inactive.
 
 ### Format validation only
 

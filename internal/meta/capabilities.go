@@ -52,6 +52,7 @@ const (
 	InactiveTrustedOriginHTTP401       InactiveStatusContract = "trusted_origin_http_401"
 	InactiveTrustedOriginRejection     InactiveStatusContract = "trusted_origin_auth_rejection"
 	InactiveTrustedSiteRejection       InactiveStatusContract = "trusted_site_auth_rejection"
+	InactiveTrustedStoreHTTP401        InactiveStatusContract = "trusted_store_http_401"
 	InactiveTrustedStoreRejection      InactiveStatusContract = "trusted_store_auth_rejection"
 	InactiveTypedAuthenticationError   InactiveStatusContract = "typed_authentication_error"
 )
@@ -128,7 +129,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "rubygems-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "sendgrid-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "http_401_only"},
 	{DetectorID: "sentry-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
-	{DetectorID: "shopify-access-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"store_domain"}, EndpointClass: "companion_context_provider_api", InactiveStatusContract: "trusted_store_auth_rejection"},
+	{DetectorID: "shopify-access-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_store_origin"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_store_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "slack-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "provider_body_auth_rejection"},
 	{DetectorID: "slack-webhook", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "snowflake-credentials", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
@@ -141,7 +142,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "teams-webhook", VerifierKind: VerifierLive, EndpointClass: "credential_embedded_provider_url", InactiveStatusContract: "provider_specific_definitive_rejection"},
 	{DetectorID: "telegram-bot-token", VerifierKind: VerifierLive, EndpointClass: "credential_embedded_provider_url", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "terraform-cloud-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
-	{DetectorID: "twilio-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"account_sid", "api_key_secret"}, EndpointClass: "companion_context_fixed_provider_api", InactiveStatusContract: "paired_credential_auth_rejection"},
+	{DetectorID: "twilio-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"api_key_sid", "trusted_api_origin"}, ProviderRegions: []string{"US1", "IE1", "AU1"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "vercel-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 }
 

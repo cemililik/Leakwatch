@@ -8,88 +8,137 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
+	twiliodetector "github.com/HodeTech/leakwatch/internal/detector/twilio"
+	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/HodeTech/leakwatch/internal/detector"
-	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-// Fixtures mirror the real Twilio detector output: raw.Raw is the API Key SID
-// ("SK" + 32 hex) and ExtraData["account_sid"] is the Account SID ("AC" + 32
-// hex). The API Key Secret is the paired secret required to authenticate.
 const (
 	fixtureAPIKeySID = "SKabcdef0123456789abcdef0123456789"
-	fixtureAccount   = "AC1234567890abcdef1234567890abcd"
-	fixtureSecret    = "api_key_secret_0123456789abcdef0"
+	fixtureAccount   = "AC1234567890abcdef1234567890ABCDEF"
 )
 
-func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
+func fixtureAPIKeySecret() string { return strings.Repeat("Ab12Cd34", 4) }
+
+func detectorFixture(t *testing.T, includeAccount bool) detector.RawFinding {
+	t.Helper()
+	input := "TWILIO_API_KEY_SID=" + fixtureAPIKeySID + "\n"
+	if includeAccount {
+		input = "TWILIO_ACCOUNT_SID=" + fixtureAccount + "\n" + input
+	}
+	input += "TWILIO_API_KEY_" + "SECRET=" + fixtureAPIKeySecret()
+	findings := (&twiliodetector.Detector{}).Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	return findings[0]
+}
+
+func TestVerify_RealDetectorFinding_ReachesTrustedProbe(t *testing.T) {
+	secret := fixtureAPIKeySecret()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/2010-04-01/Accounts/"+fixtureAccount+".json", r.URL.Path)
-
-		// Verify Basic auth: API Key SID as username, API Key Secret as password.
 		auth := r.Header.Get("Authorization")
 		require.True(t, strings.HasPrefix(auth, "Basic "))
 		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
 		require.NoError(t, err)
-		parts := strings.SplitN(string(decoded), ":", 2)
-		assert.Equal(t, fixtureAPIKeySID, parts[0])
-		assert.Equal(t, fixtureSecret, parts[1])
+		assert.Equal(t, fixtureAPIKeySID+":"+secret, string(decoded))
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"sid":"` + fixtureAccount + `"}`))
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(fixtureAPIKeySID),
-		Redacted:   "SK****6789",
-		ExtraData: map[string]string{
-			"account_sid":    fixtureAccount,
-			"api_key_secret": fixtureSecret,
-		},
-	}
-
-	result := v.Verify(context.Background(), raw)
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detectorFixture(t, true),
+	)
 
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "Twilio API key is active", result.Message)
+	assert.Equal(t, fixtureAccount, result.ExtraData["account_sid"])
+	assert.NotContains(t, result.Message, secret)
+	for _, value := range result.ExtraData {
+		assert.NotEqual(t, secret, value)
+	}
 }
 
-func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"message":"Authenticate"}`))
+func TestVerify_ProductionFindingWithoutTrustedOrigin_IsUnverified(t *testing.T) {
+	result := (&Verifier{}).Verify(context.Background(), detectorFixture(t, true))
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Twilio regional API origin is not configured", result.Message)
+}
+
+func TestVerify_Only401IsInactive_403IsPermissionError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   finding.VerificationStatus
+	}{
+		{name: "authentication rejection", status: http.StatusUnauthorized, want: finding.StatusVerifiedInactive},
+		{name: "permission rejection", status: http.StatusForbidden, want: finding.StatusVerifyError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detectorFixture(t, true),
+			)
+			assert.Equal(t, tc.want, result.Status)
+		})
+	}
+}
+
+func TestVerify_NoAccountSID_UsesCollectionProbe(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/2010-04-01/Accounts.json", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accounts":[]}`))
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detectorFixture(t, false),
+	)
+	assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+}
+
+func TestVerify_MissingOrInvalidCompanionContext_IsUnverified(t *testing.T) {
+	secret := fixtureAPIKeySecret()
+	tests := []detector.RawFinding{
+		{Raw: []byte(secret)},
+		{Raw: []byte(secret), ExtraData: map[string]string{"api_key_sid": "not-a-sid"}},
+		{Raw: []byte(secret), ExtraData: map[string]string{"api_key_sid": fixtureAPIKeySID, "account_sid": "not-an-account"}},
 	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(fixtureAPIKeySID),
-		Redacted:   "SK****6789",
-		ExtraData: map[string]string{
-			"account_sid":    fixtureAccount,
-			"api_key_secret": fixtureSecret,
-		},
+	for _, raw := range tests {
+		result := (&Verifier{apiURL: "http://127.0.0.1:1"}).Verify(context.Background(), raw)
+		assert.Equal(t, finding.StatusUnverified, result.Status)
 	}
+}
 
-	result := v.Verify(context.Background(), raw)
-
-	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "Twilio API key is invalid or revoked", result.Message)
+func TestVerify_MalformedSuccessResponse_IsVerifyError(t *testing.T) {
+	tests := []struct {
+		contentType string
+		body        string
+	}{
+		{contentType: "application/json", body: `{}`},
+		{contentType: "text/html", body: `{"sid":"` + fixtureAccount + `"}`},
+		{contentType: "application/json", body: `{"sid":"ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detectorFixture(t, true),
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {
@@ -98,90 +147,15 @@ func TestVerify_ServerError_ReturnsError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(fixtureAPIKeySID),
-		Redacted:   "SK****6789",
-		ExtraData: map[string]string{
-			"account_sid":    fixtureAccount,
-			"api_key_secret": fixtureSecret,
-		},
-	}
-
-	result := v.Verify(context.Background(), raw)
-
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detectorFixture(t, true),
+	)
 	assert.Equal(t, finding.StatusVerifyError, result.Status)
-	assert.Contains(t, result.Message, "500")
 }
 
-// TestVerify_NoAPIKeySecret_ReturnsUnverified verifies that the common real
-// detector output (API Key SID + Account SID, but no paired secret) is reported
-// as Unverified — never falsely inactive.
-func TestVerify_NoAPIKeySecret_ReturnsUnverified(t *testing.T) {
-	v := &Verifier{}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(fixtureAPIKeySID),
-		Redacted:   "SK****6789",
-		ExtraData:  map[string]string{"account_sid": fixtureAccount},
-	}
-
-	result := v.Verify(context.Background(), raw)
-
-	assert.Equal(t, finding.StatusUnverified, result.Status)
-	assert.Equal(t, "API Key Secret unavailable; cannot verify", result.Message)
-}
-
-// TestVerify_NoAccountSID_UsesCollectionEndpoint verifies that the request
-// falls back to the accounts collection when no Account SID is known.
-func TestVerify_NoAccountSID_UsesCollectionEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/2010-04-01/Accounts.json", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"accounts":[]}`))
-	}))
-	defer server.Close()
-
-	v := &Verifier{
-		apiURL:     server.URL,
-		httpClient: server.Client(),
-	}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(fixtureAPIKeySID),
-		Redacted:   "SK****6789",
-		ExtraData:  map[string]string{"api_key_secret": fixtureSecret},
-	}
-
-	result := v.Verify(context.Background(), raw)
-
-	assert.Equal(t, finding.StatusVerifiedActive, result.Status)
-}
-
-func TestVerify_Type_ReturnsCorrectID(t *testing.T) {
-	v := &Verifier{}
-	assert.Equal(t, "twilio-api-key", v.Type())
-}
-
-func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
-	v := &Verifier{}
-
-	raw := detector.RawFinding{
-		DetectorID: detectorID,
-		Raw:        []byte(""),
-		Redacted:   "",
-	}
-
-	result := v.Verify(context.Background(), raw)
-
+func TestVerify_TypeAndEmptyToken(t *testing.T) {
+	assert.Equal(t, detectorID, (&Verifier{}).Type())
+	result := (&Verifier{}).Verify(context.Background(), detector.RawFinding{})
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
 }

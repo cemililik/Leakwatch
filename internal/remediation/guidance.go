@@ -524,10 +524,10 @@ func init() {
 	})
 
 	Register("twilio-api-key", finding.Remediation{
-		Title: "Rotate Twilio API Key",
+		Title: "Rotate Twilio API Key Pair",
 		Steps: []string{
 			"Go to Twilio Console > API Keys.",
-			stepDeleteCompromisedKey,
+			"Identify the API Key SID paired with the exposed secret and revoke that key.",
 			stepCreateNewAPIKey,
 		},
 		DocURL:     "https://www.twilio.com/docs/iam/api-keys",
@@ -734,8 +734,8 @@ func init() {
 	Register("shopify-access-token", finding.Remediation{
 		Title: "Rotate Shopify Access Token",
 		Steps: []string{
-			"Go to Shopify Admin > Apps > Manage private apps.",
-			"Rotate the compromised access token.",
+			"Go to Shopify Admin > Settings > Apps and sales channels > Develop apps.",
+			"Open the affected app and revoke or rotate the compromised Admin API access token.",
 			stepUpdateIntegrationsToken,
 		},
 		DocURL:     "https://shopify.dev/docs/apps/auth",

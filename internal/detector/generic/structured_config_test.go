@@ -14,6 +14,7 @@ import (
 	"github.com/HodeTech/leakwatch/internal/detector/dbconn"
 	"github.com/HodeTech/leakwatch/internal/detector/shopify"
 	"github.com/HodeTech/leakwatch/internal/detector/testutil"
+	twiliodetector "github.com/HodeTech/leakwatch/internal/detector/twilio"
 	"github.com/HodeTech/leakwatch/internal/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,6 +91,25 @@ func TestStructuredConfigDetector_AppsettingsFullEngine_EightLocationsSixValues(
 		}
 	}
 	assert.Len(t, unique, 6, "three APISIX locations intentionally share one synthetic value")
+}
+
+func TestStructuredConfigDetector_PairedTwilioSecretUsesProviderFindingOnly(t *testing.T) {
+	keySID := "SK" + strings.Repeat("ab12cd34", 4)
+	secret := strings.Repeat("Qw12Er34", 4)
+	data := []byte(`{"Twilio":{"ApiKeySid":"` + keySID + `","ApiKeySecret":"` + secret + `"}}`)
+	eng := engine.New(engine.Config{
+		Concurrency: 2,
+		Detectors: []detector.Detector{
+			&StructuredConfigDetector{},
+			&twiliodetector.Detector{},
+		},
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "twilio-api-key", result.Findings[0].DetectorID)
+	assert.Empty(t, result.Findings[0].Raw)
 }
 
 func TestStructuredConfigDetector_HardNegatives(t *testing.T) {

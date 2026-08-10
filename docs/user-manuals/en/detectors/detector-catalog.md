@@ -91,7 +91,7 @@ This page lists every built-in detector. For verification coverage details see [
 | `sendgrid-api-key` | SendGrid API Key | Critical |
 | `mailgun-api-key` | Mailgun API Key | Critical |
 | `postmark-server-token` | Postmark Server API Token | High |
-| `twilio-api-key` | Twilio API Key | Critical |
+| `twilio-api-key` | Twilio API Key Secret explicitly paired with a nearby `SK...` Key SID; a bare SID is not a secret and is not reported | Critical |
 
 ## Monitoring and Observability
 

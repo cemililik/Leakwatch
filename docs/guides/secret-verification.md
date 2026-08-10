@@ -126,8 +126,8 @@ These implementations are registered, but a bare detector finding cannot safely 
 | Detector | Detector ID | Required context and behavior |
 |----------|-------------|-------------------------------|
 | Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
-| Twilio API Key | `twilio-api-key` | Account SID plus the API Key Secret paired with the detected `SK...` Key SID; the normal detector finding does not supply the paired secret |
-| Shopify Access Token | `shopify-access-token` | Trusted issuing store domain; the normal detector finding emits only the token, so no request is made without operator context |
+| Twilio API Key Secret | `twilio-api-key` | The detector reports an explicitly labelled 32-character secret only beside its `SK...` Key SID; bare SIDs are not findings. A trusted regional origin (US1/IE1/AU1) is still operator context, so production makes no request without it; `403` is permission-ambiguous and never inactive |
+| Shopify Access Token | `shopify-access-token` | Operator-trusted issuing store origin; finding-controlled domains are ignored. The prepared verifier uses the pinned 2026-07 Admin GraphQL shop identity query, but production makes no request until trusted-store configuration exists |
 | GitHub PAT | `github-token` | Trusted GitHub.com or GHES API origin; both issuers use `ghp_`/`github_pat_`, so the registered production verifier makes no request without explicit issuer trust |
 | GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; `gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and side-effectful `ghr_` refresh-token exchange is never attempted |
 | Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED; the production verifier makes no request without it |
