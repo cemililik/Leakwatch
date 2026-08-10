@@ -64,6 +64,12 @@ type mixedEntropyDetector struct {
 	gateFinding bool
 }
 
+type fallbackMockDetector struct {
+	*mockDetector
+}
+
+func (d *fallbackMockDetector) FallbackOnSpecializedOverlap() bool { return true }
+
 func (m *mixedEntropyDetector) EntropyGated(_ detector.RawFinding) bool {
 	return m.gateFinding
 }
@@ -118,6 +124,94 @@ func TestScan_SingleChunkSingleDetector_ReturnsOneFinding(t *testing.T) {
 	assert.Empty(t, result.Findings[0].Raw)
 	assert.Equal(t, 1, result.ScannedChunks)
 	assert.False(t, result.Interrupted)
+}
+
+func TestScan_SpecializedOverlapSuppressesOnlyFallbackFinding(t *testing.T) {
+	data := []byte(`{"AccessToken":"shpat_0123456789abcdef0123456789abcdef"}`)
+	wholeStart := bytes.Index(data, []byte("shpat_"))
+	wholeEnd := wholeStart + len("shpat_0123456789abcdef0123456789abcdef")
+
+	fallback := &fallbackMockDetector{mockDetector: &mockDetector{
+		id:       "structured-fallback",
+		severity: finding.SeverityHigh,
+		findings: []detector.RawFinding{{
+			DetectorID: "structured-fallback",
+			Raw:        data[wholeStart:wholeEnd],
+			Redacted:   "fallback-redacted",
+			ByteStart:  wholeStart,
+			ByteEnd:    wholeEnd,
+		}},
+	}}
+	specialized := &mockDetector{
+		id:       "provider-specialized",
+		severity: finding.SeverityCritical,
+		findings: []detector.RawFinding{{
+			DetectorID: "provider-specialized",
+			Raw:        data[wholeStart:wholeEnd],
+			Redacted:   "provider-redacted",
+		}},
+	}
+
+	eng := New(Config{Concurrency: 1, Detectors: []detector.Detector{fallback, specialized}, Clock: fixedClock})
+	result, err := eng.Scan(context.Background(), &mockSource{chunks: []source.Chunk{{
+		Data: data, SourceMetadata: finding.SourceMetadata{FilePath: "appsettings.json"},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "provider-specialized", result.Findings[0].DetectorID)
+	assert.Equal(t, finding.SeverityCritical, result.Findings[0].Severity)
+}
+
+func TestSuppressFallbacksForSpecialized_PreservesDistinctLocations(t *testing.T) {
+	makePair := func(id string, start, end int) locatedVerifyPair {
+		return locatedVerifyPair{
+			pair:  verifier.VerifyPair{Finding: finding.Finding{DetectorID: id}},
+			start: start,
+			end:   end,
+		}
+	}
+	tests := []struct {
+		name        string
+		fallbacks   []locatedVerifyPair
+		specialized locatedVerifyPair
+		want        []string
+	}{
+		{
+			name: "same value at distinct location remains",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20),
+			},
+			specialized: makePair("specialized", 30, 40),
+			want:        []string{"fallback"},
+		},
+		{
+			name: "specialized subset suppresses containing fallback",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 40),
+			},
+			specialized: makePair("specialized", 20, 30),
+			want:        []string{},
+		},
+		{
+			name: "unknown fallback location is not suppressed",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", -1, -1),
+			},
+			specialized: makePair("specialized", 10, 20),
+			want:        []string{"fallback"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := suppressFallbacksForSpecialized(tc.fallbacks, tc.specialized)
+			ids := make([]string, 0, len(got))
+			for _, pair := range got {
+				ids = append(ids, pair.pair.Finding.DetectorID)
+			}
+			assert.Equal(t, tc.want, ids)
+		})
+	}
 }
 
 func TestScan_EmptySource_ReturnsNoFindings(t *testing.T) {

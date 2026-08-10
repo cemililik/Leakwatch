@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/detector/dbconn"
+	"github.com/HodeTech/leakwatch/internal/detector/shopify"
 	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/engine"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +23,7 @@ func TestStructuredConfigDetector_Metadata(t *testing.T) {
 	d := &StructuredConfigDetector{}
 	assert.Equal(t, "structured-config-secret", d.ID())
 	assert.Equal(t, "Structured Configuration Secret", d.Description())
-	assert.NotEmpty(t, d.Keywords())
+	assert.Empty(t, d.Keywords(), "escaped JSON keys require an always-run bounded parser")
 }
 
 func TestStructuredConfigDetector_AppsettingsFixture(t *testing.T) {
@@ -111,7 +113,19 @@ func TestStructuredConfigDetector_HardNegatives(t *testing.T) {
     "RefreshToken": "@Microsoft.KeyVault(SecretUri=https://vault.invalid/secrets/token)",
     "SigningSecret": "APISIX_ADMIN_KEY",
     "WebhookSecret": "0000000000000000",
-    "ConsumerSecret": "change_me"
+    "ConsumerSecret": "change_me",
+    "Password": "string",
+    "Passphrase": "redacted",
+    "AuthToken": "$AUTH_TOKEN",
+    "AuthToken": "$auth_token",
+    "BearerToken": "$(BEARER_TOKEN)",
+    "AppSecret": "<secret>",
+    "PrivateKey": "/etc/ssl/private/key.pem",
+    "PrivateKey": "C:\\certs\\private-key.pem",
+    "PrivateKey": "\\\\server\\share\\private-key.pem",
+    "MasterKey": "pkcs11:token=application;object=master-key",
+    "EncryptionKey": "arn:aws:kms:eu-west-1:123456789012:key/example",
+    "ApplicationSecret": "op://engineering/service/credential"
   }
 }`)
 
@@ -184,11 +198,65 @@ func TestStructuredConfigDetector_SupportedSecretRoles(t *testing.T) {
 	}
 }
 
+func TestStructuredConfigDetector_EverySupportedRoleMatchesThroughMatcher(t *testing.T) {
+	keys := []string{
+		"Password", "Passwd", "Passphrase", "Secret", "ClientSecret",
+		"SecretToken", "AccessToken", "RefreshToken", "AuthToken", "BearerToken",
+		"SigningSecret", "WebhookSecret", "ConsumerSecret", "AppSecret",
+		"ApplicationSecret", "MasterSecret", "MasterKey", "EncryptionKey", "PrivateKey",
+	}
+	d := &StructuredConfigDetector{}
+	for i, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			data := []byte(fmt.Sprintf("{%q:%q}", key, fmt.Sprintf("fixture-%02d-9mN2pQ7rT4vW8xY", i)))
+			assert.Equal(t, d.Scan(context.Background(), data), testutil.ScanViaMatcher(d, data))
+			require.Len(t, testutil.ScanViaMatcher(d, data), 1)
+		})
+	}
+
+	escaped := []byte(`{"Pass\u0077ord":"fixture-escaped-9mN2pQ7r"}`)
+	assert.Equal(t, d.Scan(context.Background(), escaped), testutil.ScanViaMatcher(d, escaped))
+	require.Len(t, testutil.ScanViaMatcher(d, escaped), 1)
+}
+
+func TestStructuredConfigDetector_ProviderOverlapPrefersSpecializedFinding(t *testing.T) {
+	data := []byte(`{"AccessToken":"shpat_0123456789abcdef0123456789abcdef"}`)
+	eng := engine.New(engine.Config{
+		Concurrency: 1,
+		Detectors: []detector.Detector{
+			&StructuredConfigDetector{},
+			&shopify.Detector{},
+		},
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "shopify-access-token", result.Findings[0].DetectorID)
+}
+
 func TestStructuredConfigDetector_ResourceBounds(t *testing.T) {
 	t.Run("depth", func(t *testing.T) {
 		data := []byte(strings.Repeat(`{"nested":`, maxStructuredDepth+2) +
 			`{"Password":"fixture-secret-9mN2pQ7r"}` + strings.Repeat("}", maxStructuredDepth+3))
 		assert.Empty(t, (&StructuredConfigDetector{}).Scan(context.Background(), data))
+	})
+
+	t.Run("deep non-empty array terminates", func(t *testing.T) {
+		data := []byte(`{"Deep":` + strings.Repeat("[", maxStructuredDepth+2) +
+			`"ordinary-value"` + strings.Repeat("]", maxStructuredDepth+2) +
+			`,"Password":"shallow-fixture-secret-9mN2pQ7r"}`)
+		done := make(chan []detector.RawFinding, 1)
+		go func() {
+			done <- (&StructuredConfigDetector{}).Scan(context.Background(), data)
+		}()
+		select {
+		case findings := <-done:
+			require.Len(t, findings, 1)
+			assert.Equal(t, "Password", findings[0].ExtraData["key_name"])
+		case <-time.After(time.Second):
+			t.Fatal("deep array scan did not terminate")
+		}
 	})
 
 	t.Run("finding cap", func(t *testing.T) {
@@ -203,6 +271,28 @@ func TestStructuredConfigDetector_ResourceBounds(t *testing.T) {
 		b.WriteByte('}')
 		assert.Len(t, (&StructuredConfigDetector{}).Scan(context.Background(), []byte(b.String())), maxStructuredFindings)
 	})
+}
+
+func TestStructuredConfigDetector_TokenRetentionCapCannotHideTrailingSecret(t *testing.T) {
+	var b strings.Builder
+	b.Grow(maxStructuredTokens + 128)
+	b.WriteByte('[')
+	for i := 0; i < maxStructuredTokens/2+10; i++ {
+		b.WriteString("0,")
+	}
+	b.WriteString(`{"Password":"trailing-fixture-secret-9mN2pQ7r"}]`)
+
+	findings := (&StructuredConfigDetector{}).Scan(context.Background(), []byte(b.String()))
+	require.Len(t, findings, 1)
+	assert.Equal(t, "Password", findings[0].ExtraData["key_name"])
+	assert.Equal(t, "Password", findings[0].ExtraData["key_path"], "path safely falls back after retention cap")
+}
+
+func TestStructuredConfigDetector_CancelledContextReturnsNoPartialResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	data := []byte(`{"Password":"fixture-secret-9mN2pQ7r"}`)
+	assert.Empty(t, (&StructuredConfigDetector{}).Scan(ctx, data))
 }
 
 func TestStructuredConfigDetector_MalformedAndNonJSONInputsDoNotPanic(t *testing.T) {
@@ -221,6 +311,49 @@ func TestStructuredConfigDetector_MalformedAndNonJSONInputsDoNotPanic(t *testing
 	}
 }
 
+func TestStructuredConfigDetector_LexerAndReferenceBoundaries(t *testing.T) {
+	t.Run("string bounds", func(t *testing.T) {
+		_, next, ok := scanJSONString([]byte(`"trailing\`), 0, 0)
+		assert.False(t, ok)
+		assert.Equal(t, len(`"trailing\`), next)
+
+		overlong := []byte(`"` + strings.Repeat("a", maxStructuredStringLen+1) + `"`)
+		_, next, ok = scanJSONString(overlong, 0, 0)
+		assert.False(t, ok)
+		assert.Equal(t, len(overlong), next)
+	})
+
+	t.Run("path parser boundaries", func(t *testing.T) {
+		p := &jsonPathParser{}
+		p.parseValue(nil, 0)
+		assert.Zero(t, p.pos)
+
+		paths := buildJSONPaths([]jsonToken{
+			{kind: jsonObjectStart},
+			{kind: jsonString, text: "missing-colon"},
+			{kind: jsonOther},
+			{kind: jsonObjectEnd},
+		})
+		assert.Empty(t, paths)
+	})
+
+	t.Run("template syntax", func(t *testing.T) {
+		assert.False(t, isDollarReference(""))
+		assert.False(t, isDollarReference("$"))
+		assert.False(t, isDollarReference("$NOT-A-REFERENCE"))
+		assert.True(t, isDollarReference("$lower_case_1"))
+		assert.False(t, isAngleReference("<>"))
+		assert.False(t, isAngleReference("<not/a/reference>"))
+		assert.True(t, isAngleReference("<client secret>"))
+	})
+
+	t.Run("value length", func(t *testing.T) {
+		assert.False(t, isContextSecretValue("Password", "abc"))
+		assert.False(t, isContextSecretValue("Password", strings.Repeat("x", maxStructuredStringLen+1)))
+		assert.True(t, isContextSecretValue("Password", "s3cure"))
+	})
+}
+
 func TestStructuredConfigDetector_DeterministicSourceOrder(t *testing.T) {
 	data := []byte(`{"Z":{"Password":"fixture-z-9mN2pQ7r"},"A":{"ClientSecret":"fixture-a-9mN2pQ7r"}}`)
 	findings := (&StructuredConfigDetector{}).Scan(context.Background(), data)
@@ -234,6 +367,7 @@ func FuzzStructuredConfigDetector(f *testing.F) {
 	f.Add([]byte(`{"Password":"fixture-secret-9mN2pQ7r"}`))
 	f.Add([]byte(`{"SensitiveHeaders":["Password"]}`))
 	f.Add([]byte(`{"Password":"${PASSWORD}"}`))
+	f.Add([]byte(strings.Repeat("[", maxStructuredDepth+2) + `"Password"` + strings.Repeat("]", maxStructuredDepth+2)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 1<<20 {
 			t.Skip()

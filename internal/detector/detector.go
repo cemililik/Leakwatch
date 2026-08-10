@@ -26,6 +26,18 @@ type Detector interface {
 	Severity() finding.Severity
 }
 
+// OverlapFallback is an optional detector contract for broad contextual
+// detectors. When a non-fallback detector reports an intersecting byte range
+// in the same source chunk, the engine suppresses the fallback finding and
+// preserves the specialized detector's severity, verification, and
+// remediation. Implementations must return findings in a bounded set because
+// the engine briefly retains fallback candidates until all specialized
+// detectors have scanned that chunk.
+type OverlapFallback interface {
+	Detector
+	FallbackOnSpecializedOverlap() bool
+}
+
 // RawFinding represents an unverified raw finding.
 type RawFinding struct {
 	DetectorID string

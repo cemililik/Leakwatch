@@ -117,6 +117,12 @@ type findingEntropyGate interface {
 	EntropyGated(raw detector.RawFinding) bool
 }
 
+type locatedVerifyPair struct {
+	pair       verifier.VerifyPair
+	start, end int
+	isFallback bool
+}
+
 // isEntropyBased reports whether the detector opts into the engine entropy gate.
 func isEntropyBased(d detector.Detector) bool {
 	eb, ok := d.(entropyBased)
@@ -347,6 +353,14 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 
 		// Aho-Corasick pre-filtering: only run matched detectors.
 		matchedDetectors := e.matcher.Match(chunk.Data)
+		// Broad fallback detectors run first and buffer only their bounded result
+		// set. Specialized findings can then stream immediately while removing
+		// overlapping fallbacks. This preserves the engine's bounded raw-secret
+		// memory model instead of accumulating every provider finding in a chunk.
+		sort.SliceStable(matchedDetectors, func(i, j int) bool {
+			return detectorIsOverlapFallback(matchedDetectors[i]) && !detectorIsOverlapFallback(matchedDetectors[j])
+		})
+		fallbackPairs := make([]locatedVerifyPair, 0, 8)
 
 		for _, det := range matchedDetectors {
 			select {
@@ -404,15 +418,63 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 					continue
 				}
 
-				pair := verifier.VerifyPair{Finding: f, Raw: raw}
+				candidate := locatedVerifyPair{
+					pair:       verifier.VerifyPair{Finding: f, Raw: raw},
+					start:      offset,
+					end:        rawFindingEnd(chunk.Data, raw, offset),
+					isFallback: detectorIsOverlapFallback(det),
+				}
+				if candidate.isFallback {
+					fallbackPairs = append(fallbackPairs, candidate)
+					continue
+				}
+
+				fallbackPairs = suppressFallbacksForSpecialized(fallbackPairs, candidate)
 				select {
 				case <-ctx.Done():
 					return
-				case results <- pair:
+				case results <- candidate.pair:
 				}
 			}
 		}
+
+		for _, candidate := range fallbackPairs {
+			select {
+			case <-ctx.Done():
+				return
+			case results <- candidate.pair:
+			}
+		}
 	}
+}
+
+func detectorIsOverlapFallback(det detector.Detector) bool {
+	fallback, ok := det.(detector.OverlapFallback)
+	return ok && fallback.FallbackOnSpecializedOverlap()
+}
+
+// suppressFallbacksForSpecialized drops a buffered broad-context finding only
+// when the newly produced specialized finding intersects its source bytes.
+// Provider-provider overlaps and repeated values at distinct locations never
+// enter this function and therefore remain separate findings.
+func suppressFallbacksForSpecialized(
+	fallbacks []locatedVerifyPair,
+	specialized locatedVerifyPair,
+) []locatedVerifyPair {
+	if len(fallbacks) == 0 || specialized.start < 0 || specialized.end <= specialized.start {
+		return fallbacks
+	}
+	result := fallbacks[:0]
+	for _, candidate := range fallbacks {
+		if candidate.start < 0 || candidate.end <= candidate.start {
+			result = append(result, candidate)
+			continue
+		}
+		if candidate.start >= specialized.end || specialized.start >= candidate.end {
+			result = append(result, candidate)
+		}
+	}
+	return result
 }
 
 // rawFindingOffset returns a detector-provided exact byte span when it is
@@ -428,6 +490,17 @@ func rawFindingOffset(data []byte, raw detector.RawFinding, cursor map[string]in
 		return nextMatchOffset(data, raw.Raw, cursor)
 	}
 	return firstMatchOffset(data, raw.Raw)
+}
+
+func rawFindingEnd(data []byte, raw detector.RawFinding, offset int) int {
+	if raw.ByteEnd > raw.ByteStart && raw.ByteStart == offset && raw.ByteEnd <= len(data) &&
+		bytes.Equal(data[raw.ByteStart:raw.ByteEnd], raw.Raw) {
+		return raw.ByteEnd
+	}
+	if offset < 0 || len(raw.Raw) == 0 || offset > len(data)-len(raw.Raw) {
+		return -1
+	}
+	return offset + len(raw.Raw)
 }
 
 // firstMatchOffset returns the byte offset of the first occurrence of raw in

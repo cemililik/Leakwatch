@@ -33,40 +33,29 @@ func (d *StructuredConfigDetector) Severity() finding.Severity {
 }
 
 func (d *StructuredConfigDetector) Keywords() []string {
-	return []string{
-		"password", "passwd", "passphrase",
-		"clientsecret", "client_secret", "client-secret",
-		"secrettoken", "secret_token", "secret-token",
-		"accesstoken", "access_token", "access-token",
-		"refreshtoken", "refresh_token", "refresh-token",
-		"signingsecret", "signing_secret", "signing-secret",
-		"webhooksecret", "webhook_secret", "webhook-secret",
-	}
+	// JSON permits escaped object keys (for example "Pass\u0077ord"), and the
+	// supported role vocabulary has many casing/separator forms. No finite raw
+	// substring list can preserve Scan/matcher parity for all of them. Running
+	// the bounded lexer for every text chunk is therefore a correctness choice,
+	// not an omitted optimization.
+	return nil
 }
 
-func (d *StructuredConfigDetector) Scan(_ context.Context, data []byte) []detector.RawFinding {
-	tokens := lexJSONLike(data)
-	if len(tokens) < 3 {
+// FallbackOnSpecializedOverlap marks this context detector as a fallback when a
+// specialized detector identifies the same source value. The engine keeps the
+// provider-specific severity, verification and remediation in that case.
+func (d *StructuredConfigDetector) FallbackOnSpecializedOverlap() bool { return true }
+
+func (d *StructuredConfigDetector) Scan(ctx context.Context, data []byte) []detector.RawFinding {
+	tokens, candidates, complete := lexJSONLike(ctx, data)
+	if !complete || len(candidates) == 0 {
 		return nil
 	}
 
 	paths := buildJSONPaths(tokens)
-	findings := make([]detector.RawFinding, 0, 8)
-	for i := 0; i+2 < len(tokens) && len(findings) < maxStructuredFindings; i++ {
-		keyToken, colonToken, valueToken := tokens[i], tokens[i+1], tokens[i+2]
-		if keyToken.kind != jsonString || colonToken.kind != jsonColon || valueToken.kind != jsonString {
-			continue
-		}
-		if keyToken.depth > maxStructuredDepth || valueToken.depth > maxStructuredDepth {
-			continue
-		}
-		if !isHighConfidenceSecretKey(keyToken.text) || isGenericOwnedSecretKey(keyToken.text) {
-			continue
-		}
-		if !isContextSecretValue(valueToken.text) {
-			continue
-		}
-
+	findings := make([]detector.RawFinding, 0, len(candidates))
+	for _, candidate := range candidates {
+		keyToken, valueToken := candidate.key, candidate.value
 		raw := data[valueToken.contentStart:valueToken.contentEnd]
 		path := paths[valueToken.contentStart]
 		if path == "" {
@@ -109,13 +98,61 @@ type jsonToken struct {
 	text                     string
 }
 
+type structuredCandidate struct {
+	key   jsonToken
+	value jsonToken
+}
+
 // lexJSONLike tokenizes only the JSON structure needed for key/value
 // extraction. It preserves byte offsets, skips // and /* */ comments, accepts
-// trailing commas at the parser layer, and stops at explicit resource bounds.
-func lexJSONLike(data []byte) []jsonToken {
+// trailing commas at the parser layer, and retains at most
+// maxStructuredTokens tokens for path reconstruction. Candidate extraction
+// continues through the entire bounded input even after that retention cap, so
+// a large valid prefix cannot hide a secret near the end of a file.
+func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCandidate, bool) {
 	tokens := make([]jsonToken, 0, minInt(len(data)/8, 4_096))
+	candidates := make([]structuredCandidate, 0, 8)
+	var previous [2]jsonToken
+	previousCount := 0
 	depth := 0
-	for i := 0; i < len(data) && len(tokens) < maxStructuredTokens; {
+	nextContextCheck := 0
+
+	emit := func(token jsonToken) {
+		if token.kind == jsonString {
+			decoded, ok := decodeJSONString(data, token)
+			if !ok {
+				token.kind = jsonOther
+			} else {
+				token.text = decoded
+			}
+		}
+		if previousCount == 2 && previous[0].kind == jsonString &&
+			previous[1].kind == jsonColon && token.kind == jsonString &&
+			previous[0].depth <= maxStructuredDepth && token.depth <= maxStructuredDepth &&
+			isHighConfidenceSecretKey(previous[0].text) &&
+			isContextSecretValue(previous[0].text, token.text) && len(candidates) < maxStructuredFindings {
+			candidates = append(candidates, structuredCandidate{key: previous[0], value: token})
+		}
+		if len(tokens) < maxStructuredTokens {
+			tokens = append(tokens, token)
+		}
+		if previousCount < 2 {
+			previous[previousCount] = token
+			previousCount++
+			return
+		}
+		previous[0], previous[1] = previous[1], token
+	}
+
+	for i := 0; i < len(data); {
+		if i >= nextContextCheck {
+			select {
+			case <-ctx.Done():
+				return nil, nil, false
+			default:
+			}
+			nextContextCheck = i + 4_096
+		}
 		switch data[i] {
 		case ' ', '\t', '\r', '\n':
 			i++
@@ -137,39 +174,39 @@ func lexJSONLike(data []byte) []jsonToken {
 				}
 				continue
 			}
-			tokens = append(tokens, jsonToken{kind: jsonOther, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonOther, start: i, end: i + 1, depth: depth})
 			i++
 		case '"':
 			token, next, ok := scanJSONString(data, i, depth)
 			i = next
 			if ok {
-				tokens = append(tokens, token)
+				emit(token)
 			}
 		case ':':
-			tokens = append(tokens, jsonToken{kind: jsonColon, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonColon, start: i, end: i + 1, depth: depth})
 			i++
 		case ',':
-			tokens = append(tokens, jsonToken{kind: jsonComma, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonComma, start: i, end: i + 1, depth: depth})
 			i++
 		case '{':
-			tokens = append(tokens, jsonToken{kind: jsonObjectStart, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonObjectStart, start: i, end: i + 1, depth: depth})
 			depth++
 			i++
 		case '[':
-			tokens = append(tokens, jsonToken{kind: jsonArrayStart, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonArrayStart, start: i, end: i + 1, depth: depth})
 			depth++
 			i++
 		case '}':
 			if depth > 0 {
 				depth--
 			}
-			tokens = append(tokens, jsonToken{kind: jsonObjectEnd, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonObjectEnd, start: i, end: i + 1, depth: depth})
 			i++
 		case ']':
 			if depth > 0 {
 				depth--
 			}
-			tokens = append(tokens, jsonToken{kind: jsonArrayEnd, start: i, end: i + 1, depth: depth})
+			emit(jsonToken{kind: jsonArrayEnd, start: i, end: i + 1, depth: depth})
 			i++
 		default:
 			start := i
@@ -179,10 +216,10 @@ func lexJSONLike(data []byte) []jsonToken {
 			if i == start {
 				i++
 			}
-			tokens = append(tokens, jsonToken{kind: jsonOther, start: start, end: i, depth: depth})
+			emit(jsonToken{kind: jsonOther, start: start, end: i, depth: depth})
 		}
 	}
-	return tokens
+	return tokens, candidates, true
 }
 
 func scanJSONString(data []byte, start, depth int) (jsonToken, int, bool) {
@@ -199,10 +236,6 @@ func scanJSONString(data []byte, start, depth int) (jsonToken, int, bool) {
 			if i-start-1 > maxStructuredStringLen {
 				return jsonToken{}, end, false
 			}
-			decoded, err := strconv.Unquote(string(data[start:end]))
-			if err != nil || !utf8.ValidString(decoded) {
-				return jsonToken{}, end, false
-			}
 			return jsonToken{
 				kind:         jsonString,
 				start:        start,
@@ -210,13 +243,17 @@ func scanJSONString(data []byte, start, depth int) (jsonToken, int, bool) {
 				contentStart: start + 1,
 				contentEnd:   i,
 				depth:        depth,
-				text:         decoded,
 			}, end, true
 		default:
 			i++
 		}
 	}
 	return jsonToken{}, len(data), false
+}
+
+func decodeJSONString(data []byte, token jsonToken) (string, bool) {
+	decoded, err := strconv.Unquote(string(data[token.start:token.end]))
+	return decoded, err == nil && utf8.ValidString(decoded)
 }
 
 func isJSONDelimiter(b byte) bool {
@@ -247,7 +284,14 @@ func buildJSONPaths(tokens []jsonToken) map[int]string {
 }
 
 func (p *jsonPathParser) parseValue(path []string, depth int) {
-	if p.pos >= len(p.tokens) || depth > maxStructuredDepth {
+	if p.pos >= len(p.tokens) {
+		return
+	}
+	if depth > maxStructuredDepth {
+		// Every parser call must either consume input or be at EOF. Advancing at
+		// the bound prevents a deeply nested non-empty array from repeatedly
+		// presenting the same token to parseArray.
+		p.pos++
 		return
 	}
 	switch p.tokens[p.pos].kind {
@@ -341,17 +385,6 @@ func isHighConfidenceSecretKey(key string) bool {
 	}
 }
 
-// Generic API-key assignments and connection strings retain their existing
-// specialized ownership. The structured detector must not double-report them.
-func isGenericOwnedSecretKey(key string) bool {
-	switch canonicalConfigKey(key) {
-	case "apikey", "apisecret", "secretkey", "xapikey", "xapisixkey", "apisixkey", "apisixadminkey":
-		return true
-	default:
-		return false
-	}
-}
-
 func canonicalConfigKey(key string) string {
 	parts := splitConfigIdentifier(key)
 	return strings.Join(parts, "")
@@ -388,21 +421,26 @@ func splitConfigIdentifier(value string) []string {
 	return parts
 }
 
-func isContextSecretValue(value string) bool {
+func isContextSecretValue(key, value string) bool {
 	trimmed := strings.TrimSpace(value)
 	if len(trimmed) < minContextSecretLength || len(trimmed) > maxStructuredStringLen {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
 	switch lower {
-	case "password", "secret", "changeme", "change-me", "change_me", "dummy",
-		"example", "notset", "not-set", "none", "null", "default", "test", "dev", "local":
+	case "password", "secret", "string", "redacted", "masked", "changeme", "change-me", "change_me", "dummy",
+		"example", "sample", "notset", "not-set", "none", "null", "default", "test", "dev", "local",
+		"your-secret", "your_secret", "your-password", "your_password", "your_key_here", "your-key-here",
+		"replace_me", "todo", "fixme", "placeholder", "example-secret":
 		return false
 	}
-	if isPlaceholder([]byte(trimmed)) || isDegenerateValue([]byte(trimmed)) || isBareReference([]byte(trimmed)) {
+	if isDegenerateValue([]byte(trimmed)) || isBareReference([]byte(trimmed)) {
 		return false
 	}
 	if isExternalSecretReference(lower, trimmed) {
+		return false
+	}
+	if isKeyMaterialReference(canonicalConfigKey(key), lower) {
 		return false
 	}
 	return true
@@ -411,16 +449,63 @@ func isContextSecretValue(value string) bool {
 func isExternalSecretReference(lower, original string) bool {
 	if (strings.HasPrefix(original, "${") && strings.HasSuffix(original, "}")) ||
 		(strings.HasPrefix(original, "{{") && strings.HasSuffix(original, "}}")) ||
-		(strings.HasPrefix(original, "%") && strings.HasSuffix(original, "%")) {
+		(strings.HasPrefix(original, "%") && strings.HasSuffix(original, "%")) ||
+		(strings.HasPrefix(original, "$(") && strings.HasSuffix(original, ")")) ||
+		isDollarReference(original) || isAngleReference(original) {
 		return true
 	}
 	for _, prefix := range []string{
 		"env:", "secret://", "vault://", "kv://", "keyvault://",
-		"aws-secretsmanager://", "gcp-secretmanager://", "@microsoft.keyvault(",
+		"aws-secretsmanager://", "gcp-secretmanager://", "op://", "1password://",
+		"@microsoft.keyvault(",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
+	}
+	return false
+}
+
+func isDollarReference(value string) bool {
+	if !strings.HasPrefix(value, "$") || len(value) < 2 {
+		return false
+	}
+	for _, r := range value[1:] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != ':' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAngleReference(value string) bool {
+	if len(value) < 3 || value[0] != '<' || value[len(value)-1] != '>' {
+		return false
+	}
+	for _, r := range value[1 : len(value)-1] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+func isKeyMaterialReference(key, lower string) bool {
+	switch key {
+	case "privatekey", "masterkey", "encryptionkey":
+	default:
+		return false
+	}
+	for _, prefix := range []string{
+		"/", "./", "../", "~/", "\\\\", "file://", "pkcs11:", "arn:aws:kms:", "alias/",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	if len(lower) >= 3 && lower[1] == ':' &&
+		(lower[0] >= 'a' && lower[0] <= 'z') && (lower[2] == '/' || lower[2] == '\\') {
+		return true
 	}
 	return false
 }
