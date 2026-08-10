@@ -1,10 +1,5 @@
 package teams
 
-// leakwatch:vtest-equivalent — this verifier's credential is the request URL,
-// so its suite below constructs Raw per httptest server. It explicitly covers
-// transport redaction, cancellation, unexpected/malformed success responses,
-// and the provider-specific non-destructive status contract.
-
 import (
 	"context"
 	"errors"

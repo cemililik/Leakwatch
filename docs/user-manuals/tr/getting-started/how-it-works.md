@@ -92,7 +92,7 @@ Tüm parçalar için tespit tamamlandıktan sonra motor, bulguları ayrı bir **
 - Sağlayıcıya yalnızca **salt-okunur, yıkıcı olmayan** çağrılar yapar (örneğin AWS anahtarları için `sts:GetCallerIdentity`).
 - Her bulguyu dört durumdan biriyle işaretler: `verified_active`, `verified_inactive`, `unverified` veya `verify_error`.
 
-Leakwatch 65 dedektör türü için **54 doğrulayıcı implementasyonu** kaydeder (%83,1); ancak registry kaydı canlı kapsam değildir: 41'i doğrudan canlı, 7'si güvenilir issuer/bölge/eşlik eden bağlam gerektiren, 6'sı yalnız-format doğrulayıcısıdır. Kalan 11 türün doğrulayıcısı yoktur. Bağlam-gerektiren, yalnız-format ve doğrulayıcısız bulgular, belirtilen canlı doğrulama önkoşulları karşılanmadıkça `unverified` kalır.
+Leakwatch 65 dedektör türü için **54 doğrulayıcı implementasyonu** kaydeder (%83,1); ancak registry kaydı canlı kapsam değildir: 39'u doğrudan canlı, 9'u güvenilir issuer/bölge/eşlik eden bağlam gerektiren, 6'sı yalnız-format doğrulayıcısıdır. Kalan 11 türün doğrulayıcısı yoktur. Bağlam-gerektiren, yalnız-format ve doğrulayıcısız bulgular, belirtilen canlı doğrulama önkoşulları karşılanmadıkça `unverified` kalır.
 
 Bu aşamayı tamamen atlamak için `--no-verify` geçirin — hızlı, çevrimdışı taramalar için kullanışlıdır.
 

@@ -5,16 +5,15 @@ description: "65 yerleşik dedektörün hangilerinin canlı doğrulandığı, ba
 
 # Doğrulama Kapsamı
 
-Leakwatch **65 yerleşik dedektör** ve kayıtlı 54 doğrulayıcı implementasyonuyla gelir. Registry kaydı canlı kabiliyetle aynı şey değildir: **41** dedektör normal üretim yolunda canlı kontrol yapabilir, **7** dedektör güvenilir operatör veya eşlik eden bağlam gerektirir, **6** dedektör yalnızca çevrimdışı format doğrular ve **11** dedektörün doğrulayıcısı yoktur. Bu sayfa her dedektörü gerçek doğrulama sözleşmesine göre eşler.
+Leakwatch **65 yerleşik dedektör** ve kayıtlı 54 doğrulayıcı implementasyonuyla gelir. Registry kaydı canlı kabiliyetle aynı şey değildir: **39** dedektör normal üretim yolunda canlı kontrol yapabilir, **9** dedektör güvenilir operatör veya eşlik eden bağlam gerektirir, **6** dedektör yalnızca çevrimdışı format doğrular ve **11** dedektörün doğrulayıcısı yoktur. Bu sayfa her dedektörü gerçek doğrulama sözleşmesine göre eşler.
 
-## Canlı doğrulanan (41 dedektör türü)
+## Canlı doğrulanan (39 dedektör türü)
 
 Bu türler için Leakwatch normal üretim yolunda kontrollü, yıkıcı olmayan bir sağlayıcı kontrolü yapabilir. Sözleşmeye uygun başarı `verified_active` döndürebilir; yalnızca doğru issuer üzerindeki kesin kimlik doğrulama reddi `verified_inactive` döndürebilir. Belirsiz yanıtlar `verify_error` kalır.
 
 | Dedektör türü | Sağlayıcı |
 |--------------|----------|
 | `aws-access-key-id` | AWS STS (`GetCallerIdentity`) |
-| `gitlab-pat` | GitLab REST API (token ile birlikte yakalanan kendi barındırılan bir GitLab sunucusu varsa onu hedefler; yoksa gitlab.com'a geri döner) |
 | `slack-token` | Slack Web API |
 | `openai-api-key` | OpenAI API |
 | `anthropic-api-key` | Anthropic API |
@@ -48,19 +47,20 @@ Bu türler için Leakwatch normal üretim yolunda kontrollü, yıkıcı olmayan 
 | `figma-pat` | Figma REST API |
 | `airtable-pat` | Airtable API |
 | `okta-api-token` | Okta API (token ile birlikte yakalanan organizasyon alan adını hedefler) |
-| `auth0-management-token` | Auth0 Management API (token'ın kendi JWT `iss` iddiasından çözülen kiracıyı hedefler) |
 | `databricks-token` | Databricks REST API (token ile birlikte yakalanan çalışma alanı ana bilgisayarını çağırır) |
 | `bitbucket-app-password` | Bitbucket REST API |
 | `supabase-service-key` | Supabase Management API (`sbp_` kişisel erişim token'ı; `401` inaktiftir, `403` `verify_error` kalır) |
 | `infura-api-key` | Infura API |
 | `teams-webhook` | Microsoft Teams |
 
-## Güvenilir veya eşlik eden bağlam gerektiren (7 dedektör türü)
+## Güvenilir veya eşlik eden bağlam gerektiren (9 dedektör türü)
 
 Bu implementasyonlar registry'de kayıtlıdır; ancak çıplak bir dedektör bulgusu güvenli issuer seçmek veya doğrulama isteğinde kimlik doğrulamak için yeterli değildir. Gerekli bağlam yoksa Leakwatch güvenli olmayan bir varsayım yapmaz ve `unverified` döndürür.
 
 | Dedektör ID | Gerekli bağlam | Üretim davranışı |
 |-------------|----------------|------------------|
+| `auth0-management-token` | Operatörce güvenilen Auth0 tenant veya özel alan adı origin'i | Dedektör üç parçalı Management JWT'nin tamamını üretir; ancak doğrulanmamış JWT iddiaları ve repo URL'leri hiçbir zaman istek hedefini seçmez. Üretimde henüz güvenilir origin yoktur; istek yapmadan `unverified` döner. Güvenilir origin ile salt-okunur clients yoklaması kullanılır ve yalnız `401` inaktiftir. |
+| `gitlab-pat` | Operatörce güvenilen GitLab.com veya self-managed API origin'i | Repo içeriği ve finding metadata'sı istek hedefini asla seçmez. Güvenli `/api/v4/user` yoklaması yalnız `glpat-` kişisel erişim token'ları için kullanılabilir; deploy, runner, CI, trigger, OAuth-secret ve feed alt türleri `unverified` kalır. Üretimde henüz güvenilir origin yoktur. |
 | `grafana-api-key` | `--grafana-instance-url` ile verilen güvenilir Grafana instance origin'i | Yalnızca doğrulanmış HTTPS instance'ını çağırır. Repo içeriği veya finding metadata hedef seçemez; `401` yalnızca bu güvenilir issuer üzerinde inaktiftir. |
 | `twilio-api-key` | Eşleşen API Key SID ve operatörce güvenilen bölgesel API origin'i (US1/IE1/AU1) | Tek başına `SK...` SID herkese açık bir tanımlayıcıdır ve bulgu değildir. Twilio API Key Secret'ı opaque kabul ettiğinden dedektör sabit uzunluk veya karakter kümesi varsaymaz: açıkça etiketlenmiş secret değerini yalnızca aynı mantıksal blokta açıkça atanmış yakındaki bir `SK...` SID ile bire bir eşleştirebildiğinde üretir. Secret yalnızca `Raw` içinde, gizli olmayan SID'ler context içinde kalır. Üretimde henüz güvenilir bölgesel origin yoktur; istek yapmadan `unverified` döner. Yapılandırılmış origin'de yalnız `401` inaktiftir, izin `403` yanıtı `verify_error` kalır. |
 | `shopify-access-token` | Operatörce güvenilen issuer mağaza origin'i | Bulgu metadata'sı yönlendirme için asla güvenilir sayılmaz. Üretimde güvenilir mağaza origin'i yoktur; istek yapmadan `unverified` döner. Hazır verifier, sabitlenmiş 2026-07 Admin GraphQL mağaza kimliği sorgusunu kullanır; yalnız seçilen mağazadaki `401` inaktiftir. |
@@ -108,8 +108,8 @@ Bu dedektör türlerinin hiç doğrulayıcısı yoktur. Bunlardan gelen bulgular
 
 | Kategori | Sayı |
 |----------|------|
-| Canlı doğrulanan | 41 |
-| Güvenilir/eşlik eden bağlam gerektiren | 7 |
+| Canlı doğrulanan | 39 |
+| Güvenilir/eşlik eden bağlam gerektiren | 9 |
 | Yalnızca format doğrulaması | 6 |
 | Doğrulanamaz | 11 |
 | **Toplam dedektör** | **65** |

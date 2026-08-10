@@ -72,8 +72,23 @@ func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *
 			valueStart: secret,
 		},
 		{
+			name: "YAML escaped single quote", format: "yaml", path: "service.client_secret",
+			data:       []byte("service:\n  client_secret: 'fixture-it''s-secret-9mN2pQ7r'\n"),
+			valueStart: "fixture-it''s-secret-9mN2pQ7r",
+		},
+		{
 			name: "nested TOML", format: "toml", path: "service.credentials.client_secret",
 			data:       []byte("[service.credentials]\nclient_secret = \"" + secret + "\"\n"),
+			valueStart: secret,
+		},
+		{
+			name: "TOML unicode escape", format: "toml", path: "service.client_secret",
+			data:       []byte("[service]\nclient_secret = \"fixture\\u002Dsecret-9mN2pQ7r\"\n"),
+			valueStart: `fixture\u002Dsecret-9mN2pQ7r`,
+		},
+		{
+			name: "sectionless TOML", format: "toml", path: "client_secret",
+			data:       []byte("service_name = \"fixture\"\nclient_secret = \"" + secret + "\"\n"),
 			valueStart: secret,
 		},
 		{
@@ -84,6 +99,16 @@ func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *
 		{
 			name: "dotenv", format: "dotenv", path: "CLIENT_SECRET",
 			data:       []byte("SERVICE_NAME=fixture\nCLIENT_SECRET=" + secret + "\n"),
+			valueStart: secret,
+		},
+		{
+			name: "YAML sequence mapping", format: "yaml", path: "users.password",
+			data:       []byte("users:\n  - password: " + secret + "\n"),
+			valueStart: secret,
+		},
+		{
+			name: "XML key value attributes", format: "xml", path: "configuration.add.Password",
+			data:       []byte("<configuration><add key=\"Password\" value=\"" + secret + "\"/></configuration>"),
 			valueStart: secret,
 		},
 	}
@@ -134,6 +159,18 @@ func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
 		assert.Equal(t, string(findings[0].Raw), string(data[findings[0].ByteStart:findings[0].ByteEnd]))
 	})
 
+	t.Run("UTF-8 BOM preserves original byte span", func(t *testing.T) {
+		for _, data := range [][]byte{
+			append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"Password":"fixture-bom-secret-9mN2pQ7r"}`)...),
+			append([]byte{0xef, 0xbb, 0xbf}, []byte(`<Password>fixture-bom-secret-9mN2pQ7r</Password>`)...),
+		} {
+			findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+			require.Len(t, findings, 1)
+			assert.Equal(t, "fixture-bom-secret-9mN2pQ7r", string(findings[0].Raw))
+			assert.Equal(t, string(findings[0].Raw), string(data[findings[0].ByteStart:findings[0].ByteEnd]))
+		}
+	})
+
 	t.Run("JSON top-level array is not TOML", func(t *testing.T) {
 		data := []byte(`[{"Password":"fixture-array-secret-9mN2pQ7r"}]`)
 		findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
@@ -155,11 +192,16 @@ func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
 		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
 	})
 
-	t.Run("line and XML inputs are size bounded", func(t *testing.T) {
-		line := append([]byte("PASSWORD=fixture-secret-9mN2pQ7r\n#"), []byte(strings.Repeat("x", maxStructuredInputBytes))...)
-		xml := append([]byte("<configuration><Password>fixture-secret-9mN2pQ7r</Password>"), []byte(strings.Repeat(" ", maxStructuredInputBytes))...)
-		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), line))
-		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), xml))
+	t.Run("large accepted line input is scanned and cancellation is prompt", func(t *testing.T) {
+		line := append([]byte("PASSWORD=fixture-secret-9mN2pQ7r\n#"), []byte(strings.Repeat("x", 4*1024*1024))...)
+		findings := (&StructuredConfigDetector{}).Scan(t.Context(), line)
+		require.Len(t, findings, 1)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		started := time.Now()
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(ctx, line))
+		assert.Less(t, time.Since(started), 250*time.Millisecond)
 	})
 
 	t.Run("source code assignments are not configuration", func(t *testing.T) {
@@ -177,11 +219,11 @@ func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
 
 func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
 	t.Run("format confidence", func(t *testing.T) {
-		format, ok := detectLineConfigFormat([]byte("# comment\nexport CLIENT_SECRET=fixture-secret-9mN2pQ7r\n"))
+		format, ok := detectLineConfigFormat(t.Context(), []byte("# comment\nexport CLIENT_SECRET=fixture-secret-9mN2pQ7r\n"))
 		assert.True(t, ok)
 		assert.Equal(t, formatDotenv, format)
 
-		format, ok = detectLineConfigFormat([]byte("---\npassword: fixture-secret-9mN2pQ7r\n"))
+		format, ok = detectLineConfigFormat(t.Context(), []byte("---\npassword: fixture-secret-9mN2pQ7r\n"))
 		assert.True(t, ok)
 		assert.Equal(t, formatYAML, format)
 
@@ -191,7 +233,7 @@ func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
 			[]byte("CLIENT-SECRET=value\n"), []byte("CLIENT_SECRET=\n"),
 			[]byte("CLIENT_SECRET=value\nnot config\n"),
 		} {
-			_, confident := detectLineConfigFormat(data)
+			_, confident := detectLineConfigFormat(t.Context(), data)
 			assert.False(t, confident, string(data))
 		}
 	})
@@ -232,6 +274,19 @@ func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
 		assert.Equal(t, "fixture\nsecret", decoded)
 		assert.Equal(t, 23, start)
 		assert.Greater(t, end, start)
+		decoded, _, _, scalarOK = parseLineScalar([]byte(`'fixture-it''s-secret-9mN2pQ7r'`), 0, formatYAML)
+		assert.True(t, scalarOK)
+		assert.Equal(t, "fixture-it's-secret-9mN2pQ7r", decoded)
+		decoded, _, _, scalarOK = parseLineScalar([]byte(`"fixture\Nsecret-9mN2pQ7r"`), 0, formatYAML)
+		assert.True(t, scalarOK)
+		assert.Equal(t, "fixture\u0085secret-9mN2pQ7r", decoded)
+		decoded, _, _, scalarOK = parseLineScalar([]byte(`"fixture\u002Dsecret-9mN2pQ7r"`), 0, formatTOML)
+		assert.True(t, scalarOK)
+		assert.Equal(t, "fixture-secret-9mN2pQ7r", decoded)
+		_, _, _, scalarOK = parseLineScalar([]byte(`"fixture\x2Dsecret-9mN2pQ7r"`), 0, formatTOML)
+		assert.False(t, scalarOK, "Go-only escapes must not be accepted as TOML")
+		_, _, _, scalarOK = parseLineScalar([]byte(`'fixture-it''s-secret-9mN2pQ7r'`), 0, formatTOML)
+		assert.False(t, scalarOK, "YAML doubled-quote syntax must not be accepted as TOML")
 	})
 
 	t.Run("helper boundaries", func(t *testing.T) {
@@ -246,6 +301,9 @@ func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
 			assert.False(t, ok, string(section))
 		}
 		parts, ok := parseTOMLSection([]byte("[ service.credentials ]"))
+		assert.True(t, ok)
+		assert.Equal(t, []string{"service", "credentials"}, parts)
+		parts, ok = parseTOMLSection([]byte("[service.credentials] # provider settings"))
 		assert.True(t, ok)
 		assert.Equal(t, []string{"service", "credentials"}, parts)
 

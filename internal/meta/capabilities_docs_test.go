@@ -88,7 +88,7 @@ func TestVerificationCoverageDocs_MatchCapabilityManifest(t *testing.T) {
 
 func TestPublishedCapabilityClaims_MatchManifest(t *testing.T) {
 	counts := VerificationCapabilityCounts()
-	require.Equal(t, CapabilityCounts{Live: 41, FormatOnly: 6, RequiresContext: 7, None: 11}, counts)
+	require.Equal(t, CapabilityCounts{Live: 39, FormatOnly: 6, RequiresContext: 9, None: 11}, counts)
 	registryCoverage := 100 * float64(Verifiers) / float64(Detectors)
 
 	tests := []struct {

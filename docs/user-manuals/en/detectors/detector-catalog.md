@@ -57,7 +57,7 @@ This page lists every built-in detector. For verification coverage details see [
 |----|---------|----------|
 | `github-token` | GitHub Personal Access Token — both the classic `ghp_` PAT and the fine-grained `github_pat_` PAT | Critical |
 | `github-oauth-token` | GitHub OAuth2 & installation token — `gho_`/`ghu_`/`ghr_`/`ghs_`, including new stateless (JWT-format) `ghs_` installation tokens | Critical |
-| `gitlab-pat` | GitLab Personal Access Token — the classic `glpat-` token plus the newer routable prefixes: deploy (`gldt-`), runner (`glrt-`), CI/CD build & trigger (`glcbt-`/`glptt-`), OAuth application secret (`gloas-`), and feed (`glft-`) tokens; self-hosted GitLab hosts are detected for verification when present nearby | Critical |
+| `gitlab-pat` | GitLab credential — the classic `glpat-` personal access token plus deploy (`gldt-`), runner (`glrt-`), CI/CD build and trigger (`glcbt-`/`glptt-`), OAuth application secret (`gloas-`), and feed (`glft-`) prefixes; repository URLs are never trusted for verification routing | Critical |
 | `bitbucket-app-password` | Bitbucket App Password | Critical |
 | `circleci-token` | CircleCI Personal API Token | High |
 | `npm-token` | NPM Access Token | High |

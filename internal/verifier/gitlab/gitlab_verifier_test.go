@@ -95,69 +95,39 @@ func TestVerify_Type_ReturnsCorrectID(t *testing.T) {
 	assert.Equal(t, "gitlab-pat", v.Type())
 }
 
-func TestBaseURL_DerivesHostFromExtraData(t *testing.T) {
-	tests := []struct {
-		name   string
-		apiURL string
-		extra  map[string]string
-		want   string
-	}{
-		{
-			name: "no context defaults to gitlab.com",
-			want: "https://gitlab.com",
-		},
-		{
-			name:  "self-hosted host from ExtraData",
-			extra: map[string]string{"host": "gitlab.example.com"},
-			want:  "https://gitlab.example.com",
-		},
-		{
-			name:  "self-hosted host with port",
-			extra: map[string]string{"host": "gitlab.corp.internal:8443"},
-			want:  "https://gitlab.corp.internal:8443",
-		},
-		{
-			name:   "apiURL override wins",
-			apiURL: "http://127.0.0.1:1234",
-			extra:  map[string]string{"host": "gitlab.example.com"},
-			want:   "http://127.0.0.1:1234",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			v := &Verifier{apiURL: tt.apiURL}
-			raw := detector.RawFinding{DetectorID: detectorID, ExtraData: tt.extra}
-			assert.Equal(t, tt.want, v.baseURL(raw))
-		})
-	}
-}
-
-func TestVerify_SelfHostedActiveToken_NotReportedInvalid(t *testing.T) {
-	// A live self-hosted token verified against its true issuer must read as
-	// active, never as "invalid or revoked". The test server stands in for the
-	// self-hosted instance the detector captured into ExtraData["host"].
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v4/user", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"username":"selfhosted-user"}`))
-	}))
-	defer server.Close()
-
-	v := &Verifier{apiURL: server.URL, httpClient: server.Client()}
-
+func TestVerify_RepositoryHostNeverSelectsDestination(t *testing.T) {
+	called := false
+	v := &Verifier{httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, assert.AnError
+	})}}
 	raw := detector.RawFinding{
 		DetectorID: detectorID,
 		Raw:        []byte("glpat-selfhostedtoken123456789012"),
-		Redacted:   "glpat-****9012",
-		ExtraData:  map[string]string{"host": "gitlab.example.com"},
+		ExtraData:  map[string]string{"host": "gitlab.attacker.example"},
 	}
-
 	result := v.Verify(context.Background(), raw)
+	require.Equal(t, finding.StatusUnverified, result.Status)
+	assert.False(t, called)
+}
 
-	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "selfhosted-user", result.ExtraData["username"])
+func TestVerify_NonPATSubtypesRemainUnverified(t *testing.T) {
+	for _, prefix := range []string{"gldt-", "glrt-", "glcbt-", "glptt-", "gloas-", "glft-"} {
+		result := (&Verifier{apiURL: "https://trusted.example"}).Verify(context.Background(), detector.RawFinding{
+			DetectorID: detectorID, Raw: []byte(prefix + "abcDEF1234567890xyzW"),
+		})
+		assert.Equal(t, finding.StatusUnverified, result.Status, prefix)
+	}
+}
+
+func TestNewForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://gitlab.example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://gitlab.example.com", configured.apiURL)
+	for _, origin := range []string{"http://gitlab.com", "https://127.0.0.1", "https://localhost", "https://gitlab.com/path"} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
 }
 
 func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
@@ -173,4 +143,10 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }

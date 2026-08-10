@@ -735,7 +735,7 @@ leakwatch scan fs . --min-severity critical
 
 ### 7.2 Reducing False Positives with `--only-verified`
 
-Leakwatch has 41 direct-live capabilities, 7 context-required capabilities, 6 format-only validators, and 11 detector types without a verifier. With `--only-verified`, you report only findings actually confirmed `verified_active`:
+Leakwatch has 39 direct-live capabilities, 9 context-required capabilities, 6 format-only validators, and 11 detector types without a verifier. With `--only-verified`, you report only findings actually confirmed `verified_active`:
 
 ```bash
 # Report only verified secrets

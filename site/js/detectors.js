@@ -37,7 +37,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)\\s*[=:]\\s*['\"]?([A-Za-z0-9_-]{30,})['\"]?"
+        "src": "(?:[\"']?(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)[\"']?)[ \\t]*[=:][ \\t]*[\"']?([A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{8,})"
       }
     ]
   },
@@ -352,9 +352,6 @@ window.LW_DETECTORS = [
     "patterns": [
       {
         "src": "(?:glpat|gldt|glrt|glcbt|glptt|gloas|glft)-[A-Za-z0-9_\\-]{20,}"
-      },
-      {
-        "src": "https?://([a-zA-Z0-9.-]*gitlab[a-zA-Z0-9.-]*(?::\\d+)?)"
       }
     ]
   },

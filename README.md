@@ -57,7 +57,7 @@ $ leakwatch scan fs .
 
 - **6 scan sources** — filesystem, Git history (every commit), container images, AWS S3, Google Cloud Storage, Slack
 - **65 built-in detectors** + **YAML custom rules** (no Go code needed)
-- **41 direct live checks** + **7 context-required checks** + **6 offline format validators** — registry presence is never overstated as live capability
+- **39 direct live checks** + **9 context-required checks** + **6 offline format validators** — registry presence is never overstated as live capability
 - **5 output formats** — JSON, SARIF, CSV, terminal table, and **GitHub inline annotations**
 - **Drop-in distribution** — GitHub Action (Marketplace), Docker image, Homebrew, `go install`, single static binary
 - **Secret-safe** — redacted output by default; secrets are never logged or stored
@@ -126,19 +126,19 @@ Detection is only half the job — a key that was already rotated isn't an incid
 
 | Tier | What it means | Coverage |
 |------|---------------|----------|
-| **Direct live** | Non-destructive provider check can confirm the key in the normal production path | 41 detectors |
-| **Context required** | A safe issuer, region, or paired credential must be supplied first | 7 detectors |
+| **Direct live** | Non-destructive provider check can confirm the key in the normal production path | 39 detectors |
+| **Context required** | A safe issuer, region, or paired credential must be supplied first | 9 detectors |
 | **Format checked** | Structurally validated where no safe live check exists | 6 detectors |
 | **Not verifiable** | No safe provider check (e.g. JWTs, private keys) — detected & triaged manually | 11 detectors |
 
-Leakwatch registers verifier implementations for **54 of 65 detectors (83.1%)**, but only **41** are direct live checks. The remaining registered implementations are context-required or format-only and therefore must not be interpreted as proof of live coverage. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
+Leakwatch registers verifier implementations for **54 of 65 detectors (83.1%)**, but only **39** are direct live checks. The remaining registered implementations are context-required or format-only and therefore must not be interpreted as proof of live coverage. Verification is on by default for the CLI and off by default in the Action (to keep CI fast and offline) — flip it with `no-verify`.
 
 ## Why Leakwatch?
 
 | | **Leakwatch** | TruffleHog | Gitleaks |
 |---|---|---|---|
 | License | **MIT** | AGPL-3.0 | MIT [^gl] |
-| Live secret verification | **Yes (41 direct-live; 7 context-required)** | Yes | No |
+| Live secret verification | **Yes (39 direct-live; 9 context-required)** | Yes | No |
 | Container image scanning | **Yes** | Yes | No |
 | Cloud sources (S3 / GCS / Slack) | **Yes** | No | No |
 | SARIF output | **Yes** | No [^th] | Yes |
@@ -298,8 +298,8 @@ flowchart LR
         E3["Shannon entropy"]
     end
     subgraph Verify["Verification (54 registered implementations)"]
-        V1["41 direct live"]
-        V2["7 context-required"]
+        V1["39 direct live"]
+        V2["9 context-required"]
         V3["6 format-only"]
     end
     Sources -->|chunks| Engine

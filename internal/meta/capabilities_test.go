@@ -16,7 +16,7 @@ var validEndpointClasses = map[EndpointClass]struct{}{
 	EndpointNone: {}, EndpointOfflineFormat: {}, EndpointFixedProviderAPI: {},
 	EndpointFixedProviderSDK: {}, EndpointRegionalProviderAPI: {},
 	EndpointBoundedRegionalProviderAPI: {}, EndpointIssuerDerivedProviderAPI: {},
-	EndpointDetectorContextProviderAPI: {}, EndpointDetectorContextOrPublicAPI: {},
+	EndpointDetectorContextProviderAPI: {},
 	EndpointOperatorContextProviderAPI: {}, EndpointCompanionContextProviderAPI: {},
 	EndpointCompanionContextFixedAPI: {}, EndpointEmbeddedProviderURL: {},
 }
@@ -82,7 +82,7 @@ func TestVerificationCapabilities_AreCompleteAndWellFormed(t *testing.T) {
 
 func TestVerificationCapabilityCounts_MatchPublishedCategories(t *testing.T) {
 	counts := VerificationCapabilityCounts()
-	assert.Equal(t, CapabilityCounts{Live: 41, FormatOnly: 6, RequiresContext: 7, None: 11}, counts)
+	assert.Equal(t, CapabilityCounts{Live: 39, FormatOnly: 6, RequiresContext: 9, None: 11}, counts)
 	assert.Equal(t, Detectors, counts.Live+counts.FormatOnly+counts.RequiresContext+counts.None)
 	assert.Equal(t, Verifiers, counts.Live+counts.FormatOnly+counts.RequiresContext,
 		"every non-none capability has one registered verifier")

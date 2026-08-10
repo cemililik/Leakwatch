@@ -20,13 +20,13 @@ Tüm sırlar aynı şekilde doğrulanamaz. Leakwatch doğrudan canlı kontroller
 
 ### Canlı API doğrulaması
 
-41 dedektör türü için Leakwatch normal üretim yolunda **kontrollü, yıkıcı olmayan bir sağlayıcı kontrolü** yapabilir — örneğin AWS anahtarları için `sts:GetCallerIdentity`, OpenAI anahtarları için sabit sağlayıcı kimlik uç noktası. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez veya kaynak oluşturmaz, ancak sağlayıcı kotası tüketebilir.
+39 dedektör türü için Leakwatch normal üretim yolunda **kontrollü, yıkıcı olmayan bir sağlayıcı kontrolü** yapabilir — örneğin AWS anahtarları için `sts:GetCallerIdentity`, OpenAI anahtarları için sabit sağlayıcı kimlik uç noktası. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez veya kaynak oluşturmaz, ancak sağlayıcı kotası tüketebilir.
 
 Sağlayıcı sözleşmeye uygun başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Bir bulgu yalnızca sağlayıcı yanıtı ilgili doğrulayıcı sözleşmesine göre kesin olduğunda `verified_inactive` olur. İzin reddi ve belirsiz yanıtlar `verify_error` olarak kalır; örneğin SendGrid yalnız HTTP `401` yanıtını inaktif sayar, `403` ise sonuçsuzdur.
 
 ### Güvenilir veya eşlik eden bağlam gerekli
 
-Kayıtlı yedi implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Grafana, GitHub/GHES, Datadog ve Snyk güvenilir issuer/site/API origin'i gerektirir. Twilio bulgusu açıkça eşleşen API Key Secret ile gizli olmayan Key SID'yi artık içerir, ancak yine de güvenilir bölgesel origin gerekir. Shopify için operatörce güvenilen issuer mağaza origin'i zorunludur; bulgu metadata'sı bu hedefi seçemez. Bu bağlam olmadan Leakwatch issuer tahmin etmek veya gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
+Kayıtlı dokuz implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Auth0, GitLab, Grafana, GitHub/GHES, Datadog ve Snyk güvenilir issuer/site/API origin'i gerektirir. Twilio bulgusu açıkça eşleşen API Key Secret ile gizli olmayan Key SID'yi artık içerir, ancak yine de güvenilir bölgesel origin gerekir. Shopify için operatörce güvenilen issuer mağaza origin'i zorunludur; bulgu metadata'sı bu hedefi seçemez. Bu bağlam olmadan Leakwatch repo URL'lerine veya doğrulanmamış token iddialarına güvenmek, issuer tahmin etmek ya da gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
 
 ### Yalnızca format doğrulaması
 

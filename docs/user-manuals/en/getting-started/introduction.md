@@ -14,7 +14,7 @@ It is written in Go, ships as a single static binary with no runtime dependencie
 A leaked credential in a single commit — even one later deleted — can stay reachable in Git history forever and be exploited within minutes of being pushed. Leakwatch is designed to catch those secrets early and tell you which ones are *actually dangerous*:
 
 - **Broad detection** — 65 built-in detectors covering cloud providers, AI APIs, payment platforms, databases, messaging tools, structured configuration, and more, plus your own YAML custom rules.
-- **Truthful verification capability** — 41 detector types have a direct live check, 7 need trusted issuer/region/companion context, and 6 perform offline format validation. Registry count is never presented as live coverage.
+- **Truthful verification capability** — 39 detector types have a direct live check, 9 need trusted issuer/region/companion context, and 6 perform offline format validation. Registry count is never presented as live coverage.
 - **Many sources** — scan a local filesystem, a full Git history, an OCI/Docker image, AWS S3, Google Cloud Storage, and Slack messages.
 - **CI-native output** — JSON, SARIF (for GitHub Code Scanning), CSV, a colorized terminal table, and inline GitHub Actions annotations.
 - **Secret-safe by design** — discovered secrets are redacted by default and are never logged, cached, or written to disk.

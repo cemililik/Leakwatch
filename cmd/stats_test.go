@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/HodeTech/leakwatch/internal/verifier"
+	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,8 +31,9 @@ func init() {
 
 // TestVerifierContracts_UseRealDetectorOutput proves registry compatibility
 // with findings emitted by the production detectors, not hand-assembled
-// RawFinding values. It intentionally does not call Verify: live providers must
-// never receive synthetic credentials during a contract test.
+// RawFinding values. It executes each verifier with an already-cancelled
+// context: this proves the real finding reaches the declared contract while
+// preventing synthetic credentials from reaching provider networks.
 func TestVerifierContracts_UseRealDetectorOutput(t *testing.T) {
 	fixtures := testutil.RegisteredDetectorFixtures()
 	detectors := make(map[string]detector.Detector, len(detectorsAtInit))
@@ -68,6 +72,30 @@ func TestVerifierContracts_UseRealDetectorOutput(t *testing.T) {
 				}
 				assert.NotEmpty(t, findings[0].ExtraData[field],
 					"detector must emit required companion field %q", field)
+			}
+
+			// Execute the production verifier with an already-cancelled context.
+			// Standard HTTP clients and SDKs cannot put the synthetic credential on
+			// the wire, while the resulting status proves whether the real detector
+			// output actually reached the capability's declared verification path.
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			result := registered.Verify(ctx, findings[0])
+			assert.NotContains(t, result.Message, string(findings[0].Raw))
+			for key, value := range result.ExtraData {
+				assert.NotContains(t, value, string(findings[0].Raw), "ExtraData[%q] leaked fixture credential", key)
+			}
+			switch capability.VerifierKind {
+			case meta.VerifierLive:
+				assert.Equal(t, finding.StatusVerifyError, result.Status,
+					"live capability must reach its context-cancelled provider request")
+			case meta.VerifierFormatOnly:
+				assert.Equal(t, finding.StatusUnverified, result.Status)
+				assert.True(t, strings.Contains(strings.ToLower(result.Message), "format valid"),
+					"format-only fixture must satisfy the production format contract: %s", result.Message)
+			case meta.VerifierRequiresContext:
+				assert.Equal(t, finding.StatusUnverified, result.Status,
+					"missing operator context must fail closed without a request")
 			}
 		})
 	}

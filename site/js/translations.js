@@ -28,7 +28,7 @@ window.LW_T = {
     "hero.lede": "Detect, verify, and report leaked API keys, tokens, and credentials across code, Git history, containers, and the cloud — then watch the redactions lift.",
     "hero.cta.run": "▸ Run the scan",
     "hero.cta.docs": "Read the docs",
-    "hero.kv": "65 detectors · 41 direct-live · 7 context-required · 6 sources",
+    "hero.kv": "65 detectors · 39 direct-live · 9 context-required · 6 sources",
     "hero.doc.redacted": "3 REDACTED",
     "hero.doc.hint": "Leakwatch finds the secrets that shouldn't be visible.",
 
@@ -93,7 +93,7 @@ window.LW_T = {
     "formats.github": "Inline pull-request annotations in GitHub Actions.",
 
     "index.title": "Redacted index — 65 detectors",
-    "index.intro": "A sample of the catalog: 41 direct-live, 7 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.",
+    "index.intro": "A sample of the catalog: 39 direct-live, 9 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.",
     "index.more": "+ 46 more · view full catalog →",
 
     "cta.title": "Declassify your repo",
@@ -204,7 +204,7 @@ window.LW_T = {
     "hero.lede": "Sızan API anahtarlarını, token'ları ve kimlik bilgilerini kodda, Git geçmişinde, konteynerlerde ve bulutta tespit edin, doğrulayın ve raporlayın — sonra sansürlerin kalkışını izleyin.",
     "hero.cta.run": "▸ Taramayı çalıştır",
     "hero.cta.docs": "Dokümanları oku",
-    "hero.kv": "65 dedektör · 41 doğrudan canlı · 7 bağlam gerektiren · 6 kaynak",
+    "hero.kv": "65 dedektör · 39 doğrudan canlı · 9 bağlam gerektiren · 6 kaynak",
     "hero.doc.redacted": "3 REDAKTE",
     "hero.doc.hint": "Leakwatch, görünür olmaması gereken sırları bulur.",
 
@@ -269,7 +269,7 @@ window.LW_T = {
     "formats.github": "GitHub Actions içinde satır içi pull-request ek açıklamaları.",
 
     "index.title": "Redakteli indeks — 65 dedektör",
-    "index.intro": "Katalogdan bir örnek: 41 doğrudan canlı, 7 bağlam gerektiren, 6 yalnız format ve 11 doğrulayıcısız. YAML özel kurallarıyla kendi dedektörlerinizi ekleyin.",
+    "index.intro": "Katalogdan bir örnek: 39 doğrudan canlı, 9 bağlam gerektiren, 6 yalnız format ve 11 doğrulayıcısız. YAML özel kurallarıyla kendi dedektörlerinizi ekleyin.",
     "index.more": "+ 46 tane daha · tüm kataloğu görüntüle →",
 
     "cta.title": "Deponuzun gizliliğini kaldırın",

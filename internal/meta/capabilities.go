@@ -27,7 +27,6 @@ const (
 	EndpointBoundedRegionalProviderAPI  EndpointClass = "bounded_regional_provider_api"
 	EndpointIssuerDerivedProviderAPI    EndpointClass = "issuer_derived_provider_api"
 	EndpointDetectorContextProviderAPI  EndpointClass = "detector_context_provider_api"
-	EndpointDetectorContextOrPublicAPI  EndpointClass = "detector_context_or_public_provider_api"
 	EndpointOperatorContextProviderAPI  EndpointClass = "operator_context_provider_api"
 	EndpointCompanionContextProviderAPI EndpointClass = "companion_context_provider_api"
 	EndpointCompanionContextFixedAPI    EndpointClass = "companion_context_fixed_provider_api"
@@ -81,7 +80,7 @@ type VerificationCapability struct {
 var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "airtable-pat", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "anthropic-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
-	{DetectorID: "auth0-management-token", VerifierKind: VerifierLive, EndpointClass: "issuer_derived_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
+	{DetectorID: "auth0-management-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"Auth0 tenant", "Custom domain"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "aws-access-key-id", VerifierKind: VerifierLive, RequiredContextFields: []string{"raw_v2"}, EndpointClass: "fixed_provider_sdk", InactiveStatusContract: "typed_authentication_error"},
 	{DetectorID: "azure-entra-secret", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
 	{DetectorID: "azure-storage-key", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
@@ -104,7 +103,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "generic-api-key", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "github-oauth-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, VerifiableSubtypes: []string{"gho", "ghu", "ghs"}, UnverifiableSubtypes: []string{"ghr"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "github-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
-	{DetectorID: "gitlab-pat", VerifierKind: VerifierLive, EndpointClass: "detector_context_or_public_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
+	{DetectorID: "gitlab-pat", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitLab.com", "Self-managed"}, VerifiableSubtypes: []string{"glpat"}, UnverifiableSubtypes: []string{"gldt", "glrt", "glcbt", "glptt", "gloas", "glft"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "grafana-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_instance_origin"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_instance_http_401", LastContractReviewedAt: "2026-08-10"},
 	{DetectorID: "hashicorp-vault-token", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "heroku-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},

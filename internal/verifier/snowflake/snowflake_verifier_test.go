@@ -7,8 +7,21 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	snowflakedetector "github.com/HodeTech/leakwatch/internal/detector/snowflake"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/pkg/finding"
+	"github.com/stretchr/testify/require"
 )
+
+func TestVerify_RealDetectorOutput_ValidatesPairedConnection(t *testing.T) {
+	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
+	findings := testutil.ScanViaMatcher(&snowflakedetector.Detector{}, fixture)
+	require.Len(t, findings, 1)
+	require.NotEmpty(t, findings[0].RawV2)
+	result := (&Verifier{}).Verify(t.Context(), findings[0])
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Contains(t, result.Message, "format valid")
+}
 
 func TestVerifier_Type_ReturnsCorrectID(t *testing.T) {
 	v := &Verifier{}

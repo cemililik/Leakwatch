@@ -5,16 +5,15 @@ description: "Which of the 65 built-in detectors are live-verified, context-requ
 
 # Verification Coverage
 
-Leakwatch ships **65 built-in detectors** and 54 registered verifier implementations. Registry presence is not the same as live capability: **41** detectors can make a live check in the normal production path, **7** require trusted operator or companion context, **6** perform offline format validation only, and **11** have no verifier. This page maps every detector to its actual verification contract.
+Leakwatch ships **65 built-in detectors** and 54 registered verifier implementations. Registry presence is not the same as live capability: **39** detectors can make a live check in the normal production path, **9** require trusted operator or companion context, **6** perform offline format validation only, and **11** have no verifier. This page maps every detector to its actual verification contract.
 
-## Live-verified (41 detector types)
+## Live-verified (39 detector types)
 
 For these types, Leakwatch can make a controlled, non-destructive provider check in the normal production path. A contract-valid success can return `verified_active`; only a definitive authentication rejection on the correct issuer can return `verified_inactive`. Ambiguous responses remain `verify_error`.
 
 | Detector type | Provider |
 |--------------|---------|
 | `aws-access-key-id` | AWS STS (`GetCallerIdentity`) |
-| `gitlab-pat` | GitLab REST API (targets a self-hosted GitLab host when one is captured alongside the token; falls back to gitlab.com) |
 | `slack-token` | Slack Web API |
 | `openai-api-key` | OpenAI API |
 | `anthropic-api-key` | Anthropic API |
@@ -48,19 +47,20 @@ For these types, Leakwatch can make a controlled, non-destructive provider check
 | `figma-pat` | Figma REST API |
 | `airtable-pat` | Airtable API |
 | `okta-api-token` | Okta API (targets the org domain captured alongside the token) |
-| `auth0-management-token` | Auth0 Management API (targets the tenant decoded from the token's own JWT `iss` claim) |
 | `databricks-token` | Databricks REST API (calls the workspace host captured alongside the token) |
 | `bitbucket-app-password` | Bitbucket REST API |
 | `supabase-service-key` | Supabase Management API (`sbp_` personal access token; `401` is inactive, `403` remains `verify_error`) |
 | `infura-api-key` | Infura API |
 | `teams-webhook` | Microsoft Teams |
 
-## Requires trusted or companion context (7 detector types)
+## Requires trusted or companion context (9 detector types)
 
 These implementations are registered, but a bare detector finding is not enough to choose a safe issuer or authenticate the verification request. When the required context is absent, Leakwatch makes no unsafe guess and returns `unverified`.
 
 | Detector ID | Required context | Production behavior |
 |-------------|------------------|---------------------|
+| `auth0-management-token` | Operator-trusted Auth0 tenant or custom-domain origin | The detector emits a complete three-segment Management JWT, but unverified JWT claims and repository URLs never select a request target. Production has no trusted origin yet, so it makes no request and returns `unverified`; with a trusted origin the verifier uses a read-only clients probe and only `401` is inactive. |
+| `gitlab-pat` | Operator-trusted GitLab.com or self-managed API origin | Repository content and finding metadata never select the request target. Only `glpat-` personal access tokens have the safe `/api/v4/user` probe; deploy, runner, CI, trigger, OAuth-secret, and feed subtypes remain `unverified`. Production has no trusted origin yet. |
 | `grafana-api-key` | Trusted Grafana instance origin supplied with `--grafana-instance-url` | Calls only the validated HTTPS instance. Repository content and finding metadata cannot choose the target; `401` is inactive only on that trusted issuer. |
 | `twilio-api-key` | Paired API Key SID plus an operator-trusted regional API origin (US1/IE1/AU1) | A bare `SK...` SID is a public identifier and is not reported. Twilio treats the API Key Secret as opaque, so the detector does not assume a fixed length or alphabet: it emits the value of an explicit API Key Secret assignment only when it can pair it one-to-one with an explicitly assigned nearby `SK...` SID in the same logical block. The secret stays in `Raw`; only non-secret SIDs enter context. Production has no trusted regional origin yet, so it makes no request and returns `unverified`; on a configured origin only `401` is inactive and permission `403` remains `verify_error`. |
 | `shopify-access-token` | Operator-trusted issuing store origin | Finding metadata is never trusted for routing. Production has no trusted store origin, so it makes no request and returns `unverified`. The prepared verifier uses the pinned 2026-07 Admin GraphQL shop identity query; only `401` on the selected store is inactive. |
@@ -108,8 +108,8 @@ These detector types have no verifier at all. Findings from them are always `unv
 
 | Category | Count |
 |----------|-------|
-| Live-verified | 41 |
-| Requires trusted/companion context | 7 |
+| Live-verified | 39 |
+| Requires trusted/companion context | 9 |
 | Format-validated only | 6 |
 | Not verifiable | 11 |
 | **Total detectors** | **65** |

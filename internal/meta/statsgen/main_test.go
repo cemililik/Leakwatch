@@ -37,7 +37,7 @@ func TestRewriteMigratesLegacyLiveVerifierLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rewrite legacy label: %v", err)
 	}
-	want := "<!-- stats:begin -->41 direct-live checks<!-- stats:end -->"
+	want := "<!-- stats:begin -->39 direct-live checks<!-- stats:end -->"
 	if got != want {
 		t.Fatalf("rewrite legacy label = %q, want %q", got, want)
 	}

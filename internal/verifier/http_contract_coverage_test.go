@@ -1,61 +1,65 @@
 package verifier_test
 
 import (
-	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestHTTPVerifierPackages_UseSharedSafetySuite is the fail-closed registry
-// guard for network verifiers. A new package that uses the shared HTTP flow (or
-// performs a direct request such as the Teams webhook verifier) cannot enter CI
-// without exercising transport failure, cancellation, malformed-body policy
-// and transport-error credential redaction through vtest.Run.
-func TestHTTPVerifierPackages_UseSharedSafetySuite(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	require.NoError(t, err)
-	covered := 0
-	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "internal" {
-			continue
-		}
-		productionPattern := filepath.Join(entry.Name(), "*_verifier.go")
-		usesHTTP := filesCallSelector(t, productionPattern, func(receiver, method string) bool {
-			return receiver == "httpx" && method == "VerifyToken" || method == "Do"
-		})
-		if !usesHTTP {
-			continue
-		}
-		covered++
-		testPattern := filepath.Join(entry.Name(), "*_test.go")
-		tests := readMatchingFiles(t, testPattern)
-		hasSharedSuite := filesCallSelector(t, testPattern, func(receiver, method string) bool {
-			return receiver == "vtest" && method == "Run"
-		})
-		hasReviewedEquivalent := bytes.Contains(tests, []byte("leakwatch:vtest-equivalent"))
-		assert.True(t, hasSharedSuite || hasReviewedEquivalent,
-			"HTTP verifier package %q must run vtest or declare a reviewed equivalent suite", entry.Name())
-	}
-	assert.Equal(t, 45, covered,
-		"HTTP verifier discovery changed; review the source-pattern guard and every affected contract suite")
+var expectedHTTPVerifierPackages = []string{
+	"airtable", "anthropic", "auth0", "bitbucket", "circleci", "cloudflare",
+	"databricks", "datadog", "deepseek", "digitalocean", "discord", "dockerhub",
+	"doppler", "figma", "github", "gitlab", "grafana", "heroku", "huggingface",
+	"infura", "launchdarkly", "linear", "mailgun", "newrelic", "notion", "npm",
+	"okta", "openai", "pagerduty", "postmark", "pypi", "rubygems", "sendgrid",
+	"sentry", "shopify", "slack", "snyk", "sonarcloud", "stripe", "supabase",
+	"teams", "telegram", "terraform", "twilio", "vercel",
 }
 
-func filesCallSelector(t *testing.T, pattern string, matches func(receiver, method string) bool) bool {
+// TestHTTPVerifierPackages_UseSharedSafetySuite ties network discovery to exact
+// package identities and to a directly executed top-level vtest call. A raw
+// comment marker, an aliased import, a helper hidden in a non-verifier filename,
+// or a dead nested function cannot satisfy the guard.
+func TestHTTPVerifierPackages_UseSharedSafetySuite(t *testing.T) {
+	entries, err := filepath.Glob("*")
+	require.NoError(t, err)
+	discovered := make([]string, 0, len(expectedHTTPVerifierPackages))
+	for _, entry := range entries {
+		info, statErr := filepath.Glob(filepath.Join(entry, "*.go"))
+		require.NoError(t, statErr)
+		if len(info) == 0 || entry == "internal" || !packageUsesHTTP(t, entry) {
+			continue
+		}
+		discovered = append(discovered, entry)
+		assert.True(t, packageRunsVTestDirectly(t, entry),
+			"HTTP verifier package %q must execute vtest.Run as the first statement of a top-level Test function", entry)
+	}
+	sort.Strings(discovered)
+	assert.Equal(t, expectedHTTPVerifierPackages, discovered,
+		"HTTP verifier package identities changed; add/remove an executable safety contract deliberately")
+}
+
+func packageUsesHTTP(t *testing.T, directory string) bool {
 	t.Helper()
-	paths, err := filepath.Glob(pattern)
+	paths, err := filepath.Glob(filepath.Join(directory, "*.go"))
 	require.NoError(t, err)
 	for _, path := range paths {
-		parsed, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		require.NoError(t, parseErr)
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file := parseGoFile(t, path)
+		httpxAliases := importAliases(file, "github.com/HodeTech/leakwatch/internal/verifier/internal/httpx", "httpx")
+		httpAliases := importAliases(file, "net/http", "http")
 		found := false
-		ast.Inspect(parsed, func(node ast.Node) bool {
+		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
@@ -64,8 +68,15 @@ func filesCallSelector(t *testing.T, pattern string, matches func(receiver, meth
 			if !ok {
 				return true
 			}
-			receiver, _ := selector.X.(*ast.Ident)
-			if receiver != nil && matches(receiver.Name, selector.Sel.Name) {
+			receiver, ok := selector.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if httpxAliases[receiver.Name] && selector.Sel.Name == "VerifyToken" {
+				found = true
+				return false
+			}
+			if httpAliases[receiver.Name] && (selector.Sel.Name == "NewRequestWithContext" || selector.Sel.Name == "NewRequest") {
 				found = true
 				return false
 			}
@@ -78,15 +89,64 @@ func filesCallSelector(t *testing.T, pattern string, matches func(receiver, meth
 	return false
 }
 
-func readMatchingFiles(t *testing.T, pattern string) []byte {
+func packageRunsVTestDirectly(t *testing.T, directory string) bool {
 	t.Helper()
-	paths, err := filepath.Glob(pattern)
+	paths, err := filepath.Glob(filepath.Join(directory, "*_test.go"))
 	require.NoError(t, err)
-	var result []byte
 	for _, path := range paths {
-		contents, readErr := os.ReadFile(path)
-		require.NoError(t, readErr)
-		result = append(result, contents...)
+		file := parseGoFile(t, path)
+		aliases := importAliases(file, "github.com/HodeTech/leakwatch/internal/verifier/internal/vtest", "vtest")
+		if len(aliases) == 0 {
+			continue
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv != nil || !strings.HasPrefix(function.Name.Name, "Test") ||
+				function.Body == nil || len(function.Body.List) == 0 {
+				continue
+			}
+			expression, ok := function.Body.List[0].(*ast.ExprStmt)
+			if !ok {
+				continue
+			}
+			call, ok := expression.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Run" {
+				continue
+			}
+			receiver, ok := selector.X.(*ast.Ident)
+			if ok && aliases[receiver.Name] {
+				return true
+			}
+		}
 	}
-	return result
+	return false
+}
+
+func importAliases(file *ast.File, importPath, defaultName string) map[string]bool {
+	aliases := make(map[string]bool)
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || path != importPath {
+			continue
+		}
+		name := defaultName
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name != "." && name != "_" {
+			aliases[name] = true
+		}
+	}
+	return aliases
+}
+
+func parseGoFile(t *testing.T, path string) *ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	require.NoError(t, err)
+	return file
 }

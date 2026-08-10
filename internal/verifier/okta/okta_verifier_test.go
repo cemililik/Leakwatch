@@ -2,16 +2,44 @@ package okta
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	oktadetector "github.com/HodeTech/leakwatch/internal/detector/okta"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+func TestVerify_RealDetectorOutput_UsesOktaDomain(t *testing.T) {
+	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
+	findings := testutil.ScanViaMatcher(&oktadetector.Detector{}, fixture)
+	require.Len(t, findings, 1)
+	wantDomain := findings[0].ExtraData["domain"]
+	require.NotEmpty(t, wantDomain)
+
+	var gotURL string
+	client := &http.Client{Transport: oktaRoundTrip(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"profile":{"login":"fixture@example.com"}}`)), Request: r,
+		}, nil
+	})}
+	result := (&Verifier{httpClient: client}).Verify(t.Context(), findings[0])
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "https://"+wantDomain+"/api/v1/users/me", gotURL)
+}
+
+type oktaRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f oktaRoundTrip) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

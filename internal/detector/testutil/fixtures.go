@@ -12,7 +12,7 @@ func RegisteredDetectorFixtures() map[string][]byte {
 	return map[string][]byte{
 		"airtable-pat":               []byte("AIRTABLE_TOKEN=patAb12Cd34Ef56Gh." + repeat("ab12cd34", 8)),
 		"anthropic-api-key":          []byte("ANTHROPIC_API_KEY=sk-ant-" + repeat("Ab12Cd34_", 10)),
-		"auth0-management-token":     []byte("AUTH0_MANAGEMENT_TOKEN=" + repeat("Ab12Cd34", 4)),
+		"auth0-management-token":     []byte("AUTH0_MANAGEMENT_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2ZpeHR1cmUuZXUuYXV0aDAuY29tLyJ9.c2lnbmF0dXJlLWZpeHR1cmU"),
 		"aws-access-key-id":          []byte("aws_access_key_id=AKIAQ7M2PL9RT4VW8XYZ\naws_secret_access_key=" + repeat("Ab1/", 10)),
 		"azure-entra-secret":         []byte("AZURE_CLIENT_SECRET=" + repeat("Ab12Cd34", 5)),
 		"azure-storage-key":          []byte("DefaultEndpointsProtocol=https;AccountName=syntheticacct;AccountKey=" + repeat("Ab12Cd34", 11) + ";"),

@@ -18,8 +18,7 @@ func TestDetector_Metadata_ReturnsExpectedValues(t *testing.T) {
 }
 
 func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
-	// Synthetic 40-character token value.
-	token40 := "eyJhbGciOiJSUzI1NiIsInR5cCI6Ikp3VDIifQ"
+	token := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2ZpeHR1cmUuZXUuYXV0aDAuY29tLyJ9.c2lnbmF0dXJlLWZpeHR1cmU"
 
 	tests := []struct {
 		name     string
@@ -30,52 +29,52 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 	}{
 		{
 			name:     "AUTH0_MANAGEMENT_TOKEN with equals",
-			input:    "AUTH0_MANAGEMENT_TOKEN=" + token40,
+			input:    "AUTH0_MANAGEMENT_TOKEN=" + token,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "AUTH0_API_TOKEN with equals",
-			input:    "AUTH0_API_TOKEN=" + token40,
+			input:    "AUTH0_API_TOKEN=" + token,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "auth0_token lowercase with equals",
-			input:    "auth0_token=" + token40,
+			input:    "auth0_token=" + token,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "AUTH0_MANAGEMENT_TOKEN with colon separator",
-			input:    "AUTH0_MANAGEMENT_TOKEN: " + token40,
+			input:    "AUTH0_MANAGEMENT_TOKEN: " + token,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "AUTH0_API_TOKEN with single quotes",
-			input:    "AUTH0_API_TOKEN='" + token40 + "'",
+			input:    "AUTH0_API_TOKEN='" + token + "'",
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "AUTH0_MANAGEMENT_TOKEN with double quotes",
-			input:    `AUTH0_MANAGEMENT_TOKEN="` + token40 + `"`,
+			input:    `"AUTH0_MANAGEMENT_TOKEN": "` + token + `"`,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 		{
 			name:     "token with spaces around equals",
-			input:    "AUTH0_MANAGEMENT_TOKEN = " + token40,
+			input:    "AUTH0_MANAGEMENT_TOKEN = " + token,
 			expected: 1,
-			redacted: "****" + token40[len(token40)-4:],
-			rawLen:   len(token40),
+			redacted: "****" + token[len(token)-4:],
+			rawLen:   len(token),
 		},
 	}
 
@@ -88,6 +87,8 @@ func TestDetector_Scan_MatchesValidTokens(t *testing.T) {
 				require.NotEmpty(t, findings)
 				assert.Equal(t, tt.redacted, findings[0].Redacted)
 				assert.Len(t, findings[0].Raw, tt.rawLen)
+				assert.Equal(t, token, string(findings[0].Raw))
+				assert.Equal(t, token, tt.input[findings[0].ByteStart:findings[0].ByteEnd])
 			}
 		})
 	}
@@ -103,8 +104,16 @@ func TestDetector_Scan_RejectsInvalidInput(t *testing.T) {
 			input: "AUTH0_MANAGEMENT_TOKEN=abc123",
 		},
 		{
+			name:  "opaque value is not a management JWT",
+			input: "AUTH0_MANAGEMENT_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6Ikp3VDIifQ",
+		},
+		{
+			name:  "fourth JWT segment",
+			input: "AUTH0_MANAGEMENT_TOKEN=aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbb.cccccccc.more",
+		},
+		{
 			name:  "no recognized variable name",
-			input: "API_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6Ikp3VDIifQ",
+			input: "API_TOKEN=aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbb.cccccccc",
 		},
 		{
 			name:  "plain text",

@@ -22,7 +22,7 @@
   <!-- stats:begin — managed by internal/meta/statsgen; run `go generate ./...` -->
   <g font-family="'JetBrains Mono',monospace" font-size="24" font-weight="700">
     <text x="72" y="510" fill="#34d39a">65 detectors</text>
-    <text x="320" y="510" fill="#f0b429">41 direct-live checks</text>
+    <text x="320" y="510" fill="#f0b429">39 direct-live checks</text>
     <text x="640" y="510" fill="#5aa9e6">6 sources</text>
     <text x="820" y="510" fill="#ff6377">SARIF · JSON · CSV</text>
   </g>

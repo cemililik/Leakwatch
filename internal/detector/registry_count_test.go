@@ -146,7 +146,14 @@ func TestAll_RegisteredDetectors_HaveMatcherParity(t *testing.T) {
 		require.True(t, ok, "registered detector %q has no matcher-contract fixture", id)
 		t.Run(id, func(t *testing.T) {
 			direct := det.Scan(t.Context(), fixture)
-			require.NotEmpty(t, direct, "fixture does not exercise Detector.Scan")
+			require.Len(t, direct, 1, "canonical fixture must exercise exactly one unambiguous finding")
+			assert.Equal(t, id, direct[0].DetectorID, "detector returned a finding owned by a different capability")
+			assert.NotEmpty(t, direct[0].Raw, "canonical finding must preserve the exact secret source bytes")
+			if direct[0].ByteStart != 0 || direct[0].ByteEnd != 0 {
+				require.Greater(t, direct[0].ByteEnd, direct[0].ByteStart, "explicit source span must be non-empty")
+				assert.Equal(t, direct[0].Raw, fixture[direct[0].ByteStart:direct[0].ByteEnd],
+					"explicit source span must select the exact raw finding bytes")
+			}
 
 			viaMatcher := testutil.ScanViaMatcher(det, fixture)
 			require.NotEmpty(t, viaMatcher,

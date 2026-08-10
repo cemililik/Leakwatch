@@ -14,7 +14,7 @@ Leakwatch is a high-performance, open source (MIT) security tool that detects, v
 
 - **65 detectors (61 packages) + unlimited YAML custom rules** -- Covers major cloud providers, AI platforms, CI/CD tools, databases, structured configuration, and SaaS services out of the box, with YAML custom rules for anything else
 - **Hybrid detection engine** -- Aho-Corasick pre-filter, regex validation, and Shannon entropy analysis for a low false positive rate
-- **Truthful verification capability** -- 41 direct-live checks, 7 context-required checks, and 6 offline format validators; the 54 registered implementations are never overstated as live coverage
+- **Truthful verification capability** -- 39 direct-live checks, 9 context-required checks, and 6 offline format validators; the 54 registered implementations are never overstated as live coverage
 - **Multi-source support** -- Filesystem, Git repository, container images, S3, GCS, parallel multi-repo, and Slack
 - **Flexible output** -- JSON, SARIF, CSV, and table formats
 - **Single binary, zero dependencies** -- Runs on every platform, no Docker daemon required
@@ -36,7 +36,7 @@ flowchart LR
         E3["Entropy\nAnalysis"]
     end
 
-    subgraph Verification["Secret Verification\n(41 direct-live + 7 context-required + 6 format-only)"]
+    subgraph Verification["Secret Verification\n(39 direct-live + 9 context-required + 6 format-only)"]
         V1["AWS STS"]
         V2["GitHub API"]
         V3["Slack API"]

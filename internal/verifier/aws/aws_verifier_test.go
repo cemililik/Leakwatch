@@ -13,8 +13,24 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	awsdetector "github.com/HodeTech/leakwatch/internal/detector/aws"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+func TestVerify_RealDetectorOutput_ReachesSTSContract(t *testing.T) {
+	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
+	findings := testutil.ScanViaMatcher(&awsdetector.AccessKeyID{}, fixture)
+	require.Len(t, findings, 1)
+	require.NotEmpty(t, findings[0].RawV2)
+
+	v := &Verifier{client: &mockSTSClient{output: &sts.GetCallerIdentityOutput{
+		Account: aws.String("123456789012"), Arn: aws.String("arn:aws:iam::123456789012:user/fixture"),
+		UserId: aws.String("AIDAFIXTURE"),
+	}}}
+	result := v.Verify(t.Context(), findings[0])
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+}
 
 // mockSTSClient implements stsClient for testing.
 type mockSTSClient struct {

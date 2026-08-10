@@ -10,11 +10,11 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://hodetech.github.io/Leakwatch/" />
 <meta property="og:title" content="Leakwatch — Detect, verify & report leaked secrets" />
-<meta property="og:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 41 direct live checks." />
+<meta property="og:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 39 direct live checks." />
 <meta property="og:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Leakwatch — Detect, verify & report leaked secrets" />
-<meta name="twitter:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 41 direct live checks." />
+<meta name="twitter:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 39 direct live checks." />
 <meta name="twitter:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
 <link rel="stylesheet" href="css/fonts.css" />
@@ -68,7 +68,7 @@
         <a class="btn btn-red btn-lg" href="playground.html"><span data-i18n="hero.cta.run">▸ Run the scan</span></a>
         <a class="btn btn-lg" href="docs.html"><span data-i18n="hero.cta.docs">Read the docs</span></a>
       </div>
-      <div class="kv" data-i18n="hero.kv">65 detectors · 41 direct-live · 7 context-required · 6 sources</div>
+      <div class="kv" data-i18n="hero.kv">65 detectors · 39 direct-live · 9 context-required · 6 sources</div>
     </div>
 
     <div class="frame doc" id="heroDoc">
@@ -96,7 +96,7 @@
   <section class="section no-rule" style="padding-top:6px">
     <div class="frame stats">
       <div class="cell"><div class="n"><b>65</b></div><div class="l" data-i18n="stats.detectors">secret detectors</div></div>
-      <div class="cell"><div class="n"><b>41</b></div><div class="l" data-i18n="stats.verifiers">direct live checks</div></div>
+      <div class="cell"><div class="n"><b>39</b></div><div class="l" data-i18n="stats.verifiers">direct live checks</div></div>
       <div class="cell"><div class="n"><b>6</b></div><div class="l" data-i18n="stats.sources">scan sources</div></div>
       <div class="cell"><div class="n"><b>5</b></div><div class="l" data-i18n="stats.formats">output formats</div></div>
     </div>
@@ -146,8 +146,8 @@
     <div class="sec-head"><span class="idx mono-label">§ 04</span><h2 data-i18n="verify.title">Is it still live?</h2></div>
     <p class="sec-intro" data-i18n="verify.intro">Detection is half the job. Leakwatch distinguishes direct live checks from checks that require trusted context and from offline format validation, so registry counts never overstate live capability.</p>
     <div class="frame" style="border-radius:8px;padding:8px 22px">
-      <div class="vrow"><span class="vk live" data-i18n="verify.live.k">Direct live</span><span class="vd" data-i18n="verify.live.d">A non-destructive provider check can confirm the key in the normal production path.</span><span class="vcount">41</span></div>
-      <div class="vrow"><span class="vk ctx" data-i18n="verify.context.k">Context required</span><span class="vd" data-i18n="verify.context.d">A trusted issuer, region, or paired credential must be supplied before a safe live check.</span><span class="vcount">7</span></div>
+      <div class="vrow"><span class="vk live" data-i18n="verify.live.k">Direct live</span><span class="vd" data-i18n="verify.live.d">A non-destructive provider check can confirm the key in the normal production path.</span><span class="vcount">39</span></div>
+      <div class="vrow"><span class="vk ctx" data-i18n="verify.context.k">Context required</span><span class="vd" data-i18n="verify.context.d">A trusted issuer, region, or paired credential must be supplied before a safe live check.</span><span class="vcount">9</span></div>
       <div class="vrow"><span class="vk fmt" data-i18n="verify.fmt.k">Format checked</span><span class="vd" data-i18n="verify.fmt.d">Validated by structure where no safe live check exists.</span><span class="vcount">6</span></div>
       <div class="vrow"><span class="vk no" data-i18n="verify.no.k">Not verifiable</span><span class="vd" data-i18n="verify.no.d">No safe provider check (e.g. JWTs, private keys) — still detected, triaged manually.</span><span class="vcount">11</span></div>
     </div>
@@ -168,7 +168,7 @@
   <!-- ===== §06 Detector index ===== -->
   <section class="section" id="index">
     <div class="sec-head"><span class="idx mono-label">§ 06</span><h2 data-i18n="index.title">Redacted index — 65 detectors</h2></div>
-    <p class="sec-intro" data-i18n="index.intro">A sample of the catalog: 41 direct-live, 7 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.</p>
+    <p class="sec-intro" data-i18n="index.intro">A sample of the catalog: 39 direct-live, 9 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.</p>
     <div class="index-grid">
       <span class="idx-chip">aws-access-key-id</span><span class="idx-chip">gcp-service-account</span><span class="idx-chip">openai-api-key</span><span class="idx-chip">anthropic-api-key</span><span class="idx-chip">github-token</span><span class="idx-chip">stripe-api-key-live</span><span class="idx-chip"><span class="redact" data-real="sendgrid-api-key">sendgrid-api-key</span></span><span class="idx-chip">slack-token</span><span class="idx-chip">twilio-api-key</span><span class="idx-chip"><span class="redact" data-real="digitalocean-token">digitalocean-token</span></span><span class="idx-chip">datadog-api-key</span><span class="idx-chip">cloudflare-api-token</span><span class="idx-chip"><span class="redact" data-real="npm-token">npm-token</span></span><span class="idx-chip">private-key</span><span class="idx-chip">jwt</span><span class="idx-chip"><span class="redact" data-real="shopify-access-token">shopify-access-token</span></span><span class="idx-chip">supabase-service-key</span><span class="idx-chip">gitlab-pat</span><span class="idx-chip"><span class="redact" data-real="vercel-token">vercel-token</span></span><a class="idx-chip more" href="docs.html#/detectors/detector-catalog" data-i18n="index.more">+ 46 more · view full catalog →</a>
     </div>

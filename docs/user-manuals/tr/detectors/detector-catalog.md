@@ -57,7 +57,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 |----|------------|--------|
 | `github-token` | GitHub Kişisel Erişim Token'ı — hem klasik `ghp_` PAT hem de ince taneli `github_pat_` PAT | Critical |
 | `github-oauth-token` | GitHub OAuth2 ve kurulum (installation) token'ı — `gho_`/`ghu_`/`ghr_`/`ghs_`, yeni durumsuz (JWT biçimli) `ghs_` kurulum token'ları dâhil | Critical |
-| `gitlab-pat` | GitLab Kişisel Erişim Token'ı — klasik `glpat-` token'ı artı yeni yönlendirilebilir önekler: dağıtım (`gldt-`), runner (`glrt-`), CI/CD derleme ve tetikleyici (`glcbt-`/`glptt-`), OAuth uygulama sırrı (`gloas-`) ve besleme (`glft-`) token'ları; yakınında bulunduğunda kendi barındırılan (self-hosted) GitLab sunucuları doğrulama için tespit edilir | Critical |
+| `gitlab-pat` | GitLab kimlik bilgisi — klasik `glpat-` kişisel erişim token'ı ile dağıtım (`gldt-`), runner (`glrt-`), CI/CD derleme ve tetikleyici (`glcbt-`/`glptt-`), OAuth uygulama sırrı (`gloas-`) ve besleme (`glft-`) önekleri; repo URL'leri doğrulama yönlendirmesinde asla güvenilir sayılmaz | Critical |
 | `bitbucket-app-password` | Bitbucket Uygulama Parolası | Critical |
 | `circleci-token` | CircleCI Kişisel API Token'ı | High |
 | `npm-token` | NPM Erişim Token'ı | High |

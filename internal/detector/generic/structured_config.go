@@ -50,27 +50,44 @@ func (d *StructuredConfigDetector) Keywords() []string {
 func (d *StructuredConfigDetector) FallbackOnSpecializedOverlap() bool { return true }
 
 func (d *StructuredConfigDetector) Scan(ctx context.Context, data []byte) []detector.RawFinding {
-	trimmed := bytes.TrimSpace(data)
+	scanData, baseOffset := stripUTF8BOM(data)
+	trimmed := bytes.TrimSpace(scanData)
 	if len(trimmed) == 0 {
 		return nil
 	}
+	var findings []detector.RawFinding
 	switch trimmed[0] {
 	case '{':
-		return d.scanJSON(ctx, data)
+		findings = d.scanJSON(ctx, scanData)
 	case '[':
 		firstLine := trimmed
 		if lineEnd := bytes.IndexByte(firstLine, '\n'); lineEnd >= 0 {
 			firstLine = firstLine[:lineEnd]
 		}
 		if _, tomlSection := parseTOMLSection(firstLine); tomlSection {
-			return d.scanLineConfig(ctx, data)
+			findings = d.scanLineConfig(ctx, scanData)
+			break
 		}
-		return d.scanJSON(ctx, data)
+		findings = d.scanJSON(ctx, scanData)
 	case '<':
-		return d.scanXML(ctx, data)
+		findings = d.scanXML(ctx, scanData)
 	default:
-		return d.scanLineConfig(ctx, data)
+		findings = d.scanLineConfig(ctx, scanData)
 	}
+	if baseOffset != 0 {
+		for i := range findings {
+			findings[i].ByteStart += baseOffset
+			findings[i].ByteEnd += baseOffset
+		}
+	}
+	return findings
+}
+
+func stripUTF8BOM(data []byte) ([]byte, int) {
+	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		return data[3:], 3
+	}
+	return data, 0
 }
 
 func (d *StructuredConfigDetector) scanJSON(ctx context.Context, data []byte) []detector.RawFinding {

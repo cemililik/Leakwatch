@@ -8,11 +8,11 @@
 
 ## 1. What is Secret Verification?
 
-Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **41** detectors support a direct live check, **7** require trusted issuer, region, or companion context, **6** are format-only, and **11** have no verifier.
+Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **39** detectors support a direct live check, **9** require trusted issuer, region, or companion context, **6** are format-only, and **11** have no verifier.
 
 Verification is classified into three methods:
-- **Direct live API verification** (41 detectors) -- controlled, non-destructive API calls available in the normal production path
-- **Context-required verification** (7 detectors) -- a trusted issuer, region, or paired credential is required before any safe request
+- **Direct live API verification** (39 detectors) -- controlled, non-destructive API calls available in the normal production path
+- **Context-required verification** (9 detectors) -- a trusted issuer, region, or paired credential is required before any safe request
 - **Format validation** (6 detectors) -- structural checks (decode, parse, validate format) without network calls
 
 **Why it matters:**
@@ -71,7 +71,7 @@ stateDiagram-v2
 
 Leakwatch provides 54 registered verifier implementations (51 packages) across three verification types. The following tables classify capability rather than equating registry count with live coverage.
 
-### Direct Live API Verification (41 detectors)
+### Direct Live API Verification (39 detectors)
 
 These verifiers make a controlled, non-destructive API call to the provider to confirm whether the secret is active or inactive. The majority use HTTP GET; a small number (e.g., the Teams webhook verifier) use a non-destructive POST to a validation endpoint.
 
@@ -86,7 +86,6 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **AI/ML** | Anthropic API Key | `anthropic-api-key` | `api.anthropic.com/v1/models` |
 | **AI/ML** | Hugging Face Token | `huggingface-token` | `huggingface.co/api/whoami-v2` |
 | **AI/ML** | DeepSeek API Key | `deepseek-api-key` | `api.deepseek.com/models` |
-| **DevTools** | GitLab PAT | `gitlab-pat` | `{host}/api/v4/user` (defaults to `gitlab.com`; honors a co-located self-hosted instance host) |
 | **DevTools** | Bitbucket App Password | `bitbucket-app-password` | `api.bitbucket.org/2.0/user` |
 | **DevTools** | NPM Token | `npm-token` | `registry.npmjs.org/-/npm/v1/user` |
 | **DevTools** | PyPI Token | `pypi-api-token` | `upload.pypi.org/legacy/` |
@@ -106,7 +105,6 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **DevTools** | Supabase Personal Access Token | `supabase-service-key` | Supabase Management API `api.supabase.com/v1/projects` (`sbp_` Bearer PAT; `401` is inactive, `403` remains inconclusive) |
 | **Infrastructure** | Databricks PAT | `databricks-token` | `{workspace-host}/api/2.0/preview/scim/v2/Me` (workspace host captured alongside the token; no host means unverified) |
 | **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
-| **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
 | **Monitoring** | New Relic user API key | `newrelic-api-key` | Read-only NerdGraph `requestContext { userId }`; fixed official US/EU endpoints with bounded fallback. Only all-region 401 is inactive; 403 and partial failures remain inconclusive. |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
@@ -119,17 +117,19 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **SaaS** | Airtable PAT | `airtable-pat` | `api.airtable.com/v0/meta/whoami` |
 | **Blockchain** | Infura API Key | `infura-api-key` | `mainnet.infura.io/v3/{key}` |
 
-### Requires Trusted or Companion Context (7 detectors)
+### Requires Trusted or Companion Context (9 detectors)
 
 These implementations are registered, but a bare detector finding cannot safely select the issuer or authenticate the verification request. Missing context produces `unverified` without a network request.
 
 | Detector | Detector ID | Required context and behavior |
 |----------|-------------|-------------------------------|
+| Auth0 Management Token | `auth0-management-token` | Operator-trusted Auth0 tenant/custom HTTPS origin; JWT claims from scanned content never select a request target. Without trusted origin the result is `unverified` and no request is made; only `401` on that origin is inactive |
 | Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
 | Twilio API Key Secret | `twilio-api-key` | The detector treats the secret as opaque and reports an explicit API Key Secret assignment only when it pairs one-to-one with an explicitly assigned nearby `SK...` Key SID in the same logical block; bare SIDs are not findings. A trusted regional origin (US1/IE1/AU1) is still operator context, so production makes no request without it; `403` is permission-ambiguous and never inactive |
 | Shopify Access Token | `shopify-access-token` | Operator-trusted issuing store origin; finding-controlled domains are ignored. The prepared verifier uses the pinned 2026-07 Admin GraphQL shop identity query, but production makes no request until trusted-store configuration exists |
 | GitHub PAT | `github-token` | Trusted GitHub.com or GHES API origin; both issuers use `ghp_`/`github_pat_`, so the registered production verifier makes no request without explicit issuer trust |
 | GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; `gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and side-effectful `ghr_` refresh-token exchange is never attempted |
+| GitLab PAT | `gitlab-pat` | Operator-trusted GitLab.com or self-managed HTTPS origin; repository host text and finding metadata never select the target. Only `glpat_` can use the read-only `/api/v4/user` probe; other GitLab credential subtypes remain `unverified` |
 | Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED; the production verifier makes no request without it |
 | Snyk API Key | `snyk-api-key` | Trusted Snyk regional, government, or private API origin; only `401` is inactive, while permission/plan `403` remains `verify_error`; production makes no request without a trusted origin |
 

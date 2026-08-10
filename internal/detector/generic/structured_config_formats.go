@@ -11,9 +11,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/pelletier/go-toml/v2"
+	"gopkg.in/yaml.v3"
 )
-
-const maxStructuredInputBytes = 4 * 1024 * 1024
 
 type lineConfigFormat string
 
@@ -37,10 +37,10 @@ type yamlSignal struct {
 }
 
 func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []byte) []detector.RawFinding {
-	if len(data) > maxStructuredInputBytes || !utf8.Valid(data) {
+	if !utf8.Valid(data) || ctx.Err() != nil {
 		return nil
 	}
-	format, confident := detectLineConfigFormat(data)
+	format, confident := detectLineConfigFormat(ctx, data)
 	if !confident {
 		return nil
 	}
@@ -48,15 +48,10 @@ func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []by
 	var yamlPath []yamlPathComponent
 	var tomlPath []string
 
-	for offset, lineNo := 0, 0; offset < len(data); lineNo++ {
-		if lineNo&255 == 0 && ctx.Err() != nil {
+	for offset := 0; offset < len(data); {
+		lineEnd, complete := contextLineEnd(ctx, data, offset)
+		if !complete {
 			return nil
-		}
-		lineEnd := bytes.IndexByte(data[offset:], '\n')
-		if lineEnd < 0 {
-			lineEnd = len(data)
-		} else {
-			lineEnd += offset
 		}
 		line := data[offset:lineEnd]
 		if len(line) > 0 && line[len(line)-1] == '\r' {
@@ -115,17 +110,17 @@ func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []by
 	return findings
 }
 
-func detectLineConfigFormat(data []byte) (lineConfigFormat, bool) {
+func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat, bool) {
 	yamlSignals := make([]yamlSignal, 0, 4)
 	hasYAMLDocumentMarker := false
 	dotenvAssignments := 0
 	dotenvInvalid := false
+	tomlAssignments := 0
+	tomlInvalid := false
 	for offset := 0; offset < len(data); {
-		lineEnd := bytes.IndexByte(data[offset:], '\n')
-		if lineEnd < 0 {
-			lineEnd = len(data)
-		} else {
-			lineEnd += offset
+		lineEnd, complete := contextLineEnd(ctx, data, offset)
+		if !complete {
+			return "", false
 		}
 		line := bytes.TrimSpace(data[offset:lineEnd])
 		if len(line) == 0 || bytes.HasPrefix(line, []byte("#")) || bytes.HasPrefix(line, []byte("//")) {
@@ -148,6 +143,11 @@ func detectLineConfigFormat(data []byte) (lineConfigFormat, bool) {
 		} else {
 			dotenvInvalid = true
 		}
+		if _, ok := parseLineAssignment(data[offset:lineEnd], offset, formatTOML); ok {
+			tomlAssignments++
+		} else {
+			tomlInvalid = true
+		}
 		offset = nextLineOffset(lineEnd, len(data))
 	}
 	if (hasYAMLDocumentMarker && len(yamlSignals) > 0) || hasNestedYAMLSignals(yamlSignals) {
@@ -156,17 +156,43 @@ func detectLineConfigFormat(data []byte) (lineConfigFormat, bool) {
 	if dotenvAssignments > 0 && !dotenvInvalid && len(yamlSignals) == 0 {
 		return formatDotenv, true
 	}
+	// Without source-extension metadata a lone `password = "..."` line is
+	// indistinguishable from source code. Requiring a complete, multi-assignment
+	// document preserves support for sectionless TOML while keeping that common
+	// code shape out of the high-confidence detector.
+	if tomlAssignments >= 2 && !tomlInvalid && len(yamlSignals) == 0 {
+		return formatTOML, true
+	}
 	return "", false
+}
+
+func contextLineEnd(ctx context.Context, data []byte, offset int) (int, bool) {
+	const checkBytes = 4 * 1024
+	for start := offset; start < len(data); {
+		if ctx.Err() != nil {
+			return 0, false
+		}
+		end := minInt(start+checkBytes, len(data))
+		if relative := bytes.IndexByte(data[start:end], '\n'); relative >= 0 {
+			return start + relative, true
+		}
+		start = end
+	}
+	return len(data), ctx.Err() == nil
 }
 
 func yamlMappingSignal(line []byte) (yamlSignal, bool) {
 	trimmed := bytes.TrimLeft(line, " \t")
 	indent := visualIndent(line[:len(line)-len(trimmed)])
+	if bytes.HasPrefix(trimmed, []byte("- ")) {
+		trimmed = bytes.TrimLeft(trimmed[2:], " \t")
+	}
 	index := bytes.IndexByte(trimmed, ':')
 	if index <= 0 || !isPlainConfigKey(bytes.TrimSpace(trimmed[:index])) {
 		return yamlSignal{}, false
 	}
-	return yamlSignal{indent: indent, hasValue: len(bytes.TrimSpace(trimmed[index+1:])) > 0}, true
+	remainder := bytes.TrimSpace(trimmed[index+1:])
+	return yamlSignal{indent: indent, hasValue: len(remainder) > 0 && remainder[0] != '#'}, true
 }
 
 func hasNestedYAMLSignals(signals []yamlSignal) bool {
@@ -210,8 +236,15 @@ func isDotenvAssignment(line []byte) bool {
 func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAssignment, bool) {
 	trimmed := bytes.TrimLeft(line, " \t")
 	indentBytes := len(line) - len(trimmed)
+	originalIndent := visualIndent(line[:indentBytes])
 	if len(trimmed) == 0 || trimmed[0] == '#' || trimmed[0] == ';' || bytes.HasPrefix(trimmed, []byte("//")) {
 		return lineAssignment{}, false
+	}
+	if format == formatYAML && bytes.HasPrefix(trimmed, []byte("- ")) {
+		rest := trimmed[2:]
+		withoutSpacing := bytes.TrimLeft(rest, " \t")
+		indentBytes += 2 + len(rest) - len(withoutSpacing)
+		trimmed = withoutSpacing
 	}
 	if format == formatDotenv && bytes.HasPrefix(trimmed, []byte("export ")) {
 		rest := trimmed[len("export "):]
@@ -235,8 +268,9 @@ func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAs
 	key := string(keyBytes)
 	valueBase := base + indentBytes + index + 1
 	valueBytes := trimmed[index+1:]
-	if len(bytes.TrimSpace(valueBytes)) == 0 {
-		return lineAssignment{key: key, indent: visualIndent(line[:len(line)-len(trimmed)])}, true
+	trimmedValue := bytes.TrimSpace(valueBytes)
+	if len(trimmedValue) == 0 || (format == formatYAML && trimmedValue[0] == '#') {
+		return lineAssignment{key: key, indent: originalIndent}, true
 	}
 	value, start, end, ok := parseLineScalar(valueBytes, valueBase, format)
 	if !ok {
@@ -247,7 +281,7 @@ func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAs
 		value:      value,
 		valueStart: start,
 		valueEnd:   end,
-		indent:     visualIndent(line[:len(line)-len(trimmed)]),
+		indent:     originalIndent,
 		hasValue:   true,
 	}, true
 }
@@ -261,19 +295,35 @@ func parseLineScalar(value []byte, base int, format lineConfigFormat) (string, i
 	}
 	if value[0] == '\'' || value[0] == '"' {
 		quote := value[0]
-		end := findClosingQuote(value, quote)
+		end := findClosingQuoteForFormat(value, quote, format)
 		if end <= 0 || !onlyWhitespaceOrComment(value[end+1:]) {
 			return "", 0, 0, false
 		}
 		raw := value[1:end]
+		if len(raw) > maxStructuredStringLen {
+			return "", 0, 0, false
+		}
 		decoded := string(raw)
 		if quote == '"' {
-			unquoted, err := strconv.Unquote(string(value[:end+1]))
+			var unquoted string
+			var err error
+			switch format {
+			case formatYAML:
+				err = yaml.Unmarshal(value[:end+1], &unquoted)
+			case formatTOML:
+				var scalar struct {
+					Value string `toml:"value"`
+				}
+				err = toml.Unmarshal(append([]byte("value = "), value[:end+1]...), &scalar)
+				unquoted = scalar.Value
+			default:
+				unquoted, err = strconv.Unquote(string(value[:end+1]))
+			}
 			if err != nil {
 				return "", 0, 0, false
 			}
 			decoded = unquoted
-		} else if format == formatTOML {
+		} else if format == formatYAML {
 			decoded = strings.ReplaceAll(decoded, "''", "'")
 		}
 		return decoded, base + 1, base + end, true
@@ -287,15 +337,24 @@ func parseLineScalar(value []byte, base int, format lineConfigFormat) (string, i
 		}
 	}
 	raw := bytes.TrimRight(value[:end], " \t\r")
-	if len(raw) == 0 || format == formatTOML {
+	if len(raw) == 0 || len(raw) > maxStructuredStringLen || format == formatTOML {
 		return "", 0, 0, false
 	}
 	return string(raw), base, base + len(raw), true
 }
 
 func findClosingQuote(value []byte, quote byte) int {
+	return findClosingQuoteForFormat(value, quote, "")
+}
+
+func findClosingQuoteForFormat(value []byte, quote byte, format lineConfigFormat) int {
 	for i := 1; i < len(value); i++ {
 		if value[i] != quote {
+			continue
+		}
+		if quote == '\'' && format == formatYAML &&
+			i+1 < len(value) && value[i+1] == quote {
+			i++
 			continue
 		}
 		if quote == '"' {
@@ -331,6 +390,9 @@ func isPlainConfigKey(value []byte) bool {
 
 func parseTOMLSection(line []byte) ([]string, bool) {
 	trimmed := bytes.TrimSpace(line)
+	if comment := bytes.IndexByte(trimmed, '#'); comment >= 0 {
+		trimmed = bytes.TrimSpace(trimmed[:comment])
+	}
 	if len(trimmed) < 3 || trimmed[0] != '[' || trimmed[len(trimmed)-1] != ']' || trimmed[1] == '[' {
 		return nil, false
 	}
@@ -391,8 +453,15 @@ type xmlFrame struct {
 	validText    bool
 }
 
+type xmlAttributeSpan struct {
+	name       string
+	value      string
+	valueStart int
+	valueEnd   int
+}
+
 func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []detector.RawFinding {
-	if len(data) > maxStructuredInputBytes || !utf8.Valid(data) {
+	if !utf8.Valid(data) || ctx.Err() != nil {
 		return nil
 	}
 	decoder := xml.NewDecoder(bytes.NewReader(data))
@@ -424,6 +493,13 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 				path = append(path, stack[len(stack)-1].path...)
 			}
 			path = append(path, value.Name.Local)
+			attributes, ok := parseXMLAttributeSpans(
+				data[tokenStart:int(decoder.InputOffset())], tokenStart, value.Attr,
+			)
+			if !ok {
+				return nil
+			}
+			findings = appendXMLAttributeFindings(d, findings, data, path, attributes)
 			stack = append(stack, xmlFrame{
 				name: value.Name.Local, path: path,
 				contentStart: int(decoder.InputOffset()), textStart: -1, validText: true,
@@ -473,6 +549,110 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 		return nil
 	}
 	return findings
+}
+
+func parseXMLAttributeSpans(raw []byte, base int, decoded []xml.Attr) ([]xmlAttributeSpan, bool) {
+	if len(raw) < 3 || raw[0] != '<' {
+		return nil, false
+	}
+	i := 1
+	for i < len(raw) && !isXMLSpace(raw[i]) && raw[i] != '>' && raw[i] != '/' {
+		i++
+	}
+	spans := make([]xmlAttributeSpan, 0, len(decoded))
+	for i < len(raw) {
+		for i < len(raw) && isXMLSpace(raw[i]) {
+			i++
+		}
+		if i >= len(raw) || raw[i] == '>' || raw[i] == '/' {
+			break
+		}
+		nameStart := i
+		for i < len(raw) && !isXMLSpace(raw[i]) && raw[i] != '=' && raw[i] != '>' && raw[i] != '/' {
+			i++
+		}
+		if i == nameStart {
+			return nil, false
+		}
+		for i < len(raw) && isXMLSpace(raw[i]) {
+			i++
+		}
+		if i >= len(raw) || raw[i] != '=' {
+			return nil, false
+		}
+		i++
+		for i < len(raw) && isXMLSpace(raw[i]) {
+			i++
+		}
+		if i >= len(raw) || (raw[i] != '\'' && raw[i] != '"') {
+			return nil, false
+		}
+		quote := raw[i]
+		i++
+		valueStart := i
+		for i < len(raw) && raw[i] != quote {
+			i++
+		}
+		if i >= len(raw) || len(spans) >= len(decoded) {
+			return nil, false
+		}
+		name := decoded[len(spans)].Name.Local
+		spans = append(spans, xmlAttributeSpan{
+			name: name, value: decoded[len(spans)].Value,
+			valueStart: base + valueStart, valueEnd: base + i,
+		})
+		i++
+	}
+	return spans, len(spans) == len(decoded)
+}
+
+func appendXMLAttributeFindings(
+	d *StructuredConfigDetector,
+	findings []detector.RawFinding,
+	data []byte,
+	path []string,
+	attributes []xmlAttributeSpan,
+) []detector.RawFinding {
+	appendFinding := func(key string, span xmlAttributeSpan, keyPath []string) {
+		if len(findings) >= maxStructuredFindings || !isHighConfidenceSecretKey(key) ||
+			!isContextSecretValue(key, span.value) || span.valueStart >= span.valueEnd {
+			return
+		}
+		raw := bytes.Clone(data[span.valueStart:span.valueEnd])
+		findings = append(findings, detector.RawFinding{
+			DetectorID: d.ID(), Raw: raw, Redacted: detector.RedactBytes(raw),
+			ExtraData: map[string]string{
+				"key_name": key, "key_path": joinJSONPath(keyPath), "config_format": "xml",
+			},
+			ByteStart: span.valueStart, ByteEnd: span.valueEnd,
+		})
+	}
+
+	for _, attribute := range attributes {
+		if isHighConfidenceSecretKey(attribute.name) {
+			appendFinding(attribute.name, attribute, appendJSONPath(path, "@"+attribute.name))
+		}
+	}
+	var semanticKey string
+	var valueAttribute *xmlAttributeSpan
+	for i := range attributes {
+		switch strings.ToLower(attributes[i].name) {
+		case "key", "name":
+			if isHighConfidenceSecretKey(attributes[i].value) {
+				semanticKey = attributes[i].value
+			}
+		case "value", "secret":
+			valueAttribute = &attributes[i]
+		}
+	}
+	if semanticKey != "" && valueAttribute != nil {
+		appendFinding(semanticKey, *valueAttribute, appendJSONPath(path, semanticKey))
+	}
+	return findings
+}
+
+func isXMLSpace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\r' || value == '\n'
 }
 
 func trimSpaceBounds(data []byte, start, end int) (int, int) {

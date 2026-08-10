@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -16,10 +17,6 @@ import (
 
 const detectorID = "gitlab-pat"
 
-// defaultHost is the GitLab SaaS host, used when no self-hosted instance host
-// was captured alongside the token.
-const defaultHost = "gitlab.com"
-
 // Verifier checks whether a GitLab personal access token is active by calling
 // the GitLab API. It NEVER logs or persists raw token values.
 type Verifier struct {
@@ -27,6 +24,22 @@ type Verifier struct {
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
+}
+
+// NewForTrustedInstance constructs a GitLab verifier for an API origin
+// explicitly supplied by the operator. Finding metadata and scanned URLs are
+// deliberately never accepted as routing authority.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {
@@ -39,38 +52,37 @@ func (v *Verifier) Type() string {
 }
 
 // Verify checks if the detected GitLab personal access token is valid/active.
-// Raw contains the token value. The API host is derived from a co-located
-// self-hosted instance host (ExtraData["host"]) when present, defaulting to
-// gitlab.com — so an active self-hosted token is verified against its true
-// issuer instead of being misreported as invalid by gitlab.com.
+// Raw contains the token value. Only personal access tokens (`glpat-`) can use
+// the read-only `/user` probe. Other GitLab credential families have different
+// authentication contracts and remain unverified.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := v.baseURL(raw)
+	if token == "" {
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+	if !strings.HasPrefix(token, "glpat-") {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "GitLab token subtype has no safe universal verification probe",
+		}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted GitLab API origin is not configured",
+		}
+	}
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "gitlab",
 		Request: httpx.Request{
-			URL:    apiURL + "/api/v4/user",
+			URL:    v.apiURL + "/api/v4/user",
 			Header: map[string]string{"PRIVATE-TOKEN": token},
 		},
 		ActiveMessage:   "GitLab token is active",
 		InactiveMessage: "GitLab token is invalid or revoked",
 		Decode:          decodeUser,
 	})
-}
-
-// baseURL resolves the GitLab API base URL. A test-injected apiURL wins;
-// otherwise the co-located self-hosted host (ExtraData["host"]) is used, falling
-// back to gitlab.com. raw.ExtraData may be nil (safe to index).
-func (v *Verifier) baseURL(raw detector.RawFinding) string {
-	if v.apiURL != "" {
-		return v.apiURL
-	}
-	host := defaultHost
-	if h := raw.ExtraData["host"]; h != "" {
-		host = h
-	}
-	return "https://" + host
 }
 
 // decodeUser parses the GitLab API response for a valid token.

@@ -12,8 +12,30 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	bitbucketdetector "github.com/HodeTech/leakwatch/internal/detector/bitbucket"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+func TestVerify_RealDetectorOutput_UsesPairedUsername(t *testing.T) {
+	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
+	findings := testutil.ScanViaMatcher(&bitbucketdetector.Detector{}, fixture)
+	require.Len(t, findings, 1)
+	require.Equal(t, "fixture-user", findings[0].ExtraData["username"])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		require.True(t, ok)
+		assert.Equal(t, findings[0].ExtraData["username"], username)
+		assert.Equal(t, string(findings[0].Raw), password)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"display_name":"Fixture User"}`))
+	}))
+	defer server.Close()
+
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(t.Context(), findings[0])
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+}
 
 func TestVerify_ValidPassword_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
