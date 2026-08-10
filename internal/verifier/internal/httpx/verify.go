@@ -60,9 +60,9 @@ type TokenSpec struct {
 	// Request is the provider request to send.
 	Request Request
 
-	// Redact, when non-empty, is stripped from any error text before it is
-	// logged or returned. Set it to the secret when the credential appears in
-	// the request URL (token-in-path verifiers such as telegram and infura).
+	// Redact is an optional additional sensitive value stripped from error text.
+	// VerifyToken always redacts its token argument; use this field only when a
+	// request contains another credential-bearing representation.
 	Redact string
 
 	// ActiveStatuses are the HTTP status codes mapped to verified-active.
@@ -122,7 +122,7 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 		}
 	}
 
-	resp, errResult := spec.send(ctx, client)
+	resp, errResult := spec.send(ctx, client, token)
 	if errResult != nil {
 		return *errResult
 	}
@@ -174,7 +174,7 @@ func isJSONContentType(header string) bool {
 // send builds and performs the request, applying the shared safety policy. On a
 // build, transport, or redirect failure it returns a non-nil result describing
 // the StatusVerifyError; otherwise it returns the response (caller closes Body).
-func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Response, *finding.VerificationResult) {
+func (spec TokenSpec) send(ctx context.Context, client *http.Client, token string) (*http.Response, *finding.VerificationResult) {
 	method := spec.Request.Method
 	if method == "" {
 		method = http.MethodGet
@@ -187,7 +187,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 
 	req, err := http.NewRequestWithContext(ctx, method, spec.Request.URL, body)
 	if err != nil {
-		safeErr := RedactError(err, spec.Redact)
+		safeErr := redactTransportError(err, token, spec.Redact)
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to create request", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -209,7 +209,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 
 	resp, err := client.Do(req)
 	if err != nil {
-		safeErr := RedactError(err, spec.Redact)
+		safeErr := redactTransportError(err, token, spec.Redact)
 		slog.ErrorContext(ctx, spec.Name+" verifier: request failed", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -228,6 +228,17 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 	}
 
 	return resp, nil
+}
+
+func redactTransportError(err error, secrets ...string) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	for _, secret := range secrets {
+		message = redactText(message, secret)
+	}
+	return message
 }
 
 // handleActive maps an active-status response to a result, decoding the body for

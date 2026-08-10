@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -21,10 +22,11 @@ const (
 )
 
 // StructuredConfigDetector detects secrets stored in high-confidence leaf
-// fields of JSON and JSON-with-comments configuration files. It uses a bounded
-// lexer rather than scanning arbitrary high-entropy strings, so explicit field
-// context can safely detect human-style and short secrets without weakening
-// the generic detector's false-positive gates.
+// fields of JSON/JSONC, YAML, TOML, XML and dotenv configuration files. Each
+// syntax has a bounded adapter; formats are not fed through one permissive
+// cross-format regexp. Explicit field context can therefore detect human-style
+// and short secrets without weakening the generic detector's false-positive
+// gates.
 type StructuredConfigDetector struct{}
 
 func (d *StructuredConfigDetector) ID() string          { return "structured-config-secret" }
@@ -48,6 +50,30 @@ func (d *StructuredConfigDetector) Keywords() []string {
 func (d *StructuredConfigDetector) FallbackOnSpecializedOverlap() bool { return true }
 
 func (d *StructuredConfigDetector) Scan(ctx context.Context, data []byte) []detector.RawFinding {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	switch trimmed[0] {
+	case '{':
+		return d.scanJSON(ctx, data)
+	case '[':
+		firstLine := trimmed
+		if lineEnd := bytes.IndexByte(firstLine, '\n'); lineEnd >= 0 {
+			firstLine = firstLine[:lineEnd]
+		}
+		if _, tomlSection := parseTOMLSection(firstLine); tomlSection {
+			return d.scanLineConfig(ctx, data)
+		}
+		return d.scanJSON(ctx, data)
+	case '<':
+		return d.scanXML(ctx, data)
+	default:
+		return d.scanLineConfig(ctx, data)
+	}
+}
+
+func (d *StructuredConfigDetector) scanJSON(ctx context.Context, data []byte) []detector.RawFinding {
 	tokens, candidates, complete := lexJSONLike(ctx, data)
 	if !complete || len(candidates) == 0 {
 		return nil
@@ -520,6 +546,7 @@ func isContextSecretValue(key, value string) bool {
 	switch lower {
 	case "password", "secret", "string", "redacted", "masked", "changeme", "change-me", "change_me", "dummy",
 		"example", "sample", "notset", "not-set", "none", "null", "default", "test", "dev", "local",
+		"true", "false", "yes", "no", "on", "off",
 		"your-secret", "your_secret", "your-password", "your_password", "your_key_here", "your-key-here",
 		"replace_me", "todo", "fixme", "placeholder", "example-secret":
 		return false
@@ -550,7 +577,8 @@ func isExternalSecretReference(lower, original string) bool {
 	for _, prefix := range []string{
 		"env:", "secret://", "vault://", "kv://", "keyvault://",
 		"aws-secretsmanager://", "gcp-secretmanager://", "op://", "1password://",
-		"@microsoft.keyvault(",
+		"@microsoft.keyvault(", "os.getenv(", "os.environ[", "process.env.",
+		"environment.getenvironmentvariable(", "system.getenv(", "config.get(",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return true

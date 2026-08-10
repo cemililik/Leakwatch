@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/HodeTech/leakwatch/internal/verifier"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // detectorsAtInit and verifiersAtInit snapshot the registries right after every
@@ -22,6 +24,62 @@ var (
 func init() {
 	detectorsAtInit = detector.All()
 	verifiersAtInit = verifier.All()
+}
+
+// TestVerifierContracts_UseRealDetectorOutput proves registry compatibility
+// with findings emitted by the production detectors, not hand-assembled
+// RawFinding values. It intentionally does not call Verify: live providers must
+// never receive synthetic credentials during a contract test.
+func TestVerifierContracts_UseRealDetectorOutput(t *testing.T) {
+	fixtures := testutil.RegisteredDetectorFixtures()
+	detectors := make(map[string]detector.Detector, len(detectorsAtInit))
+	for _, det := range detectorsAtInit {
+		detectors[det.ID()] = det
+	}
+	capabilities := make(map[string]meta.VerificationCapability, len(detectorsAtInit))
+	for _, capability := range meta.VerificationCapabilities() {
+		capabilities[capability.DetectorID] = capability
+	}
+
+	for _, registered := range verifiersAtInit {
+		id := registered.Type()
+		t.Run(id, func(t *testing.T) {
+			capability, ok := capabilities[id]
+			require.True(t, ok, "verifier has no capability metadata")
+			assert.NotEqual(t, meta.VerifierNone, capability.VerifierKind,
+				"registered verifier cannot be categorized as none")
+
+			det, ok := detectors[id]
+			require.True(t, ok, "verifier has no registered production detector")
+			fixture, ok := fixtures[id]
+			require.True(t, ok, "verifier detector has no shared contract fixture")
+			findings := testutil.ScanViaMatcher(det, fixture)
+			require.NotEmpty(t, findings, "real matcher/detector path produced no verifier input")
+			assert.Equal(t, id, findings[0].DetectorID)
+
+			for _, field := range capability.RequiredContextFields {
+				if isOperatorSuppliedContext(field) {
+					continue
+				}
+				if field == "raw_v2" {
+					assert.NotEmpty(t, findings[0].RawV2,
+						"detector must emit required companion field %q", field)
+					continue
+				}
+				assert.NotEmpty(t, findings[0].ExtraData[field],
+					"detector must emit required companion field %q", field)
+			}
+		})
+	}
+}
+
+func isOperatorSuppliedContext(field string) bool {
+	switch field {
+	case "trusted_api_origin", "trusted_instance_origin", "trusted_store_origin":
+		return true
+	default:
+		return false
+	}
 }
 
 // TestCapabilityManifest_MatchesRuntimeRegistries prevents registry count from

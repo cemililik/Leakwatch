@@ -52,6 +52,252 @@ func TestStructuredConfigDetector_AppsettingsFixture(t *testing.T) {
 	assert.Equal(t, wantPaths, gotPaths)
 }
 
+func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *testing.T) {
+	secret := "fixture-secret-9mN2pQ7rT4vW8xY"
+	tests := []struct {
+		name       string
+		format     string
+		path       string
+		data       []byte
+		valueStart string
+	}{
+		{
+			name: "nested JSON", format: "json", path: "Service.Credentials.ClientSecret",
+			data:       []byte(`{"Service":{"Credentials":{"ClientSecret":"` + secret + `"}}}`),
+			valueStart: secret,
+		},
+		{
+			name: "nested YAML", format: "yaml", path: "service.credentials.client_secret",
+			data:       []byte("service:\n  credentials:\n    client_secret: \"" + secret + "\"\n"),
+			valueStart: secret,
+		},
+		{
+			name: "nested TOML", format: "toml", path: "service.credentials.client_secret",
+			data:       []byte("[service.credentials]\nclient_secret = \"" + secret + "\"\n"),
+			valueStart: secret,
+		},
+		{
+			name: "nested XML", format: "xml", path: "configuration.service.credentials.ClientSecret",
+			data:       []byte("<configuration><service><credentials><ClientSecret>" + secret + "</ClientSecret></credentials></service></configuration>"),
+			valueStart: secret,
+		},
+		{
+			name: "dotenv", format: "dotenv", path: "CLIENT_SECRET",
+			data:       []byte("SERVICE_NAME=fixture\nCLIENT_SECRET=" + secret + "\n"),
+			valueStart: secret,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &StructuredConfigDetector{}
+			direct := det.Scan(t.Context(), tc.data)
+			viaMatcher := testutil.ScanViaMatcher(det, tc.data)
+			require.Equal(t, direct, viaMatcher)
+			require.Len(t, direct, 1)
+			assert.Equal(t, tc.format, direct[0].ExtraData["config_format"])
+			assert.Equal(t, tc.path, direct[0].ExtraData["key_path"])
+			assert.Equal(t, tc.valueStart, string(direct[0].Raw))
+			assert.Equal(t, string(direct[0].Raw), string(tc.data[direct[0].ByteStart:direct[0].ByteEnd]))
+
+			eng := engine.New(engine.Config{Concurrency: 1, Detectors: []detector.Detector{det}})
+			result, err := eng.Scan(t.Context(), &fixtureSource{data: tc.data})
+			require.NoError(t, err)
+			require.Len(t, result.Findings, 1)
+			assert.Equal(t, det.ID(), result.Findings[0].DetectorID)
+			assert.Empty(t, result.Findings[0].Raw)
+		})
+	}
+}
+
+func TestStructuredConfigDetector_AllSupportedFormats_HardNegatives(t *testing.T) {
+	tests := map[string][]byte{
+		"json":   []byte(`{"Nested":{"Password":"${DATABASE_PASSWORD}","PasswordResetUrl":"https://accounts.invalid/reset/password","ClientId":"client-identifier-123456"}}`),
+		"yaml":   []byte("nested:\n  password: ${DATABASE_PASSWORD}\n  password_reset_url: https://accounts.invalid/reset/password\n  client_id: client-identifier-123456\n"),
+		"toml":   []byte("[nested]\npassword = \"${DATABASE_PASSWORD}\"\npassword_reset_url = \"https://accounts.invalid/reset/password\"\nclient_id = \"client-identifier-123456\"\n"),
+		"xml":    []byte("<configuration><nested><Password>${DATABASE_PASSWORD}</Password><PasswordResetUrl>https://accounts.invalid/reset/password</PasswordResetUrl><ClientId>client-identifier-123456</ClientId></nested></configuration>"),
+		"dotenv": []byte("PASSWORD=${DATABASE_PASSWORD}\nPASSWORD_RESET_URL=https://accounts.invalid/reset/password\nCLIENT_ID=client-identifier-123456\n"),
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
+		})
+	}
+}
+
+func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
+	t.Run("XML entity preserves exact source span", func(t *testing.T) {
+		data := []byte(`<configuration><Password>fixture&amp;secret-9mN2pQ7r</Password></configuration>`)
+		findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+		require.Len(t, findings, 1)
+		assert.Equal(t, `fixture&amp;secret-9mN2pQ7r`, string(findings[0].Raw))
+		assert.Equal(t, string(findings[0].Raw), string(data[findings[0].ByteStart:findings[0].ByteEnd]))
+	})
+
+	t.Run("JSON top-level array is not TOML", func(t *testing.T) {
+		data := []byte(`[{"Password":"fixture-array-secret-9mN2pQ7r"}]`)
+		findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+		require.Len(t, findings, 1)
+		assert.Equal(t, "json", findings[0].ExtraData["config_format"])
+		assert.Equal(t, "[0].Password", findings[0].ExtraData["key_path"])
+	})
+
+	t.Run("CRLF and inline comments keep exact value span", func(t *testing.T) {
+		data := []byte("service:\r\n  password: fixture-crlf-secret-9mN2pQ7r # explanation\r\n")
+		findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+		require.Len(t, findings, 1)
+		assert.Equal(t, "fixture-crlf-secret-9mN2pQ7r", string(findings[0].Raw))
+		assert.Equal(t, "service.password", findings[0].ExtraData["key_path"])
+	})
+
+	t.Run("malformed XML returns no partial findings", func(t *testing.T) {
+		data := []byte(`<configuration><Password>fixture-secret-9mN2pQ7r</Password><broken></configuration>`)
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
+	})
+
+	t.Run("line and XML inputs are size bounded", func(t *testing.T) {
+		line := append([]byte("PASSWORD=fixture-secret-9mN2pQ7r\n#"), []byte(strings.Repeat("x", maxStructuredInputBytes))...)
+		xml := append([]byte("<configuration><Password>fixture-secret-9mN2pQ7r</Password>"), []byte(strings.Repeat(" ", maxStructuredInputBytes))...)
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), line))
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), xml))
+	})
+
+	t.Run("source code assignments are not configuration", func(t *testing.T) {
+		inputs := [][]byte{
+			[]byte("password := request.Password\nif password == \"\" { return err }\n"),
+			[]byte("Password = GetPasswordFromRequest();\nreturn Password;\n"),
+			[]byte("const PASSWORD = process.env.PASSWORD;\nconsole.log('configured');\n"),
+			[]byte("PASSWORD=os.getenv(\"PASSWORD\")\n"),
+		}
+		for _, input := range inputs {
+			assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), input), string(input))
+		}
+	})
+}
+
+func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
+	t.Run("format confidence", func(t *testing.T) {
+		format, ok := detectLineConfigFormat([]byte("# comment\nexport CLIENT_SECRET=fixture-secret-9mN2pQ7r\n"))
+		assert.True(t, ok)
+		assert.Equal(t, formatDotenv, format)
+
+		format, ok = detectLineConfigFormat([]byte("---\npassword: fixture-secret-9mN2pQ7r\n"))
+		assert.True(t, ok)
+		assert.Equal(t, formatYAML, format)
+
+		for _, data := range [][]byte{
+			{},
+			[]byte("# comment only\n"), []byte("password=value\n"),
+			[]byte("CLIENT-SECRET=value\n"), []byte("CLIENT_SECRET=\n"),
+			[]byte("CLIENT_SECRET=value\nnot config\n"),
+		} {
+			_, confident := detectLineConfigFormat(data)
+			assert.False(t, confident, string(data))
+		}
+	})
+
+	t.Run("assignment and scalar rejection", func(t *testing.T) {
+		for _, line := range [][]byte{
+			{},
+			[]byte("# comment"), []byte("; comment"), []byte("// comment"),
+			[]byte("missing delimiter"), []byte("bad key!=value"),
+		} {
+			_, ok := parseLineAssignment(line, 0, formatDotenv)
+			assert.False(t, ok, string(line))
+		}
+
+		parent, ok := parseLineAssignment([]byte("\tcredentials:"), 0, formatYAML)
+		assert.True(t, ok)
+		assert.False(t, parent.hasValue)
+		assert.Equal(t, 8, parent.indent)
+
+		exportLine := []byte("export   CLIENT_SECRET='fixture-secret-9mN2pQ7r'")
+		exported, ok := parseLineAssignment(exportLine, 10, formatDotenv)
+		assert.True(t, ok)
+		assert.Equal(t, "fixture-secret-9mN2pQ7r", exported.value)
+		assert.Equal(t, exported.value, string(exportLine[exported.valueStart-10:exported.valueEnd-10]))
+
+		for _, value := range [][]byte{
+			{},
+			[]byte(" "), []byte("|"), []byte("> folded"), []byte("[array]"), []byte("{object}"),
+			[]byte("\"unterminated"), []byte("\"valid\" trailing"), []byte("\"bad\\q\""),
+		} {
+			_, _, _, scalarOK := parseLineScalar(value, 0, formatYAML)
+			assert.False(t, scalarOK, string(value))
+		}
+		_, _, _, scalarOK := parseLineScalar([]byte("bare-toml-value"), 0, formatTOML)
+		assert.False(t, scalarOK)
+		decoded, start, end, scalarOK := parseLineScalar([]byte("  \"fixture\\nsecret\" # note"), 20, formatTOML)
+		assert.True(t, scalarOK)
+		assert.Equal(t, "fixture\nsecret", decoded)
+		assert.Equal(t, 23, start)
+		assert.Greater(t, end, start)
+	})
+
+	t.Run("helper boundaries", func(t *testing.T) {
+		assert.Equal(t, -1, findClosingQuote([]byte(`"escaped\"`), '"'))
+		assert.Equal(t, 10, findClosingQuote([]byte(`"escaped\\"`), '"'))
+		assert.False(t, isPlainConfigKey(nil))
+		assert.False(t, isPlainConfigKey([]byte("bad key")))
+		assert.True(t, isPlainConfigKey([]byte("service.credentials")))
+
+		for _, section := range [][]byte{[]byte("[]"), []byte("[[array.table]]"), []byte("[bad section]"), []byte("plain")} {
+			_, ok := parseTOMLSection(section)
+			assert.False(t, ok, string(section))
+		}
+		parts, ok := parseTOMLSection([]byte("[ service.credentials ]"))
+		assert.True(t, ok)
+		assert.Equal(t, []string{"service", "credentials"}, parts)
+
+		assert.False(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0, hasValue: true}}))
+		assert.False(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0}, {indent: 0, hasValue: true}}))
+		assert.True(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0}, {indent: 2, hasValue: true}}))
+	})
+
+	t.Run("YAML sibling paths and cancellation", func(t *testing.T) {
+		data := []byte("first:\n  password: fixture-first-secret-9mN2pQ7r\nsecond:\n  client_secret: fixture-second-secret-9mN2pQ7r\n")
+		findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+		require.Len(t, findings, 2)
+		assert.Equal(t, "first.password", findings[0].ExtraData["key_path"])
+		assert.Equal(t, "second.client_secret", findings[1].ExtraData["key_path"])
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(ctx, []byte("CLIENT_SECRET=fixture-secret-9mN2pQ7r\n")))
+		assert.Empty(t, (&StructuredConfigDetector{}).scanLineConfig(t.Context(), []byte{0xff, 0xfe}))
+	})
+}
+
+func TestStructuredConfigDetector_XMLSyntaxEdges(t *testing.T) {
+	det := &StructuredConfigDetector{}
+
+	t.Run("whitespace source span", func(t *testing.T) {
+		data := []byte("<?xml version=\"1.0\"?><configuration>outside<Password> \t\r\nfixture-secret-9mN2pQ7r \n</Password><EmptyPassword/></configuration>")
+		findings := det.Scan(t.Context(), data)
+		require.Len(t, findings, 1)
+		assert.Equal(t, "fixture-secret-9mN2pQ7r", string(findings[0].Raw))
+	})
+
+	t.Run("comments and child elements invalidate scalar", func(t *testing.T) {
+		inputs := [][]byte{
+			[]byte(`<configuration><Password><!-- generated -->fixture-secret-9mN2pQ7r</Password></configuration>`),
+			[]byte(`<configuration><Password><value>fixture-secret-9mN2pQ7r</value></Password></configuration>`),
+		}
+		for _, input := range inputs {
+			assert.Empty(t, det.Scan(t.Context(), input))
+		}
+	})
+
+	t.Run("invalid input depth and cancellation fail closed", func(t *testing.T) {
+		assert.Empty(t, det.scanXML(t.Context(), []byte{0xff, '<'}))
+		deep := []byte(strings.Repeat("<n>", maxStructuredDepth+1) + strings.Repeat("</n>", maxStructuredDepth+1))
+		assert.Empty(t, det.scanXML(t.Context(), deep))
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		assert.Empty(t, det.scanXML(ctx, []byte(`<Password>fixture-secret-9mN2pQ7r</Password>`)))
+	})
+}
+
 func TestStructuredConfigDetector_AppsettingsFullEngine_EightLocationsSixValues(t *testing.T) {
 	data := readSyntheticAppsettings(t)
 	detectors := []detector.Detector{
@@ -520,6 +766,10 @@ func FuzzStructuredConfigDetector(f *testing.F) {
 	f.Add([]byte(`{"Password":"${PASSWORD}"}`))
 	f.Add([]byte(`{"Password":"ab\/cd-secret"}`))
 	f.Add([]byte(`{"Password":"secret-\uD83D\uDE00"}`))
+	f.Add([]byte("service:\n  password: fixture-secret-9mN2pQ7r\n"))
+	f.Add([]byte("[service]\npassword = \"fixture-secret-9mN2pQ7r\"\n"))
+	f.Add([]byte(`<configuration><Password>fixture&amp;secret-9mN2pQ7r</Password></configuration>`))
+	f.Add([]byte("PASSWORD=fixture-secret-9mN2pQ7r\n"))
 	f.Add([]byte(strings.Repeat("[", maxStructuredDepth+2) + `"Password"` + strings.Repeat("]", maxStructuredDepth+2)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 1<<20 {

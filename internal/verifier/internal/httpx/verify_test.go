@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,11 +13,18 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
 const testToken = "test-token-1234567890"
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 // jsonServer returns a test server that responds with the given status code and
 // body, asserting nothing about the request.
@@ -303,6 +311,26 @@ func TestVerifyToken_TransportError_RedactsSecretInURL(t *testing.T) {
 	assert.Equal(t, finding.StatusVerifyError, res.Status)
 	assert.NotContains(t, res.Message, testToken)
 	assert.Contains(t, res.Message, "[REDACTED]")
+}
+
+func TestVerifyToken_TransportError_AlwaysRedactsTokenArgument(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("proxy echoed header credential %s", testToken)
+	})}
+
+	res := VerifyToken(context.Background(), client, testToken, TokenSpec{
+		Name:    "x",
+		Request: Request{URL: "https://api.example.invalid"},
+	})
+	require.Equal(t, finding.StatusVerifyError, res.Status)
+	assert.NotContains(t, res.Message, testToken)
+	assert.Contains(t, res.Message, "[REDACTED]")
+	assert.NotContains(t, logs.String(), testToken)
 }
 
 func TestVerifyToken_BasicAuthAndHeaders(t *testing.T) {

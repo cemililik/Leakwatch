@@ -24,9 +24,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +118,43 @@ func TestAll_RegisteredDetectorCount_MatchesGolden(t *testing.T) {
 		assert.NotEmpty(t, d.ID())
 		assert.False(t, ids[d.ID()], "duplicate detector ID: %s", d.ID())
 		ids[d.ID()] = true
+	}
+}
+
+// TestAll_RegisteredDetectors_HaveMatcherParity is the registry-wide recall
+// contract. Every compile-time detector must have an explicit, synthetic
+// positive fixture that reaches the detector through the same matcher gate the
+// engine uses in production. Keeping the fixture catalog keyed by detector ID
+// makes a newly registered detector fail closed until its matcher contract is
+// reviewed and documented here.
+func TestAll_RegisteredDetectors_HaveMatcherParity(t *testing.T) {
+	fixtures := testutil.RegisteredDetectorFixtures()
+	require.Len(t, fixtures, len(registeredAtInit),
+		"every registered detector needs exactly one matcher-contract fixture")
+
+	registered := make(map[string]detector.Detector, len(registeredAtInit))
+	for _, det := range registeredAtInit {
+		registered[det.ID()] = det
+	}
+	for id := range fixtures {
+		assert.Contains(t, registered, id, "stale fixture for an unregistered detector")
+	}
+
+	for id, det := range registered {
+		det := det
+		fixture, ok := fixtures[id]
+		require.True(t, ok, "registered detector %q has no matcher-contract fixture", id)
+		t.Run(id, func(t *testing.T) {
+			direct := det.Scan(t.Context(), fixture)
+			require.NotEmpty(t, direct, "fixture does not exercise Detector.Scan")
+
+			viaMatcher := testutil.ScanViaMatcher(det, fixture)
+			require.NotEmpty(t, viaMatcher,
+				"matcher gated out a fixture accepted by Scan; review Keywords and case/boundary variants")
+			assert.True(t, reflect.DeepEqual(direct, viaMatcher),
+				"direct Scan and matcher-routed Scan returned different findings\ndirect: %#v\nmatcher: %#v",
+				direct, viaMatcher)
+		})
 	}
 }
 

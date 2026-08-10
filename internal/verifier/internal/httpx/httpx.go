@@ -129,7 +129,10 @@ func RedactError(err error, secret string) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	return redactText(err.Error(), secret)
+}
+
+func redactText(msg, secret string) string {
 	if secret == "" {
 		return msg
 	}

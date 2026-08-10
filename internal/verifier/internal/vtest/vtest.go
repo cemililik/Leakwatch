@@ -15,8 +15,10 @@ package vtest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,6 +80,19 @@ func Run(t *testing.T, c Case) {
 
 		assert.Equal(t, finding.StatusVerifyError, result.Status,
 			"a transport error must be a verify error")
+		assertSecretAbsent(t, result, c.Raw)
+	})
+
+	t.Run(c.Name+"/transport_error_cannot_echo_secret", func(t *testing.T) {
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("synthetic transport failure echoed credential %s", string(c.Raw.Raw))
+		})}
+		v := c.New("https://api.example.invalid", client)
+		result := v.Verify(context.Background(), c.Raw)
+
+		assert.Equal(t, finding.StatusVerifyError, result.Status,
+			"a transport error must be a verify error")
+		assertSecretAbsent(t, result, c.Raw)
 	})
 
 	t.Run(c.Name+"/cancelled_context_is_not_inactive", func(t *testing.T) {
@@ -97,6 +112,7 @@ func Run(t *testing.T, c Case) {
 			"a cancelled context must NOT be reported as verified-inactive")
 		assert.Equal(t, finding.StatusVerifyError, result.Status,
 			"a cancelled context must be a verify error")
+		assertSecretAbsent(t, result, c.Raw)
 	})
 
 	if c.SkipMalformed {
@@ -126,5 +142,27 @@ func Run(t *testing.T, c Case) {
 			"a 200 with a malformed body must have a defined status")
 		assert.NotEqual(t, finding.StatusVerifiedInactive, result.Status,
 			"a malformed 200 body must never be reported as verified-inactive")
+		assertSecretAbsent(t, result, c.Raw)
 	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func assertSecretAbsent(t *testing.T, result finding.VerificationResult, raw detector.RawFinding) {
+	t.Helper()
+	secrets := [][]byte{raw.Raw, raw.RawV2}
+	for _, secret := range secrets {
+		if len(secret) < 8 {
+			continue
+		}
+		assert.NotContains(t, result.Message, string(secret), "verification message leaked raw credential")
+		for key, value := range result.ExtraData {
+			assert.False(t, strings.Contains(value, string(secret)),
+				"verification ExtraData[%q] leaked raw credential", key)
+		}
+	}
 }
