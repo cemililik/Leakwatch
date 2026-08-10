@@ -82,10 +82,6 @@ type Engine struct {
 	enabled     bool
 }
 
-type requestBudgeter interface {
-	VerificationRequestBudget() int
-}
-
 // NewEngine creates a verification engine from the given config and verifier list.
 // If cfg.Enabled is false, the engine will pass through findings unmodified.
 func NewEngine(cfg Config, vs []Verifier) *Engine {
@@ -224,22 +220,8 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 		return f
 	}
 
-	// Apply rate limiting: the per-detector limiter first (independent budget
-	// per provider), then the global ceiling shared across all providers.
-	requestBudget, err := verificationRequestBudget(v)
-	if err != nil {
-		f.Verification = finding.VerificationResult{
-			Status:  finding.StatusVerifyError,
-			Message: "verifier declared an invalid request budget",
-		}
-		return f
-	}
-	if res := e.waitRateLimit(ctx, pair.Raw.DetectorID, requestBudget); res != nil {
-		f.Verification = *res
-		return f
-	}
-
-	// Apply one timeout to the complete provider verification operation.
+	// Apply one timeout to the complete provider verification operation,
+	// including rate-limiter admission and any bounded regional fallback.
 	verifyCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
@@ -249,7 +231,31 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 		"redacted", pair.Raw.Redacted,
 	)
 
-	result := e.safeVerify(verifyCtx, v, pair.Raw)
+	var result finding.VerificationResult
+	if gated, ok := v.(RequestGatedVerifier); ok {
+		requestBudget, err := verificationRequestBudget(gated)
+		if err != nil {
+			f.Verification = finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: "verifier declared an invalid request budget",
+			}
+			return f
+		}
+		result = e.safeVerifyWithRequestGate(
+			verifyCtx,
+			gated,
+			pair.Raw,
+			e.boundedRequestGate(pair.Raw.DetectorID, requestBudget),
+		)
+	} else {
+		// Single-request verifiers are admitted immediately before Verify. Their
+		// existing contract permits at most one provider request.
+		if res := e.waitRateLimit(verifyCtx, pair.Raw.DetectorID); res != nil {
+			f.Verification = *res
+			return f
+		}
+		result = e.safeVerify(verifyCtx, v, pair.Raw)
+	}
 	f.Verification = result
 
 	slog.Debug(
@@ -266,37 +272,54 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 // describing a StatusVerifyError when the context is cancelled while waiting,
 // and nil when the request may proceed.
 
-func (e *Engine) waitRateLimit(ctx context.Context, detectorID string, budget int) *finding.VerificationResult {
-	for request := 0; request < budget; request++ {
-		for _, l := range []*rate.Limiter{e.limiterFor(detectorID), e.rateLimiter} {
-			if err := l.Wait(ctx); err != nil {
-				slog.Warn(
-					"rate limiter wait cancelled",
-					"detector_id", detectorID,
-					"error", err,
-				)
-				return &finding.VerificationResult{
-					Status:  finding.StatusVerifyError,
-					Message: fmt.Sprintf("rate limiter cancelled: %v", err),
-				}
+func (e *Engine) waitRateLimit(ctx context.Context, detectorID string) *finding.VerificationResult {
+	for _, l := range []*rate.Limiter{e.limiterFor(detectorID), e.rateLimiter} {
+		if err := l.Wait(ctx); err != nil {
+			slog.Warn(
+				"rate limiter wait cancelled",
+				"detector_id", detectorID,
+				"error", err,
+			)
+			return &finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("rate limiter cancelled: %v", err),
 			}
 		}
 	}
 	return nil
 }
 
-func verificationRequestBudget(v Verifier) (int, error) {
-	budget := 1
-	if provider, ok := v.(requestBudgeter); ok {
-		budget = provider.VerificationRequestBudget()
-	}
+func verificationRequestBudget(v RequestGatedVerifier) (int, error) {
+	budget := v.VerificationRequestBudget()
 	if budget < 1 {
-		return 1, nil
+		return 0, fmt.Errorf("verification request budget %d must be positive", budget)
 	}
 	if budget > maxVerificationRequestBudget {
 		return 0, fmt.Errorf("verification request budget %d exceeds maximum %d", budget, maxVerificationRequestBudget)
 	}
 	return budget, nil
+}
+
+// boundedRequestGate returns a concurrency-safe admission gate tied to one
+// finding. Each successful invocation consumes one unit of the verifier's
+// declared request budget and one token from both the provider and global
+// limiters at the actual request send point.
+func (e *Engine) boundedRequestGate(detectorID string, budget int) RequestGate {
+	var mu sync.Mutex
+	used := 0
+	return func(ctx context.Context) *finding.VerificationResult {
+		mu.Lock()
+		if used >= budget {
+			mu.Unlock()
+			return &finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: "verifier exceeded its declared request budget",
+			}
+		}
+		used++
+		mu.Unlock()
+		return e.waitRateLimit(ctx, detectorID)
+	}
 }
 
 // safeVerify invokes v.Verify with panic recovery so that a single misbehaving
@@ -305,13 +328,35 @@ func verificationRequestBudget(v Verifier) (int, error) {
 // findings. A recovered panic is converted to a StatusVerifyError result and
 // logged with a stack trace; the raw secret is never logged.
 func (e *Engine) safeVerify(ctx context.Context, v Verifier, raw detector.RawFinding) (result finding.VerificationResult) {
+	return e.safeVerification(ctx, raw, func() finding.VerificationResult {
+		return v.Verify(ctx, raw)
+	})
+}
+
+func (e *Engine) safeVerifyWithRequestGate(
+	ctx context.Context,
+	v RequestGatedVerifier,
+	raw detector.RawFinding,
+	gate RequestGate,
+) finding.VerificationResult {
+	return e.safeVerification(ctx, raw, func() finding.VerificationResult {
+		return v.VerifyWithRequestGate(ctx, raw, gate)
+	})
+}
+
+func (e *Engine) safeVerification(
+	ctx context.Context,
+	raw detector.RawFinding,
+	verify func() finding.VerificationResult,
+) (result finding.VerificationResult) {
 	defer func() {
-		if r := recover(); r != nil {
-			slog.Error(
+		if recover() != nil {
+			// Never format or log the recovered payload: a defective verifier can
+			// panic with the raw credential itself. debug.Stack contains program
+			// counters/function frames, not panic values or local variables.
+			slog.ErrorContext(ctx,
 				"verifier panicked; recovered to protect the scan",
-				"verifier_type", v.Type(),
 				"detector_id", raw.DetectorID,
-				"panic", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()),
 			)
 			result = finding.VerificationResult{
@@ -320,5 +365,5 @@ func (e *Engine) safeVerify(ctx context.Context, v Verifier, raw detector.RawFin
 			}
 		}
 	}()
-	return v.Verify(ctx, raw)
+	return verify()
 }

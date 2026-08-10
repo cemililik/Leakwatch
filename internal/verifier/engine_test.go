@@ -1,7 +1,10 @@
 package verifier
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,11 +17,10 @@ import (
 
 // testVerifier is a configurable mock verifier for engine tests.
 type testVerifier struct {
-	detectorID    string
-	result        finding.VerificationResult
-	delay         time.Duration
-	callCount     atomic.Int64
-	requestBudget int
+	detectorID string
+	result     finding.VerificationResult
+	delay      time.Duration
+	callCount  atomic.Int64
 
 	// inFlight tracks how many Verify calls are currently executing, and
 	// maxInFlight records the peak. They let tests assert genuine concurrency
@@ -28,8 +30,6 @@ type testVerifier struct {
 }
 
 func (v *testVerifier) Type() string { return v.detectorID }
-
-func (v *testVerifier) VerificationRequestBudget() int { return v.requestBudget }
 
 func (v *testVerifier) Verify(ctx context.Context, _ detector.RawFinding) finding.VerificationResult {
 	v.callCount.Add(1)
@@ -56,17 +56,57 @@ func (v *testVerifier) Verify(ctx context.Context, _ detector.RawFinding) findin
 	return v.result
 }
 
+// gatedTestVerifier models a verifier that may make several outbound attempts.
+// It calls the engine gate immediately before each simulated request and records
+// admission timestamps so request pacing can be asserted without real network
+// calls.
+type gatedTestVerifier struct {
+	*testVerifier
+	requestBudget int
+	attempts      int
+	admittedMu    sync.Mutex
+	admittedAt    []time.Time
+}
+
+func (v *gatedTestVerifier) VerificationRequestBudget() int { return v.requestBudget }
+
+func (v *gatedTestVerifier) VerifyWithRequestGate(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate RequestGate,
+) finding.VerificationResult {
+	for attempt := 0; attempt < v.attempts; attempt++ {
+		if rejection := gate(ctx); rejection != nil {
+			return *rejection
+		}
+		v.admittedMu.Lock()
+		v.admittedAt = append(v.admittedAt, time.Now())
+		v.admittedMu.Unlock()
+	}
+	return v.Verify(ctx, raw)
+}
+
+func (v *gatedTestVerifier) admissionTimes() []time.Time {
+	v.admittedMu.Lock()
+	defer v.admittedMu.Unlock()
+	return append([]time.Time(nil), v.admittedAt...)
+}
+
 // panicVerifier is a mock verifier whose Verify always panics, used to prove the
 // engine recovers instead of crashing the whole scan.
 type panicVerifier struct {
 	detectorID string
 	callCount  atomic.Int64
+	panicRaw   bool
 }
 
 func (v *panicVerifier) Type() string { return v.detectorID }
 
-func (v *panicVerifier) Verify(context.Context, detector.RawFinding) finding.VerificationResult {
+func (v *panicVerifier) Verify(_ context.Context, raw detector.RawFinding) finding.VerificationResult {
 	v.callCount.Add(1)
+	if v.panicRaw {
+		panic(string(raw.Raw))
+	}
 	panic("boom: simulated verifier defect")
 }
 
@@ -128,20 +168,53 @@ func TestVerifyAll_MatchingVerifier_UpdatesFinding(t *testing.T) {
 	assert.Equal(t, int64(1), v.callCount.Load())
 }
 
-func TestVerifyAll_ReservesDeclaredRequestBudget(t *testing.T) {
-	v := &testVerifier{
-		detectorID:    "regional-provider",
-		requestBudget: 2,
-		result:        finding.VerificationResult{Status: finding.StatusVerifiedActive},
+func TestVerifyAll_GatedVerifierDoesNotReserveUnusedFallbackToken(t *testing.T) {
+	base := &testVerifier{
+		detectorID: "regional-provider",
+		result:     finding.VerificationResult{Status: finding.StatusVerifiedActive},
 	}
-	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1}, []Verifier{v})
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: 2, attempts: 1}
+	engine := NewEngine(Config{Enabled: true, Timeout: 250 * time.Millisecond, Concurrency: 1, RateLimit: 1}, []Verifier{v})
 
-	results := engine.VerifyAll(ctx, []VerifyPair{makePair("regional-provider", "regional****key")})
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair("regional-provider", "regional****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifiedActive, results[0].Verification.Status)
+	assert.Equal(t, int64(1), base.callCount.Load())
+	assert.Len(t, v.admissionTimes(), 1, "unused fallback must consume no limiter token")
+}
+
+func TestVerifyAll_GatedFallbackRequestsArePacedAtSendTime(t *testing.T) {
+	base := &testVerifier{
+		detectorID: "regional-provider",
+		result:     finding.VerificationResult{Status: finding.StatusVerifiedActive},
+	}
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: 2, attempts: 2}
+	engine := NewEngine(Config{Enabled: true, Timeout: 2 * time.Second, Concurrency: 1, RateLimit: 1}, []Verifier{v})
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair("regional-provider", "regional****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifiedActive, results[0].Verification.Status)
+	times := v.admissionTimes()
+	require.Len(t, times, 2)
+	assert.GreaterOrEqual(t, times[1].Sub(times[0]), 900*time.Millisecond,
+		"fallback request must pass the limiter at its actual send point")
+}
+
+func TestVerifyAll_TimeoutIncludesFallbackRateLimitAdmission(t *testing.T) {
+	base := &testVerifier{
+		detectorID: "regional-provider",
+		result:     finding.VerificationResult{Status: finding.StatusVerifiedActive},
+	}
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: 2, attempts: 2}
+	engine := NewEngine(Config{Enabled: true, Timeout: 50 * time.Millisecond, Concurrency: 1, RateLimit: 1}, []Verifier{v})
+	started := time.Now()
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair("regional-provider", "regional****key")})
 	require.Len(t, results, 1)
 	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
-	assert.Zero(t, v.callCount.Load(), "verifier must not run until its full bounded request budget is admitted")
+	assert.Less(t, time.Since(started), 500*time.Millisecond,
+		"configured timeout must bound limiter admission and provider fallback together")
+	assert.Zero(t, base.callCount.Load(), "provider result must not run after fallback admission fails")
 }
 
 func TestVerificationRequestBudget_IsBounded(t *testing.T) {
@@ -151,14 +224,17 @@ func TestVerificationRequestBudget_IsBounded(t *testing.T) {
 		want    int
 		wantErr bool
 	}{
-		{name: "zero uses one", budget: 0, want: 1},
-		{name: "negative uses one", budget: -1, want: 1},
+		{name: "zero fails closed", budget: 0, wantErr: true},
+		{name: "negative fails closed", budget: -1, wantErr: true},
 		{name: "declared budget", budget: 2, want: 2},
 		{name: "excessive fails closed", budget: 1000, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := verificationRequestBudget(&testVerifier{requestBudget: tc.budget})
+			got, err := verificationRequestBudget(&gatedTestVerifier{
+				testVerifier:  &testVerifier{detectorID: "regional-provider"},
+				requestBudget: tc.budget,
+			})
 			if tc.wantErr {
 				require.Error(t, err)
 				return
@@ -170,17 +246,26 @@ func TestVerificationRequestBudget_IsBounded(t *testing.T) {
 }
 
 func TestVerifyAll_ExcessiveRequestBudgetFailsClosed(t *testing.T) {
-	v := &testVerifier{
-		detectorID:    "unsafe-regional-provider",
-		requestBudget: maxVerificationRequestBudget + 1,
-		result:        finding.VerificationResult{Status: finding.StatusVerifiedActive},
-	}
+	base := &testVerifier{detectorID: "unsafe-regional-provider", result: finding.VerificationResult{Status: finding.StatusVerifiedActive}}
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: maxVerificationRequestBudget + 1, attempts: 1}
 	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 100}, []Verifier{v})
 
 	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(v.detectorID, "unsafe****key")})
 	require.Len(t, results, 1)
 	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
-	assert.Zero(t, v.callCount.Load(), "verifier with an unsafe request budget must not run")
+	assert.Zero(t, base.callCount.Load(), "verifier with an unsafe request budget must not run")
+}
+
+func TestVerifyAll_GatedVerifierCannotExceedDeclaredBudget(t *testing.T) {
+	base := &testVerifier{detectorID: "runaway-provider", result: finding.VerificationResult{Status: finding.StatusVerifiedActive}}
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: 2, attempts: 3}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1000}, []Verifier{v})
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(v.detectorID, "runaway****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
+	assert.Zero(t, base.callCount.Load(), "verifier result must not run after it exceeds the request budget")
+	assert.Len(t, v.admissionTimes(), 2)
 }
 
 func TestVerifyAll_NoMatchingVerifier_LeavesUnverified(t *testing.T) {
@@ -370,6 +455,25 @@ func TestVerifyAll_PanickingVerifier_RecoversAsVerifyError(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
 	assert.Equal(t, int64(1), pv.callCount.Load())
+}
+
+func TestVerifyAll_PanicPayloadCannotLeakRawSecretToLogs(t *testing.T) {
+	const canary = "panic-payload-secret-canary-9mN2pQ7r"
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	pv := &panicVerifier{detectorID: "panic-secret-detector", panicRaw: true}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 100}, []Verifier{pv})
+	pair := makePair(pv.detectorID, "panic****canary")
+	pair.Raw.Raw = []byte(canary)
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{pair})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
+	assert.NotContains(t, logs.String(), canary)
+	assert.Contains(t, logs.String(), "verifier panicked; recovered to protect the scan")
 }
 
 func TestVerifyAll_PanickingVerifier_OtherFindingsStillComplete(t *testing.T) {

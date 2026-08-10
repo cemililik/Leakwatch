@@ -120,6 +120,90 @@ func TestVerify_RegionFallbackDecisionMatrix(t *testing.T) {
 	}
 }
 
+func TestVerifyWithRequestGate_AdmitsOnlyActualRegionalRequests(t *testing.T) {
+	tests := []struct {
+		name      string
+		statuses  []int
+		bodies    []string
+		wantGates int32
+		wantCalls int32
+	}{
+		{
+			name:      "US active does not admit unused EU fallback",
+			statuses:  []int{http.StatusOK, http.StatusInternalServerError},
+			bodies:    []string{`{"data":{"requestContext":{"userId":1}}}`, `{}`},
+			wantGates: 1,
+			wantCalls: 1,
+		},
+		{
+			name:      "US rejection admits EU immediately before fallback",
+			statuses:  []int{http.StatusUnauthorized, http.StatusOK},
+			bodies:    []string{`{}`, `{"data":{"requestContext":{"userId":2}}}`},
+			wantGates: 2,
+			wantCalls: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gates atomic.Int32
+			var calls atomic.Int32
+			servers := make([]*httptest.Server, len(tc.statuses))
+			endpoints := make([]endpoint, len(tc.statuses))
+			for i := range tc.statuses {
+				status, body := tc.statuses[i], tc.bodies[i]
+				servers[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(body))
+				}))
+				defer servers[i].Close()
+				endpoints[i] = endpoint{region: []string{"US", "EU"}[i], url: servers[i].URL}
+			}
+
+			v := &Verifier{endpoints: endpoints, httpClient: servers[0].Client()}
+			result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func(context.Context) *finding.VerificationResult {
+				gates.Add(1)
+				return nil
+			})
+			assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+			assert.Equal(t, tc.wantGates, gates.Load())
+			assert.Equal(t, tc.wantCalls, calls.Load())
+		})
+	}
+}
+
+func TestVerifyWithRequestGate_RejectionPreventsFallbackRequest(t *testing.T) {
+	var requests atomic.Int32
+	servers := make([]*httptest.Server, 2)
+	for i, status := range []int{http.StatusUnauthorized, http.StatusOK} {
+		status := status
+		servers[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"data":{"requestContext":{"userId":2}}}`))
+		}))
+		defer servers[i].Close()
+	}
+	v := &Verifier{
+		endpoints:  []endpoint{{region: "US", url: servers[0].URL}, {region: "EU", url: servers[1].URL}},
+		httpClient: servers[0].Client(),
+	}
+	var gates atomic.Int32
+	result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func(context.Context) *finding.VerificationResult {
+		if gates.Add(1) == 2 {
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "rate limiter cancelled"}
+		}
+		return nil
+	})
+
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Equal(t, int32(2), gates.Load())
+	assert.Equal(t, int32(1), requests.Load(), "rejected admission must happen before the EU request is sent")
+}
+
 func TestVerify_InvalidSuccessBodiesAreInconclusive(t *testing.T) {
 	tests := []struct {
 		name        string

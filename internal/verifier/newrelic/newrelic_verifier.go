@@ -55,8 +55,8 @@ func (v *Verifier) Type() string {
 }
 
 // VerificationRequestBudget returns the maximum number of HTTP probes this
-// verifier can issue for one finding. The verification engine reserves this
-// many global and per-provider rate-limit tokens before invoking Verify.
+// verifier can issue for one finding. The verification engine enforces this
+// bound while admitting each actual request at its send point.
 func (v *Verifier) VerificationRequestBudget() int {
 	return len(v.resolvedEndpoints())
 }
@@ -67,6 +67,25 @@ func (v *Verifier) VerificationRequestBudget() int {
 // returns 401; any successful region wins, while permission/network/provider
 // errors keep the outcome inconclusive.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
+	return v.verify(ctx, raw, nil)
+}
+
+// VerifyWithRequestGate checks every actual regional request through the
+// engine-owned rate limiter immediately before sending it. The fallback region
+// consumes no token unless it is genuinely attempted.
+func (v *Verifier) VerifyWithRequestGate(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
+	return v.verify(ctx, raw, gate)
+}
+
+func (v *Verifier) verify(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
 	token := string(raw.Raw)
 	if strings.TrimSpace(token) == "" {
 		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
@@ -80,6 +99,11 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 			return finding.VerificationResult{
 				Status:  finding.StatusVerifyError,
 				Message: "New Relic verification cancelled before all regions were checked",
+			}
+		}
+		if gate != nil {
+			if rejection := gate(ctx); rejection != nil {
+				return *rejection
 			}
 		}
 
