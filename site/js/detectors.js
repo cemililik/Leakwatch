@@ -847,7 +847,7 @@ window.LW_DETECTORS = [
     "correlation": {
       "requiredNearby": [
         {
-          "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid[\"']?\\s*[:=]\\s*[\"']?(SK[0-9a-f]{32})\\b",
+          "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid[\"']?\\s*[:=]\\s*[\"']?(SK[0-9a-f]{32})(?:[\"']|[ \\t\\r\\n,;}#]|$)",
           "flags": "i"
         }
       ],

@@ -68,6 +68,7 @@ func TestDetector_Scan_SupportsExplicitRoleVariants(t *testing.T) {
 		{input: `{"twilioApiKeySid":"` + testKeySID + `","twilioApiKeySecret":"opaque/+value=="}`, secret: "opaque/+value=="},
 		{input: "twilio-api-key-sid=" + testKeySID + "\ntwilio-api-key-secret='Secret.with.punctuation_42'", secret: "Secret.with.punctuation_42"},
 		{input: `{"Twilio":{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"` + syntheticSecret("Qw12Er34") + `"}}`, secret: syntheticSecret("Qw12Er34")},
+		{input: "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=real-example-secret-value-42", secret: "real-example-secret-value-42"},
 	}
 	for i, test := range tests {
 		findings := (&Detector{}).Scan(context.Background(), []byte(test.input))
@@ -96,16 +97,34 @@ func TestDetector_Scan_DoesNotReportBareIdentifiersOrUnpairedValues(t *testing.T
 		"SID with generic password":      "TWILIO_API_KEY_SID=" + testKeySID + "\nPASSWORD=" + secret,
 		"other provider secret role":     "TWILIO_API_KEY_SID=" + testKeySID + "\nSTRIPE_API_SECRET=" + secret,
 		"ordinary placeholder":           "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=your_api_key_secret",
+		"canonical Twilio placeholder":   "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=YOUR_TWILIO_API_KEY_SECRET",
 		"external secret reference":      "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=${TWILIO_API_KEY_SECRET}",
 		"separate logical block":         "TWILIO_API_KEY_SID=" + testKeySID + "\n\nTWILIO_API_KEY_SECRET=" + secret,
 		"separate JSON objects":          `{"ApiKeySid":"` + testKeySID + `"},{"ApiKeySecret":"` + secret + `"}`,
 		"role embedded in identifier":    "TWILIO_API_KEY_SID=" + testKeySID + "\nNOTWILIO_API_KEY_SECRET=" + secret,
 		"escaped quote is not truncated": `{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"opaque\"tail"}`,
 		"overlong unquoted secret":       "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=" + strings.Repeat("a", 513),
+		"hyphen suffixed SID":            "TWILIO_API_KEY_SID=" + testKeySID + "-not-a-real-sid\nTWILIO_API_KEY_SECRET=" + secret,
+		"dot suffixed SID":               "TWILIO_API_KEY_SID=" + testKeySID + ".suffix\nTWILIO_API_KEY_SECRET=" + secret,
+		"quoted suffixed SID":            `{"ApiKeySid":"` + testKeySID + `-suffix","ApiKeySecret":"` + secret + `"}`,
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
 			assert.Empty(t, (&Detector{}).Scan(context.Background(), []byte(input)))
+		})
+	}
+}
+
+func TestDetector_ScanViaMatcher_RejectsTemplatesAndMalformedSID(t *testing.T) {
+	secret := syntheticSecret("Ab12Cd34")
+	for name, input := range map[string]string{
+		"uppercase canonical placeholder": "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=YOUR_TWILIO_API_KEY_SECRET",
+		"lowercase canonical placeholder": "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=your_twilio_api_key_secret",
+		"hyphen suffixed SID":             "TWILIO_API_KEY_SID=" + testKeySID + "-suffix\nTWILIO_API_KEY_SECRET=" + secret,
+		"dot suffixed SID":                "TWILIO_API_KEY_SID=" + testKeySID + ".suffix\nTWILIO_API_KEY_SECRET=" + secret,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, testutil.ScanViaMatcher(&Detector{}, []byte(input)))
 		})
 	}
 }
@@ -116,6 +135,30 @@ func TestDetector_Scan_CompanionOutsideWindowIsNotPaired(t *testing.T) {
 		"TWILIO_API_KEY_SECRET=" + secret
 
 	assert.Empty(t, (&Detector{}).Scan(context.Background(), []byte(input)))
+}
+
+func TestDetector_Scan_ProximityUsesUTF8Bytes(t *testing.T) {
+	secret := "opaque-real-value-42"
+	tests := []struct {
+		name string
+		gap  string
+		want int
+	}{
+		{name: "ASCII 512", gap: "\n" + strings.Repeat("a", 510) + " ", want: 1},
+		{name: "ASCII 513", gap: "\n" + strings.Repeat("a", 511) + " ", want: 0},
+		{name: "two-byte Unicode 512", gap: "\n" + strings.Repeat("é", 255) + " ", want: 1},
+		{name: "two-byte Unicode over limit", gap: "\n" + strings.Repeat("é", 256) + " ", want: 0},
+		{name: "astral Unicode 512", gap: "\n" + strings.Repeat("🔐", 127) + "   ", want: 1},
+		{name: "astral Unicode 513", gap: "\n" + strings.Repeat("🔐", 127) + "    ", want: 0},
+		{name: "CRLF 512", gap: "\r\n" + strings.Repeat("a", 509) + " ", want: 1},
+		{name: "CRLF 513", gap: "\r\n" + strings.Repeat("a", 510) + " ", want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := "TWILIO_API_KEY_SID=" + testKeySID + test.gap + "TWILIO_API_KEY_SECRET=" + secret
+			assert.Len(t, (&Detector{}).Scan(context.Background(), []byte(input)), test.want)
+		})
+	}
 }
 
 func TestDetector_Scan_AssociatesNearestKeySID(t *testing.T) {
@@ -161,6 +204,9 @@ func TestAssignmentMatches_FailsClosedOnMissingOrEmptyCapture(t *testing.T) {
 	matches := assignmentMatches(regexp.MustCompile(`x(y)`), []byte("xy"))
 	require.Len(t, matches, 1)
 	assert.Equal(t, assignmentMatch{wholeStart: 0, wholeEnd: 2, valueStart: 1, valueEnd: 2}, matches[0])
+
+	assert.Empty(t, assignmentMatches(twilioKeySIDAssignmentPattern, []byte("TWILIO_API_KEY_SID="+testKeySID+"-suffix")))
+	assert.Empty(t, assignmentMatches(twilioAccountSIDAssignmentPattern, []byte("TWILIO_ACCOUNT_SID="+testAccountSID+".suffix")))
 }
 
 func TestCompanionSelection_RejectsAmbiguityAndInvalidBlocks(t *testing.T) {

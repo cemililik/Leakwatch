@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -104,6 +106,32 @@ func parseSnippet(t *testing.T, src string) *ast.File {
 		t.Fatalf("parse snippet: %v", err)
 	}
 	return f
+}
+
+func correlatedContractSnippet(body string) string {
+	return fmt.Sprintf(`
+package example
+
+import (
+	"regexp"
+	"example/internal/detector"
+)
+
+const nearby = 128
+const unresolvedSource = "UNKNOWN"
+const configured = true
+var supported = regexp.MustCompile("SECRET=([^\\s]+)")
+var unsupported = regexp.MustCompile("(?U)a+")
+var companion = regexp.MustCompile("SID=(SK[0-9a-f]{32})")
+var unresolved = regexp.MustCompile(unresolvedSource)
+
+type Detector struct{}
+func (*Detector) ID() string { return "correlated-invalid" }
+func (*Detector) Scan(data []byte) { _ = supported.FindAllSubmatchIndex(data, -1) }
+func (*Detector) PlaygroundPatternContract() detector.PlaygroundPatternContract {
+%s
+}
+`, body)
 }
 
 func TestExtractDetectors_UnconditionalSinglePattern(t *testing.T) {
@@ -415,6 +443,82 @@ func (*Detector) PlaygroundPatternContract() detector.PlaygroundPatternContract 
 	}
 }
 
+func TestExtractDetectors_CorrelatedContractFailsClosed(t *testing.T) {
+	validFields := `
+		Primary: []*regexp.Regexp{supported},
+		RequiredNearby: []*regexp.Regexp{companion},
+		ProximityBytes: nearby,
+		SameLogicalBlock: true,
+		RejectPlaceholders: true,
+		OneToOne: true,`
+	tests := map[string]string{
+		"mixed supported and unsupported primary": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported, unsupported},
+			RequiredNearby: []*regexp.Regexp{companion},
+			ProximityBytes: nearby,
+		}`,
+		"unresolved required pattern": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported},
+			RequiredNearby: []*regexp.Regexp{companion, unresolved},
+			ProximityBytes: nearby,
+		}`,
+		"nonliteral boolean": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported},
+			RequiredNearby: []*regexp.Regexp{companion},
+			ProximityBytes: nearby,
+			SameLogicalBlock: configured,
+		}`,
+		"nested return": `if configured {
+			return detector.PlaygroundPatternContract{` + validFields + `}
+		}
+		return detector.PlaygroundPatternContract{` + validFields + `}`,
+		"wrong composite type": `return detector.OtherContract{` + validFields + `}`,
+		"duplicate field": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported},
+			Primary: []*regexp.Regexp{supported},
+			RequiredNearby: []*regexp.Regexp{companion},
+			ProximityBytes: nearby,
+		}`,
+		"missing required field": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported},
+			ProximityBytes: nearby,
+		}`,
+		"unknown field": `return detector.PlaygroundPatternContract{
+			Primary: []*regexp.Regexp{supported},
+			RequiredNearby: []*regexp.Regexp{companion},
+			ProximityBytes: nearby,
+			FutureSemantic: true,
+		}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			out, dropped := extractDetectors(parseSnippet(t, correlatedContractSnippet(body)))
+			if len(out) != 0 || len(dropped) != 1 || dropped[0] != "correlated-invalid" {
+				t.Fatalf("invalid contract must be dropped: out=%+v dropped=%v", out, dropped)
+			}
+		})
+	}
+}
+
+func TestBuildDetectors_StrictRejectsInvalidCorrelatedContract(t *testing.T) {
+	root := t.TempDir()
+	detectorDir := filepath.Join(root, "internal", "detector", "invalid")
+	if err := os.MkdirAll(detectorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	invalid := correlatedContractSnippet(`return detector.PlaygroundPatternContract{
+		Primary: []*regexp.Regexp{supported, unsupported},
+		RequiredNearby: []*regexp.Regexp{companion},
+		ProximityBytes: nearby,
+	}`)
+	if err := os.WriteFile(filepath.Join(detectorDir, "invalid.go"), []byte(invalid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildDetectors(root, t.TempDir(), true); err == nil {
+		t.Fatal("strict build accepted a partially representable correlated contract")
+	}
+}
+
 func TestPlayground_TwilioRequiresNearbySID(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -443,21 +547,49 @@ const key = "SK" + "ab12cd34".repeat(4);
 const account = "AC" + "ab12cd34".repeat(4);
 const secret = "opaque/+Twilio.Secret==";
 function count(input) { return window.LW_PLAYGROUND_DETECT(input).filter(f => f.id === "twilio-api-key").length; }
+function pairWithGap(gap) { return "TWILIO_API_KEY_SID=" + key + gap + "TWILIO_API_KEY_SECRET=" + secret; }
 const cases = [
   ["bare key SID", "TWILIO_API_KEY_SID=" + key, 0],
   ["bare account SID", "TWILIO_ACCOUNT_SID=" + account, 0],
   ["unpaired secret", "TWILIO_API_KEY_SECRET=" + secret, 0],
   ["paired", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret, 1],
-	  ["short opaque secret", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=x7-K", 1],
-	  ["placeholder", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=your_api_key_secret", 0],
-	  ["reference", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=${TWILIO_API_KEY_SECRET}", 0],
-	  ["one SID is not reused", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret + "\nTWILIO_API_KEY_SECRET=second-opaque-secret", 1],
-	  ["escaped quote is not truncated", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=\"opaque\\\"tail\"", 0],
+  ["short opaque secret", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=x7-K", 1],
+  ["genuine value containing example", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=real-example-secret-value-42", 1],
+  ["placeholder", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=your_api_key_secret", 0],
+  ["canonical provider placeholder upper", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=YOUR_TWILIO_API_KEY_SECRET", 0],
+  ["canonical provider placeholder lower", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=your_twilio_api_key_secret", 0],
+  ["reference", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=${TWILIO_API_KEY_SECRET}", 0],
+  ["one SID is not reused", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret + "\nTWILIO_API_KEY_SECRET=second-opaque-secret", 1],
+  ["escaped quote is not truncated", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=\"opaque\\\"tail\"", 0],
+  ["hyphen suffixed SID", "TWILIO_API_KEY_SID=" + key + "-suffix\nTWILIO_API_KEY_SECRET=" + secret, 0],
+  ["dot suffixed SID", "TWILIO_API_KEY_SID=" + key + ".suffix\nTWILIO_API_KEY_SECRET=" + secret, 0],
+  ["quoted suffixed SID", "{\"ApiKeySid\":\"" + key + "-suffix\",\"ApiKeySecret\":\"" + secret + "\"}", 0],
+  ["quoted exact pair", "{\"ApiKeySid\":\"" + key + "\",\"ApiKeySecret\":\"" + secret + "\"}", 1],
+  ["ASCII 512 bytes", pairWithGap("\n" + "a".repeat(510) + " "), 1],
+  ["ASCII 513 bytes", pairWithGap("\n" + "a".repeat(511) + " "), 0],
+  ["two-byte Unicode 512 bytes", pairWithGap("\n" + "é".repeat(255) + " "), 1],
+  ["two-byte Unicode over limit", pairWithGap("\n" + "é".repeat(256) + " "), 0],
+  ["astral Unicode 512 bytes", pairWithGap("\n" + "🔐".repeat(127) + "   "), 1],
+  ["astral Unicode 513 bytes", pairWithGap("\n" + "🔐".repeat(127) + "    "), 0],
+  ["CRLF 512 bytes", pairWithGap("\r\n" + "a".repeat(509) + " "), 1],
+  ["CRLF 513 bytes", pairWithGap("\r\n" + "a".repeat(510) + " "), 0],
   ["different block", "TWILIO_API_KEY_SID=" + key + "\n\nTWILIO_API_KEY_SECRET=" + secret, 0]
 ];
 for (const [name, input, want] of cases) {
   const got = count(input);
   if (got !== want) throw new Error(name + ": got " + got + ", want " + want);
+}
+const capCases = [
+  ["ASCII exact cap", "a".repeat(64 * 1024), false],
+  ["ASCII over cap", "a".repeat(64 * 1024) + "x", true],
+  ["two-byte exact cap", "é".repeat(32 * 1024), false],
+  ["two-byte over cap", "é".repeat(32 * 1024) + "x", true],
+  ["astral exact cap", "🔐".repeat(16 * 1024), false],
+  ["astral over cap", "🔐".repeat(16 * 1024) + "x", true]
+];
+for (const [name, input, wantTruncated] of capCases) {
+  const got = window.LW_PLAYGROUND_SCAN(input).truncated;
+  if (got !== wantTruncated) throw new Error(name + ": truncated=" + got + ", want " + wantTruncated);
 }
 `
 	cmd := exec.Command(node, "-e", script,

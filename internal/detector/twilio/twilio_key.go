@@ -14,8 +14,8 @@ import (
 var (
 	// An SK value is an API Key SID: a public identifier, not a secret. It is
 	// used only as companion context when it is assigned to an API Key SID role.
-	twilioKeySIDAssignmentPattern     = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid["']?\s*[:=]\s*["']?(SK[0-9a-f]{32})\b`)
-	twilioAccountSIDAssignmentPattern = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?account[._-]*sid["']?\s*[:=]\s*["']?(AC[0-9a-f]{32})\b`)
+	twilioKeySIDAssignmentPattern     = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid["']?\s*[:=]\s*["']?(SK[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
+	twilioAccountSIDAssignmentPattern = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?account[._-]*sid["']?\s*[:=]\s*["']?(AC[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
 
 	// Twilio documents API Key Secrets as opaque values and does not promise a
 	// fixed length or alphabet. These alternatives preserve an exact value span
@@ -228,7 +228,10 @@ func isNonSecretValue(value string) bool {
 		"foobar": {}, "not-a-real-secret": {}, "not_a_real_secret": {},
 		"placeholder": {}, "redacted": {}, "replace-me": {}, "replace_me": {},
 		"secret": {}, "string": {}, "test": {}, "todo": {},
-		"your-api-key-secret": {}, "your_api_key_secret": {}, "xxxxxxxx": {},
+		"api-key-secret": {}, "api_key_secret": {},
+		"twilio-api-key-secret": {}, "twilio_api_key_secret": {}, "twilioapikeysecret": {},
+		"your-api-key-secret": {}, "your_api_key_secret": {},
+		"your-twilio-api-key-secret": {}, "your_twilio_api_key_secret": {}, "xxxxxxxx": {},
 	}
 	if _, ok := placeholders[lower]; ok {
 		return true

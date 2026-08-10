@@ -13,7 +13,7 @@
   var detCountEl = document.getElementById("detCount");
 
   var MIN_MATCH = 8;          // ignore matches shorter than this (kills context-gate noise)
-  var INPUT_CAP = 64 * 1024;  // guard against pathological input
+  var INPUT_CAP = 64 * 1024;  // UTF-8 byte cap guarding pathological input
 
   function t(k, fb) {
     return (window.LWI18n && window.LWI18n.t(k)) || fb || k;
@@ -92,9 +92,44 @@
     });
   }
 
-  function rangeGap(a, b) {
-    if (a.end <= b.start) return b.start - a.end;
-    if (b.end <= a.start) return a.start - b.end;
+  function utf8Width(codePoint) {
+    if (codePoint <= 0x7f) return 1;
+    if (codePoint <= 0x7ff) return 2;
+    if (codePoint <= 0xffff) return 3;
+    return 4;
+  }
+
+  function truncateUTF8(value, byteCap) {
+    var bytes = 0, index = 0;
+    while (index < value.length) {
+      var codePoint = value.codePointAt(index);
+      var units = codePoint > 0xffff ? 2 : 1;
+      var width = utf8Width(codePoint);
+      if (bytes + width > byteCap) break;
+      bytes += width;
+      index += units;
+    }
+    return { text: value.slice(0, index), truncated: index < value.length };
+  }
+
+  function utf8PrefixOffsets(value) {
+    var offsets = new Uint32Array(value.length + 1);
+    var bytes = 0, index = 0;
+    while (index < value.length) {
+      offsets[index] = bytes;
+      var codePoint = value.codePointAt(index);
+      var units = codePoint > 0xffff ? 2 : 1;
+      if (units === 2) offsets[index + 1] = bytes;
+      bytes += utf8Width(codePoint);
+      index += units;
+      offsets[index] = bytes;
+    }
+    return offsets;
+  }
+
+  function rangeGap(byteOffsets, a, b) {
+    if (a.end <= b.start) return byteOffsets[b.start] - byteOffsets[a.end];
+    if (b.end <= a.start) return byteOffsets[a.start] - byteOffsets[b.end];
     return 0;
   }
 
@@ -113,7 +148,13 @@
       re.lastIndex = 0;
       var match;
       while ((match = re.exec(text)) !== null) {
-        ranges.push({ start: match.index, end: re.lastIndex, used: false });
+        var whole = match[0], captured = "";
+        for (var i = 1; i < match.length; i++) {
+          if (match[i] && match[i].length > captured.length) captured = match[i];
+        }
+        var end = re.lastIndex;
+        if (captured) end = match.index + whole.lastIndexOf(captured) + captured.length;
+        ranges.push({ start: match.index, end: end, used: false });
         if (match.index === re.lastIndex) re.lastIndex++;
       }
     });
@@ -128,7 +169,10 @@
       "foobar": true, "not-a-real-secret": true, "not_a_real_secret": true,
       "placeholder": true, "redacted": true, "replace-me": true, "replace_me": true,
       "secret": true, "string": true, "test": true, "todo": true,
-      "your-api-key-secret": true, "your_api_key_secret": true, "xxxxxxxx": true,
+      "api-key-secret": true, "api_key_secret": true,
+      "twilio-api-key-secret": true, "twilio_api_key_secret": true, "twilioapikeysecret": true,
+      "your-api-key-secret": true, "your_api_key_secret": true,
+      "your-twilio-api-key-secret": true, "your_twilio_api_key_secret": true, "xxxxxxxx": true,
     };
     if (!lower || exact[lower]) return true;
     var prefixes = ["${", "$", "{{", "%", "<", "vault://", "op://", "secret://", "file://", "/run/secrets/", "@microsoft.keyvault"];
@@ -145,9 +189,10 @@
   var lastFound = [], lastTruncated = false;
 
   function detectText(input) {
-    var text = String(input || "");
-    var truncated = false;
-    if (text.length > INPUT_CAP) { text = text.slice(0, INPUT_CAP); truncated = true; }
+    var bounded = truncateUTF8(String(input || ""), INPUT_CAP);
+    var text = bounded.text;
+    var truncated = bounded.truncated;
+    var byteOffsets = utf8PrefixOffsets(text);
     var lower = text.toLowerCase();
     var found = [], seen = {};
 
@@ -173,7 +218,7 @@
           var companionIndex = -1, bestDistance = -1;
           companions.forEach(function (companion, index) {
             if (d.oneToOne && companion.used) return;
-            var distance = rangeGap(primaryRange, companion);
+            var distance = rangeGap(byteOffsets, primaryRange, companion);
             if (distance > d.proximity || (d.sameBlock && !sameLogicalBlock(text, primaryRange, companion))) return;
             if (bestDistance === -1 || distance < bestDistance) {
               bestDistance = distance;
@@ -208,6 +253,7 @@
   // A side-effect-free hook used by the generated-detector contract test. It
   // also makes the playground's preview semantics independently auditable.
   window.LW_PLAYGROUND_DETECT = function (text) { return detectText(text).found; };
+  window.LW_PLAYGROUND_SCAN = detectText;
 
   function render(found, truncated) {
     countEl.textContent = found.length

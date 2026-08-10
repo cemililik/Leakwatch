@@ -318,6 +318,20 @@ func TestProviderDetectors_ExactSpansPreventRejectedDuplicateInlineIgnore(t *tes
 		require.Len(t, result.Findings, 1)
 		assert.Equal(t, 3, result.Findings[0].SourceMetadata.Line)
 	})
+
+	t.Run("Twilio rejects template values and malformed SID context", func(t *testing.T) {
+		keySID := "SK" + strings.Repeat("ab12cd34", 4)
+		secret := strings.Repeat("Qw12Er34", 4)
+		for _, data := range [][]byte{
+			[]byte("TWILIO_API_KEY_SID=" + keySID + "\nTWILIO_API_KEY_SECRET=YOUR_TWILIO_API_KEY_SECRET\n"),
+			[]byte("TWILIO_API_KEY_SID=" + keySID + "-suffix\nTWILIO_API_KEY_SECRET=" + secret + "\n"),
+		} {
+			eng := engine.New(engine.Config{Concurrency: 1, Detectors: []detector.Detector{&twiliodetector.Detector{}}})
+			result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+			require.NoError(t, err)
+			assert.Empty(t, result.Findings)
+		}
+	})
 }
 
 func TestStructuredConfigDetector_ResourceBounds(t *testing.T) {
