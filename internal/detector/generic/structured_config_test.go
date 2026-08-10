@@ -292,6 +292,34 @@ func TestStructuredConfigDetector_ProviderOverlapPrefersSpecializedFinding(t *te
 	assert.Equal(t, "shopify-access-token", result.Findings[0].DetectorID)
 }
 
+func TestProviderDetectors_ExactSpansPreventRejectedDuplicateInlineIgnore(t *testing.T) {
+	t.Run("Shopify", func(t *testing.T) {
+		token := "shpat_0123456789abcdef0123456789abcdef"
+		data := []byte("prefix_" + token + " # leakwatch:ignore:shopify-access-token\n" +
+			"SHOPIFY_ACCESS_TOKEN=" + token + "\n")
+		eng := engine.New(engine.Config{Concurrency: 1, Detectors: []detector.Detector{&shopify.Detector{}}})
+
+		result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+		require.NoError(t, err)
+		require.Len(t, result.Findings, 1)
+		assert.Equal(t, 2, result.Findings[0].SourceMetadata.Line)
+	})
+
+	t.Run("Twilio", func(t *testing.T) {
+		secret := strings.Repeat("Qw12Er34", 4)
+		keySID := "SK" + strings.Repeat("ab12cd34", 4)
+		data := []byte("NOTE=" + secret + " # leakwatch:ignore:twilio-api-key\n" +
+			"TWILIO_API_KEY_SID=" + keySID + "\n" +
+			"TWILIO_API_KEY_SECRET=" + secret + "\n")
+		eng := engine.New(engine.Config{Concurrency: 1, Detectors: []detector.Detector{&twiliodetector.Detector{}}})
+
+		result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+		require.NoError(t, err)
+		require.Len(t, result.Findings, 1)
+		assert.Equal(t, 3, result.Findings[0].SourceMetadata.Line)
+	})
+}
+
 func TestStructuredConfigDetector_ResourceBounds(t *testing.T) {
 	t.Run("depth", func(t *testing.T) {
 		data := []byte(strings.Repeat(`{"nested":`, maxStructuredDepth+2) +

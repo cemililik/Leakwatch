@@ -2,6 +2,7 @@ package twilio
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -33,6 +34,13 @@ func TestDetector_Metadata_ReturnsExpectedValues(t *testing.T) {
 	assert.Equal(t, finding.SeverityCritical, d.Severity())
 	assert.Empty(t, d.Keywords())
 	assert.True(t, d.AuthoritativeOnOverlap())
+	contract := d.PlaygroundPatternContract()
+	require.Len(t, contract.Primary, 1)
+	require.Len(t, contract.RequiredNearby, 1)
+	assert.Equal(t, companionProximityWindow, contract.ProximityBytes)
+	assert.True(t, contract.SameLogicalBlock)
+	assert.True(t, contract.RejectPlaceholders)
+	assert.True(t, contract.OneToOne)
 }
 
 func TestDetector_Scan_ReportsPairedSecretAndNonSecretContext(t *testing.T) {
@@ -45,23 +53,27 @@ func TestDetector_Scan_ReportsPairedSecretAndNonSecretContext(t *testing.T) {
 	assert.Equal(t, testKeySID, findings[0].ExtraData["api_key_sid"])
 	assert.Equal(t, testAccountSID, findings[0].ExtraData["account_sid"])
 	assert.NotContains(t, findings[0].ExtraData, "api_key_secret")
+	assert.Equal(t, secret, pairedFixture(secret)[findings[0].ByteStart:findings[0].ByteEnd])
 	for _, value := range findings[0].ExtraData {
 		assert.NotEqual(t, secret, value, "secret must never be copied into ExtraData")
 	}
 }
 
 func TestDetector_Scan_SupportsExplicitRoleVariants(t *testing.T) {
-	secret := syntheticSecret("Qw12Er34")
-	tests := []string{
-		"TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_SECRET=" + secret,
-		`{"twilioApiKeySid":"` + testKeySID + `","twilioApiKeySecret":"` + secret + `"}`,
-		"twilio-api-key-sid=" + testKeySID + "\ntwilio-api-key-secret='" + secret + "'",
-		`{"Twilio":{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"` + secret + `"}}`,
+	tests := []struct {
+		input  string
+		secret string
+	}{
+		{input: "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_SECRET=x7-K", secret: "x7-K"},
+		{input: `{"twilioApiKeySid":"` + testKeySID + `","twilioApiKeySecret":"opaque/+value=="}`, secret: "opaque/+value=="},
+		{input: "twilio-api-key-sid=" + testKeySID + "\ntwilio-api-key-secret='Secret.with.punctuation_42'", secret: "Secret.with.punctuation_42"},
+		{input: `{"Twilio":{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"` + syntheticSecret("Qw12Er34") + `"}}`, secret: syntheticSecret("Qw12Er34")},
 	}
-	for i, input := range tests {
-		findings := (&Detector{}).Scan(context.Background(), []byte(input))
+	for i, test := range tests {
+		findings := (&Detector{}).Scan(context.Background(), []byte(test.input))
 		require.Lenf(t, findings, 1, "variant %d", i)
-		assert.Equal(t, []byte(secret), findings[0].Raw)
+		assert.Equal(t, []byte(test.secret), findings[0].Raw)
+		assert.Equal(t, test.secret, test.input[findings[0].ByteStart:findings[0].ByteEnd])
 	}
 }
 
@@ -79,12 +91,17 @@ func TestDetector_Scan_DoesNotReportBareIdentifiersOrUnpairedValues(t *testing.T
 		"bare API Key SID":               testKeySID,
 		"bare Account SID":               testAccountSID,
 		"labelled secret without SID":    "TWILIO_API_KEY_SECRET=" + secret,
+		"bare SID beside secret":         testKeySID + "\nTWILIO_API_KEY_SECRET=" + secret,
+		"SID under unrelated role":       "ID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=" + secret,
 		"SID with generic password":      "TWILIO_API_KEY_SID=" + testKeySID + "\nPASSWORD=" + secret,
-		"secret role with short value":   "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=short",
-		"secret role with long value":    "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=" + secret + "A",
-		"secret role with hyphen suffix": "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=" + secret + "-extra",
+		"other provider secret role":     "TWILIO_API_KEY_SID=" + testKeySID + "\nSTRIPE_API_SECRET=" + secret,
 		"ordinary placeholder":           "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=your_api_key_secret",
+		"external secret reference":      "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=${TWILIO_API_KEY_SECRET}",
+		"separate logical block":         "TWILIO_API_KEY_SID=" + testKeySID + "\n\nTWILIO_API_KEY_SECRET=" + secret,
+		"separate JSON objects":          `{"ApiKeySid":"` + testKeySID + `"},{"ApiKeySecret":"` + secret + `"}`,
 		"role embedded in identifier":    "TWILIO_API_KEY_SID=" + testKeySID + "\nNOTWILIO_API_KEY_SECRET=" + secret,
+		"escaped quote is not truncated": `{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"opaque\"tail"}`,
+		"overlong unquoted secret":       "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=" + strings.Repeat("a", 513),
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -95,7 +112,7 @@ func TestDetector_Scan_DoesNotReportBareIdentifiersOrUnpairedValues(t *testing.T
 
 func TestDetector_Scan_CompanionOutsideWindowIsNotPaired(t *testing.T) {
 	secret := syntheticSecret("Ab12Cd34")
-	input := "TWILIO_API_KEY_SID=" + testKeySID + strings.Repeat(" ", companionProximityWindow+1) +
+	input := "TWILIO_API_KEY_SID=" + testKeySID + strings.Repeat(" ", companionProximityWindow+128) +
 		"TWILIO_API_KEY_SECRET=" + secret
 
 	assert.Empty(t, (&Detector{}).Scan(context.Background(), []byte(input)))
@@ -107,11 +124,67 @@ func TestDetector_Scan_AssociatesNearestKeySID(t *testing.T) {
 	keyA := "SKaaaaaaaa11111111aaaaaaaa11111111"
 	keyB := "SKbbbbbbbb22222222bbbbbbbb22222222"
 	input := "TWILIO_API_KEY_SID=" + keyA + "\nTWILIO_API_KEY_SECRET=" + secretA +
-		strings.Repeat(" ", companionProximityWindow+1) +
+		strings.Repeat(" ", companionProximityWindow+128) +
 		"TWILIO_API_KEY_SID=" + keyB + "\nTWILIO_API_KEY_SECRET=" + secretB
 
 	findings := (&Detector{}).Scan(context.Background(), []byte(input))
 	require.Len(t, findings, 2)
 	assert.Equal(t, keyA, findings[0].ExtraData["api_key_sid"])
 	assert.Equal(t, keyB, findings[1].ExtraData["api_key_sid"])
+}
+
+func TestDetector_Scan_DoesNotReuseOneSIDForMultipleSecrets(t *testing.T) {
+	input := "TWILIO_API_KEY_SID=" + testKeySID + "\n" +
+		"TWILIO_API_KEY_SECRET=first-opaque-secret\n" +
+		"TWILIO_API_KEY_SECRET=second-opaque-secret"
+
+	findings := (&Detector{}).Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	assert.Equal(t, []byte("first-opaque-secret"), findings[0].Raw)
+}
+
+func TestDetector_Scan_ExactSpanSelectsAcceptedOccurrence(t *testing.T) {
+	secret := syntheticSecret("Aa12Bb34")
+	input := "NOTE=" + secret + " # rejected duplicate\n" + pairedFixture(secret)
+
+	findings := (&Detector{}).Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	assert.Equal(t, strings.LastIndex(input, secret), findings[0].ByteStart)
+	assert.Equal(t, secret, input[findings[0].ByteStart:findings[0].ByteEnd])
+}
+
+func TestAssignmentMatches_FailsClosedOnMissingOrEmptyCapture(t *testing.T) {
+	assert.Empty(t, assignmentMatches(regexp.MustCompile(`x`), []byte("x")))
+	assert.Empty(t, assignmentMatches(regexp.MustCompile(`x(y)?`), []byte("x")))
+	assert.Empty(t, assignmentMatches(regexp.MustCompile(`x()`), []byte("x")))
+
+	matches := assignmentMatches(regexp.MustCompile(`x(y)`), []byte("xy"))
+	require.Len(t, matches, 1)
+	assert.Equal(t, assignmentMatch{wholeStart: 0, wholeEnd: 2, valueStart: 1, valueEnd: 2}, matches[0])
+}
+
+func TestCompanionSelection_RejectsAmbiguityAndInvalidBlocks(t *testing.T) {
+	data := []byte(strings.Repeat(" ", 200))
+	target := assignmentMatch{wholeStart: 100, wholeEnd: 110, valueStart: 105, valueEnd: 110}
+	candidates := []assignmentMatch{
+		{wholeStart: 80, wholeEnd: 90, valueStart: 80, valueEnd: 90},
+		{wholeStart: 120, wholeEnd: 130, valueStart: 120, valueEnd: 130},
+	}
+	assert.Equal(t, -1, nearestUnusedCompanion(data, target, candidates, []bool{false, false}))
+	assert.Equal(t, 1, nearestUnusedCompanion(data, target, candidates, []bool{true, false}))
+
+	assert.False(t, sameLogicalBlock(data, assignmentMatch{wholeStart: -1, wholeEnd: -1}, target))
+	assert.Equal(t, 0, rangeGap(target, assignmentMatch{wholeStart: 105, wholeEnd: 115}))
+}
+
+func TestIsNonSecretValue_ReferenceAndPlaceholderMatrix(t *testing.T) {
+	for _, value := range []string{
+		"change-me", "NOT_A_REAL_SECRET", "replace_me", "${SECRET}", "$SECRET",
+		"{{ secret }}", "%SECRET%", "<secret>", "vault://path", "op://vault/item",
+		"secret://path", "file://path", "/run/secrets/token", "@Microsoft.KeyVault(...)集",
+		"****", "0000", "----",
+	} {
+		assert.Truef(t, isNonSecretValue(value), "%q", value)
+	}
+	assert.False(t, isNonSecretValue("opaque-real-value-42"))
 }

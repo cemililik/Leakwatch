@@ -110,6 +110,12 @@ jobs:
           go-version: '1.25.12'
           cache: true
           cache-dependency-path: tools/site-build/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Test site generator and browser detector contracts
+        working-directory: tools/site-build
+        run: go test -count=1 ./...
       - name: Regenerate site/js from tools/site-build
         working-directory: tools/site-build
         run: go run . -strict

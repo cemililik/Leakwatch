@@ -55,11 +55,20 @@ type detPattern struct {
 	Flags string `json:"flags,omitempty"`
 }
 
+type detCorrelation struct {
+	RequiredNearby     []detPattern `json:"requiredNearby"`
+	ProximityBytes     int          `json:"proximityBytes"`
+	SameLogicalBlock   bool         `json:"sameLogicalBlock,omitempty"`
+	RejectPlaceholders bool         `json:"rejectPlaceholders,omitempty"`
+	OneToOne           bool         `json:"oneToOne,omitempty"`
+}
+
 type detEntry struct {
-	ID       string       `json:"id"`
-	Severity string       `json:"severity"`
-	Keywords []string     `json:"keywords"`
-	Patterns []detPattern `json:"patterns"`
+	ID          string          `json:"id"`
+	Severity    string          `json:"severity"`
+	Keywords    []string        `json:"keywords"`
+	Patterns    []detPattern    `json:"patterns"`
+	Correlation *detCorrelation `json:"correlation,omitempty"`
 }
 
 // Packages whose detection depends on logic the browser can't fa­ithfully
@@ -160,13 +169,34 @@ func buildDetectors(root, jsDir string, strict bool) (int, error) {
 // extractDetectors returns the emitted entries plus the IDs of any detector
 // types discovered in f that ended up with zero safe, unconditional patterns.
 func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
-	// Named regexp vars (name -> raw pattern) and every MustCompile literal in
+	// Named regexp vars (name -> raw pattern), integer constants, and every MustCompile literal in
 	// the file (covers patterns declared inside slices, used as a fallback).
 	varPat := map[string]string{}
+	intConst := map[string]int{}
 	var filePats []string
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.VAR {
+		if !ok {
+			continue
+		}
+		if gd.Tok == token.CONST {
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, value := range vs.Values {
+					if i >= len(vs.Names) {
+						continue
+					}
+					if n, ok := integerLiteral(value); ok {
+						intConst[vs.Names[i].Name] = n
+					}
+				}
+			}
+			continue
+		}
+		if gd.Tok != token.VAR {
 			continue
 		}
 		for _, spec := range gd.Specs {
@@ -191,7 +221,7 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 	})
 
 	// Group the detector methods by receiver type.
-	type methods struct{ id, kw, sev, scan *ast.FuncDecl }
+	type methods struct{ id, kw, sev, scan, playground *ast.FuncDecl }
 	types := map[string]*methods{}
 	getType := func(name string) *methods {
 		if types[name] == nil {
@@ -217,6 +247,8 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 			getType(rt).sev = fd
 		case "Scan":
 			getType(rt).scan = fd
+		case "PlaygroundPatternContract":
+			getType(rt).playground = fd
 		}
 	}
 
@@ -233,8 +265,15 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 			entry.Keywords = []string{}
 		}
 
-		var pats []string
-		if m.scan != nil {
+		var pats, requiredNearby []string
+		correlationOK := true
+		proximityBytes := 0
+		sameLogicalBlock := false
+		rejectPlaceholders := false
+		oneToOne := false
+		if m.playground != nil {
+			pats, requiredNearby, proximityBytes, sameLogicalBlock, rejectPlaceholders, oneToOne, correlationOK = playgroundCorrelationOf(m.playground, varPat, intConst)
+		} else if m.scan != nil {
 			refs := newPatternRefSet()
 			collectPatternRefs(m.scan.Body.List, false, refs)
 			if len(refs.order) == 0 {
@@ -266,6 +305,32 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 			seen[src+"\x00"+flags] = true
 			entry.Patterns = append(entry.Patterns, detPattern{Src: src, Flags: flags})
 		}
+		if m.playground != nil && correlationOK {
+			correlation := &detCorrelation{
+				ProximityBytes:     proximityBytes,
+				SameLogicalBlock:   sameLogicalBlock,
+				RejectPlaceholders: rejectPlaceholders,
+				OneToOne:           oneToOne,
+			}
+			for _, p := range dedup(requiredNearby) {
+				src, flags, ok := goToJSRegex(p)
+				if !ok {
+					correlationOK = false
+					break
+				}
+				correlation.RequiredNearby = append(correlation.RequiredNearby, detPattern{Src: src, Flags: flags})
+			}
+			if len(correlation.RequiredNearby) == 0 || proximityBytes <= 0 {
+				correlationOK = false
+			}
+			if correlationOK {
+				entry.Correlation = correlation
+			}
+		}
+		if !correlationOK {
+			entry.Patterns = nil
+			entry.Correlation = nil
+		}
 		if len(entry.Patterns) > 0 {
 			out = append(out, entry)
 		} else {
@@ -273,6 +338,97 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 		}
 	}
 	return out, dropped
+}
+
+// playgroundCorrelationOf resolves the optional, co-located detector contract
+// without importing the parent module. It deliberately accepts only a direct
+// detector.PlaygroundPatternContract composite literal whose regex fields
+// reference package-level regexp vars and whose proximity is a positive
+// integer literal or constant. Unsupported shapes fail closed in strict mode.
+func playgroundCorrelationOf(fd *ast.FuncDecl, patterns map[string]string, ints map[string]int) (primary, required []string, proximity int, sameBlock, rejectPlaceholders, oneToOne, ok bool) {
+	if fd == nil || fd.Body == nil {
+		return nil, nil, 0, false, false, false, false
+	}
+	var contract *ast.CompositeLit
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		ret, isReturn := n.(*ast.ReturnStmt)
+		if !isReturn || len(ret.Results) != 1 || contract != nil {
+			return true
+		}
+		contract, _ = ret.Results[0].(*ast.CompositeLit)
+		return contract == nil
+	})
+	if contract == nil {
+		return nil, nil, 0, false, false, false, false
+	}
+
+	for _, element := range contract.Elts {
+		field, isField := element.(*ast.KeyValueExpr)
+		if !isField {
+			continue
+		}
+		name, isName := field.Key.(*ast.Ident)
+		if !isName {
+			continue
+		}
+		switch name.Name {
+		case "Primary":
+			primary = regexpIdentifiers(field.Value, patterns)
+		case "RequiredNearby":
+			required = regexpIdentifiers(field.Value, patterns)
+		case "ProximityBytes":
+			proximity, _ = integerValue(field.Value, ints)
+		case "SameLogicalBlock":
+			if ident, isIdent := field.Value.(*ast.Ident); isIdent {
+				sameBlock = ident.Name == "true"
+			}
+		case "RejectPlaceholders":
+			if ident, isIdent := field.Value.(*ast.Ident); isIdent {
+				rejectPlaceholders = ident.Name == "true"
+			}
+		case "OneToOne":
+			if ident, isIdent := field.Value.(*ast.Ident); isIdent {
+				oneToOne = ident.Name == "true"
+			}
+		}
+	}
+	return primary, required, proximity, sameBlock, rejectPlaceholders, oneToOne, len(primary) > 0 && len(required) > 0 && proximity > 0
+}
+
+func regexpIdentifiers(expr ast.Expr, patterns map[string]string) []string {
+	var out []string
+	ast.Inspect(expr, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if pattern, exists := patterns[ident.Name]; exists {
+			out = append(out, pattern)
+		}
+		return true
+	})
+	return dedup(out)
+}
+
+func integerLiteral(expr ast.Expr) (int, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.INT {
+		return 0, false
+	}
+	n, err := strconv.Atoi(lit.Value)
+	return n, err == nil
+}
+
+func integerValue(expr ast.Expr, ints map[string]int) (int, bool) {
+	if n, ok := integerLiteral(expr); ok {
+		return n, true
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return 0, false
+	}
+	n, ok := ints[ident.Name]
+	return n, ok
 }
 
 // patternRefs accumulates how a pattern var was referenced across Scan.

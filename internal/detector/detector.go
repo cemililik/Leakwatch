@@ -3,6 +3,7 @@ package detector
 
 import (
 	"context"
+	"regexp"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
@@ -45,6 +46,32 @@ type OverlapFallback interface {
 type OverlapAuthority interface {
 	Detector
 	AuthoritativeOnOverlap() bool
+}
+
+// PlaygroundPatternContract describes detector correlation that the static
+// browser playground must preserve. Most detectors are represented by a set
+// of independent trigger patterns and do not implement this contract. A
+// detector whose finding requires nearby companion context must expose the
+// primary and companion regexes here so the site generator does not flatten
+// an AND relationship into false-positive OR triggers.
+//
+// This is an optional presentation contract only. The Go detector remains the
+// source of truth for findings and must enforce the same (or stricter) rules in
+// Scan.
+type PlaygroundPatternContract struct {
+	Primary            []*regexp.Regexp
+	RequiredNearby     []*regexp.Regexp
+	ProximityBytes     int
+	SameLogicalBlock   bool
+	RejectPlaceholders bool
+	OneToOne           bool
+}
+
+// PlaygroundCorrelated is implemented by detectors whose browser-preview
+// representation requires companion correlation.
+type PlaygroundCorrelated interface {
+	Detector
+	PlaygroundPatternContract() PlaygroundPatternContract
 }
 
 // RawFinding represents an unverified raw finding.

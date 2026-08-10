@@ -840,16 +840,22 @@ window.LW_DETECTORS = [
     "keywords": [],
     "patterns": [
       {
-        "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?secret[\"']?\\s*[:=]\\s*[\"']?([a-z0-9]{32})(?:[\"']|[\\s,;}#]|$)",
+        "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?secret[\"']?\\s*[:=]\\s*(?:\"([^\"\\r\\n]{1,512})\"|'([^'\\r\\n]{1,512})'|([^\"' \\t\\r\\n,;}#]{1,512})(?:[ \\t\\r\\n,;}#]|$))",
         "flags": "i"
-      },
-      {
-        "src": "\\bSK[0-9a-fA-F]{32}\\b"
-      },
-      {
-        "src": "\\bAC[0-9a-fA-F]{32}\\b"
       }
-    ]
+    ],
+    "correlation": {
+      "requiredNearby": [
+        {
+          "src": "\\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid[\"']?\\s*[:=]\\s*[\"']?(SK[0-9a-f]{32})\\b",
+          "flags": "i"
+        }
+      ],
+      "proximityBytes": 512,
+      "sameLogicalBlock": true,
+      "rejectPlaceholders": true,
+      "oneToOne": true
+    }
   },
   {
     "id": "vercel-token",

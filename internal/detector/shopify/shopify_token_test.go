@@ -26,6 +26,18 @@ func TestDetector_ScanViaMatcher_MatchesExactToken(t *testing.T) {
 
 	require.Len(t, findings, 1)
 	assert.Equal(t, []byte("shpat_"+suffix32), findings[0].Raw)
+	assert.Equal(t, strings.Index("SHOPIFY_ACCESS_TOKEN=shpat_"+suffix32, "shpat_"), findings[0].ByteStart)
+	assert.Equal(t, string(findings[0].Raw), ("SHOPIFY_ACCESS_TOKEN=shpat_" + suffix32)[findings[0].ByteStart:findings[0].ByteEnd])
+}
+
+func TestDetector_Scan_ExactSpanSelectsAcceptedOccurrence(t *testing.T) {
+	token := "shpat_" + strings.Repeat("ab12cd34", 4)
+	input := "prefix_" + token + " # rejected duplicate\nSHOPIFY_ACCESS_TOKEN=" + token
+
+	findings := (&Detector{}).Scan(context.Background(), []byte(input))
+	require.Len(t, findings, 1)
+	assert.Equal(t, strings.LastIndex(input, token), findings[0].ByteStart)
+	assert.Equal(t, token, input[findings[0].ByteStart:findings[0].ByteEnd])
 }
 
 func TestDetector_Scan_MatchAndReject(t *testing.T) {

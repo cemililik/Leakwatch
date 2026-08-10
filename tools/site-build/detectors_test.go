@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -361,5 +363,107 @@ func (d *Detector) Scan(data []byte) {
 	}
 	if len(dropped) != 1 || dropped[0] != "example-const-ident" {
 		t.Fatalf("expected example-const-ident to be reported as dropped, got: %v", dropped)
+	}
+}
+
+func TestExtractDetectors_CorrelatedContractPreservesANDSemantics(t *testing.T) {
+	src := `
+package example
+
+import (
+	"regexp"
+	"example/internal/detector"
+)
+
+const nearby = 128
+var primary = regexp.MustCompile(` + "`SECRET=([^\\s]+)`" + `)
+var companion = regexp.MustCompile(` + "`SID=(SK[0-9a-f]{32})`" + `)
+var metadata = regexp.MustCompile(` + "`ACCOUNT=(AC[0-9a-f]{32})`" + `)
+
+type Detector struct{}
+func (*Detector) ID() string { return "correlated" }
+func (*Detector) Scan(data []byte) {
+	_ = primary.FindAllSubmatchIndex(data, -1)
+	_ = companion.FindAllSubmatchIndex(data, -1)
+	_ = metadata.FindAllSubmatchIndex(data, -1)
+}
+func (*Detector) PlaygroundPatternContract() detector.PlaygroundPatternContract {
+	return detector.PlaygroundPatternContract{
+		Primary: []*regexp.Regexp{primary},
+		RequiredNearby: []*regexp.Regexp{companion},
+		ProximityBytes: nearby,
+		SameLogicalBlock: true,
+		RejectPlaceholders: true,
+		OneToOne: true,
+	}
+}
+`
+	out, dropped := extractDetectors(parseSnippet(t, src))
+	if len(dropped) != 0 || len(out) != 1 {
+		t.Fatalf("unexpected extraction result: out=%+v dropped=%v", out, dropped)
+	}
+	entry := out[0]
+	if len(entry.Patterns) != 1 || entry.Patterns[0].Src != `SECRET=([^\s]+)` {
+		t.Fatalf("primary patterns = %+v", entry.Patterns)
+	}
+	if entry.Correlation == nil || len(entry.Correlation.RequiredNearby) != 1 {
+		t.Fatalf("correlation = %+v", entry.Correlation)
+	}
+	if entry.Correlation.RequiredNearby[0].Src != `SID=(SK[0-9a-f]{32})` ||
+		entry.Correlation.ProximityBytes != 128 || !entry.Correlation.SameLogicalBlock || !entry.Correlation.RejectPlaceholders || !entry.Correlation.OneToOne {
+		t.Fatalf("correlation = %+v", entry.Correlation)
+	}
+}
+
+func TestPlayground_TwilioRequiresNearbySID(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to verify browser detector contracts")
+	}
+	root, err := findRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `
+const fs = require("fs");
+const vm = require("vm");
+const elements = {};
+function element() { return { value: "", textContent: "", innerHTML: "", addEventListener() {}, focus() {} }; }
+global.window = { addEventListener() {} };
+global.document = {
+  getElementById(id) { return elements[id] || (elements[id] = element()); },
+  querySelectorAll() { return []; },
+  addEventListener() {}
+};
+global.navigator = {};
+global.setTimeout = function () {};
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"));
+vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
+const key = "SK" + "ab12cd34".repeat(4);
+const account = "AC" + "ab12cd34".repeat(4);
+const secret = "opaque/+Twilio.Secret==";
+function count(input) { return window.LW_PLAYGROUND_DETECT(input).filter(f => f.id === "twilio-api-key").length; }
+const cases = [
+  ["bare key SID", "TWILIO_API_KEY_SID=" + key, 0],
+  ["bare account SID", "TWILIO_ACCOUNT_SID=" + account, 0],
+  ["unpaired secret", "TWILIO_API_KEY_SECRET=" + secret, 0],
+  ["paired", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret, 1],
+	  ["short opaque secret", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=x7-K", 1],
+	  ["placeholder", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=your_api_key_secret", 0],
+	  ["reference", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=${TWILIO_API_KEY_SECRET}", 0],
+	  ["one SID is not reused", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret + "\nTWILIO_API_KEY_SECRET=second-opaque-secret", 1],
+	  ["escaped quote is not truncated", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=\"opaque\\\"tail\"", 0],
+  ["different block", "TWILIO_API_KEY_SID=" + key + "\n\nTWILIO_API_KEY_SECRET=" + secret, 0]
+];
+for (const [name, input, want] of cases) {
+  const got = count(input);
+  if (got !== want) throw new Error(name + ": got " + got + ", want " + want);
+}
+`
+	cmd := exec.Command(node, "-e", script,
+		filepath.Join(root, "site", "js", "detectors.js"),
+		filepath.Join(root, "site", "js", "scanner.js"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("browser contract failed: %v\n%s", err, output)
 	}
 }
