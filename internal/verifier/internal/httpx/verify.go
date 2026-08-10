@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
@@ -86,6 +88,11 @@ type TokenSpec struct {
 	// extract ExtraData (and optionally downgrade the result). When nil, an
 	// active-status response yields a bare active result without reading the body.
 	Decode DecodeFunc
+
+	// RequireCompleteBody reads the full active response through a strict
+	// MaxBodyBytes+1 bound before Decode runs. Responses over the bound are
+	// rejected instead of letting a truncated prefix appear valid.
+	RequireCompleteBody bool
 }
 
 // BaseURL returns override when it is non-empty, otherwise fallback. Verifiers
@@ -213,7 +220,25 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		}
 	}
 
-	extra, downgrade, err := spec.Decode(LimitReader(body))
+	decodeBody := LimitReader(body)
+	if spec.RequireCompleteBody {
+		contents, err := io.ReadAll(io.LimitReader(body, MaxBodyBytes+1))
+		if err != nil {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("200 OK but failed to read response body: %v", err),
+			}
+		}
+		if int64(len(contents)) > MaxBodyBytes {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("200 OK but response body exceeds %d bytes", MaxBodyBytes),
+			}
+		}
+		decodeBody = bytes.NewReader(contents)
+	}
+
+	extra, downgrade, err := spec.Decode(decodeBody)
 	if err != nil {
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to decode response", slog.String("error", err.Error()))
 		return finding.VerificationResult{
@@ -240,10 +265,11 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 
 // RateLimited returns a distinguished StatusVerifyError result for an HTTP 429
 // (Too Many Requests) response, so a provider-side rate limit is never conflated
-// with a genuine verification bug or an inactive secret. retryAfter is the raw
-// Retry-After header value (may be empty); it is echoed into the message to make
-// the outcome actionable and never contains secret material.
+// with a genuine verification bug or an inactive secret. Only a syntactically
+// valid delta-seconds or HTTP-date Retry-After value is emitted; arbitrary
+// provider-controlled header text is never copied into logs or results.
 func RateLimited(ctx context.Context, name, retryAfter string) finding.VerificationResult {
+	retryAfter = canonicalRetryAfter(retryAfter)
 	msg := "rate limited by provider (HTTP 429), retry later"
 	if retryAfter != "" {
 		msg = fmt.Sprintf("%s (Retry-After: %s)", msg, retryAfter)
@@ -254,6 +280,20 @@ func RateLimited(ctx context.Context, name, retryAfter string) finding.Verificat
 		Status:  finding.StatusVerifyError,
 		Message: msg,
 	}
+}
+
+func canonicalRetryAfter(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return strconv.FormatUint(seconds, 10)
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		return retryAt.UTC().Format(http.TimeFormat)
+	}
+	return ""
 }
 
 // UnexpectedStatus returns the canonical StatusVerifyError result for a response

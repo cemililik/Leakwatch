@@ -1,10 +1,12 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -215,6 +217,26 @@ func TestRateLimited(t *testing.T) {
 	assert.Equal(t, finding.StatusVerifyError, noHeader.Status)
 	assert.Contains(t, noHeader.Message, "rate limited by provider")
 	assert.NotContains(t, noHeader.Message, "Retry-After")
+}
+
+func TestRateLimited_DoesNotReflectArbitraryHeaderText(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	result := RateLimited(context.Background(), "x", testToken)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.NotContains(t, result.Message, testToken)
+	assert.NotContains(t, logs.String(), testToken)
+	assert.NotContains(t, result.Message, "Retry-After")
+
+	httpDate := "Wed, 21 Oct 2015 07:28:00 GMT"
+	result = RateLimited(context.Background(), "x", httpDate)
+	assert.Contains(t, result.Message, "Retry-After: "+httpDate)
+
+	result = RateLimited(context.Background(), "x", " 00030 ")
+	assert.Contains(t, result.Message, "Retry-After: 30")
 }
 
 func TestVerifyToken_Redirect_IsVerifyError(t *testing.T) {

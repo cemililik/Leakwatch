@@ -39,7 +39,10 @@ const defaultMaxFileSize = 10 * 1024 * 1024
 // Flag names shared across the scan_*.go commands. Defining them as constants
 // avoids duplicating the string literals that several commands reference when
 // registering and reading the same flag.
-const flagShowRaw = "show-raw"
+const (
+	flagShowRaw            = "show-raw"
+	flagGrafanaInstanceURL = "grafana-instance-url"
+)
 
 // scanFlagBindings maps Viper config keys to the scan flag that overrides them.
 // Each scan command's pflags are bound to a fresh, per-invocation Viper instance
@@ -152,6 +155,7 @@ func addVerifyFlags(flags *pflag.FlagSet) {
 	flags.Bool("only-verified", false, "only show verified active findings")
 	flags.String("min-severity", "low", "minimum severity to report (low, medium, high, critical)")
 	flags.Bool("remediation", false, "include remediation guidance in output")
+	flags.String(flagGrafanaInstanceURL, "", "trusted Grafana instance origin for token verification (HTTPS; command-line only)")
 }
 
 // loadScanConfig loads and validates configuration for the active command using
@@ -193,24 +197,25 @@ func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
 	}
 
 	return &scanner.Config{
-		Concurrency:       cfg.Scan.Concurrency,
-		MaxFileSize:       cfg.Scan.MaxFileSize,
-		ExcludePaths:      cfg.Filter.ExcludePaths,
-		ExcludeDetectors:  mergedExcludeDetectors(cmd, cfg),
-		EnableEntropy:     cfg.Detection.Entropy.Enabled,
-		EntropyThreshold:  cfg.Detection.Entropy.Threshold,
-		ShowRaw:           showRaw,
-		OutputFile:        cfg.Output.File,
-		Format:            cfg.Output.Format,
-		NoVerify:          flagBool(cmd, "no-verify"),
-		OnlyVerified:      flagBool(cmd, "only-verified"),
-		MinSeverity:       minSev,
-		EnableRemediation: flagBool(cmd, "remediation"),
-		VerifyEnabled:     cfg.Verification.Enabled,
-		VerifyTimeout:     cfg.Verification.Timeout,
-		VerifyConcurrency: cfg.Verification.Concurrency,
-		VerifyRateLimit:   cfg.Verification.RateLimit,
-		CustomRules:       cfg.CustomRules,
+		Concurrency:        cfg.Scan.Concurrency,
+		MaxFileSize:        cfg.Scan.MaxFileSize,
+		ExcludePaths:       cfg.Filter.ExcludePaths,
+		ExcludeDetectors:   mergedExcludeDetectors(cmd, cfg),
+		EnableEntropy:      cfg.Detection.Entropy.Enabled,
+		EntropyThreshold:   cfg.Detection.Entropy.Threshold,
+		ShowRaw:            showRaw,
+		OutputFile:         cfg.Output.File,
+		Format:             cfg.Output.Format,
+		NoVerify:           flagBool(cmd, "no-verify"),
+		OnlyVerified:       flagBool(cmd, "only-verified"),
+		MinSeverity:        minSev,
+		EnableRemediation:  flagBool(cmd, "remediation"),
+		VerifyEnabled:      cfg.Verification.Enabled,
+		VerifyTimeout:      cfg.Verification.Timeout,
+		VerifyConcurrency:  cfg.Verification.Concurrency,
+		VerifyRateLimit:    cfg.Verification.RateLimit,
+		GrafanaInstanceURL: flagString(cmd, flagGrafanaInstanceURL),
+		CustomRules:        cfg.CustomRules,
 	}, nil
 }
 

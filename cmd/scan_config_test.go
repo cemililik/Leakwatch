@@ -9,6 +9,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/HodeTech/leakwatch/internal/scanner"
+	"github.com/HodeTech/leakwatch/internal/verifier"
 )
 
 // newTestScanCmd builds a cobra command carrying the same common scan flags that
@@ -240,6 +243,48 @@ func TestLoadScanConfig_IsolatedPerCommand_NoCrossLeak(t *testing.T) {
 	cfgB, err := loadScanConfig(cmdB)
 	require.NoError(t, err)
 	assert.Equal(t, runtime.NumCPU(), cfgB.Concurrency)
+}
+
+func TestLoadScanConfig_GrafanaInstanceRequiresExplicitFlag(t *testing.T) {
+	clearScanEnv(t)
+	writeConfigFile(t, "verification:\n  grafana-instance-url: https://repository-controlled.example\n")
+	t.Setenv("LEAKWATCH_VERIFICATION_GRAFANA_INSTANCE_URL", "https://environment.example")
+
+	cmd := newTestScanCmd()
+	require.NoError(t, cmd.ParseFlags(nil))
+	cfg, err := loadScanConfig(cmd)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.GrafanaInstanceURL, "project config and environment must not choose a verifier target")
+
+	cmd = newTestScanCmd()
+	require.NoError(t, cmd.ParseFlags([]string{"--grafana-instance-url", "https://operator.example"}))
+	cfg, err = loadScanConfig(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, "https://operator.example", cfg.GrafanaInstanceURL)
+
+	registered, ok := verifier.Get("grafana-api-key")
+	require.True(t, ok)
+	engineCfg, err := scanner.BuildEngineConfig(cfg)
+	require.NoError(t, err)
+	var configured verifier.Verifier
+	for _, candidate := range engineCfg.Verifiers {
+		if candidate.Type() == "grafana-api-key" {
+			configured = candidate
+			break
+		}
+	}
+	require.NotNil(t, configured)
+	assert.NotSame(t, registered, configured, "the scan must receive a configured per-run verifier copy")
+	stillRegistered, ok := verifier.Get("grafana-api-key")
+	require.True(t, ok)
+	assert.Same(t, registered, stillRegistered, "per-run configuration must not mutate the global registry")
+
+	for _, rawURL := range []string{"http://grafana.example", "https://127.0.0.1", "https://grafana.com"} {
+		cfg.GrafanaInstanceURL = rawURL
+		_, err = scanner.BuildEngineConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "configure Grafana verification")
+	}
 }
 
 func TestShouldEnableColor_DecisionTable(t *testing.T) {

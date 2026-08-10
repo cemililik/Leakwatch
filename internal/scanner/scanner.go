@@ -59,6 +59,10 @@ type Config struct {
 	VerifyTimeout     time.Duration
 	VerifyConcurrency int
 	VerifyRateLimit   float64
+	// GrafanaInstanceURL is accepted only from the explicit command-line flag,
+	// never from repository config or detector ExtraData. It is therefore a
+	// trusted operator choice rather than scan-controlled input.
+	GrafanaInstanceURL string
 
 	// CustomRules are user-defined YAML custom rules from the `custom-rules:`
 	// config block. BuildEngineConfig compiles them into detectors threaded
@@ -125,6 +129,11 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 		slog.Warn("--only-verified has no effect when --no-verify is set")
 	}
 
+	verifiers, err := configuredVerifiers(cfg)
+	if err != nil {
+		return engine.Config{}, err
+	}
+
 	return engine.Config{
 		Concurrency:      cfg.Concurrency,
 		Detectors:        detectors,
@@ -132,10 +141,27 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 		EntropyThreshold: cfg.EntropyThreshold,
 		ShowRaw:          cfg.ShowRaw,
 		VerifierConfig:   verifierCfg,
-		Verifiers:        verifier.All(),
+		Verifiers:        verifiers,
 		OnlyVerified:     cfg.OnlyVerified,
 		MinSeverity:      cfg.MinSeverity,
 	}, nil
+}
+
+func configuredVerifiers(cfg *Config) ([]verifier.Verifier, error) {
+	verifiers := verifier.All()
+	if cfg.GrafanaInstanceURL == "" {
+		return verifiers, nil
+	}
+
+	configured, err := verifier.ConfigureTrustedInstance(
+		verifiers,
+		"grafana-api-key",
+		cfg.GrafanaInstanceURL,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure Grafana verification: %w", err)
+	}
+	return configured, nil
 }
 
 // Run executes a single-source scan: it builds the engine, runs the scan under
