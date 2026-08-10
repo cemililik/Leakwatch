@@ -22,6 +22,10 @@ func (d *Detector) Keywords() []string { return []string{"shpat_"} }
 
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
+// AuthoritativeOnOverlap lets the engine prefer this provider-specific token
+// over a broad structured-field finding for the same source bytes.
+func (d *Detector) AuthoritativeOnOverlap() bool { return true }
+
 // Scan searches the data for Shopify Access Token patterns.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	matches := shopifyTokenPattern.FindAll(data, -1)

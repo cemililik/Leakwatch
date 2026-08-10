@@ -27,15 +27,24 @@ type Detector interface {
 }
 
 // OverlapFallback is an optional detector contract for broad contextual
-// detectors. When a non-fallback detector reports an intersecting byte range
-// in the same source chunk, the engine suppresses the fallback finding and
-// preserves the specialized detector's severity, verification, and
-// remediation. Implementations must return findings in a bounded set because
-// the engine briefly retains fallback candidates until all specialized
-// detectors have scanned that chunk.
+// detectors. When an authoritative provider detector reports an intersecting
+// byte range in the same source chunk at equal or greater severity, the engine
+// suppresses the fallback finding and preserves the provider-specific
+// verification and remediation. Implementations must return findings in a
+// bounded set because the engine briefly retains fallback candidates until all
+// authoritative detectors have scanned that chunk.
 type OverlapFallback interface {
 	Detector
 	FallbackOnSpecializedOverlap() bool
+}
+
+// OverlapAuthority is an optional detector contract for built-in,
+// provider-specific detectors that may replace a broad OverlapFallback finding
+// at the same source bytes. Custom and heuristic detectors must not implement
+// this contract: overlap alone does not make a finding more authoritative.
+type OverlapAuthority interface {
+	Detector
+	AuthoritativeOnOverlap() bool
 }
 
 // RawFinding represents an unverified raw finding.

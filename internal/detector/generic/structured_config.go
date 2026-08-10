@@ -2,6 +2,7 @@ package generic
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"unicode"
@@ -160,6 +161,12 @@ func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCan
 			if i+1 < len(data) && data[i+1] == '/' {
 				i += 2
 				for i < len(data) && data[i] != '\n' {
+					if i >= nextContextCheck {
+						if ctx.Err() != nil {
+							return nil, nil, false
+						}
+						nextContextCheck = i + 4_096
+					}
 					i++
 				}
 				continue
@@ -167,6 +174,12 @@ func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCan
 			if i+1 < len(data) && data[i+1] == '*' {
 				i += 2
 				for i+1 < len(data) && (data[i] != '*' || data[i+1] != '/') {
+					if i >= nextContextCheck {
+						if ctx.Err() != nil {
+							return nil, nil, false
+						}
+						nextContextCheck = i + 4_096
+					}
 					i++
 				}
 				if i+1 < len(data) {
@@ -177,7 +190,10 @@ func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCan
 			emit(jsonToken{kind: jsonOther, start: i, end: i + 1, depth: depth})
 			i++
 		case '"':
-			token, next, ok := scanJSONString(data, i, depth)
+			token, next, ok, complete := scanJSONString(ctx, data, i, depth)
+			if !complete {
+				return nil, nil, false
+			}
 			i = next
 			if ok {
 				emit(token)
@@ -211,6 +227,12 @@ func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCan
 		default:
 			start := i
 			for i < len(data) && !isJSONDelimiter(data[i]) {
+				if i >= nextContextCheck {
+					if ctx.Err() != nil {
+						return nil, nil, false
+					}
+					nextContextCheck = i + 4_096
+				}
 				i++
 			}
 			if i == start {
@@ -222,19 +244,30 @@ func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCan
 	return tokens, candidates, true
 }
 
-func scanJSONString(data []byte, start, depth int) (jsonToken, int, bool) {
+func scanJSONString(ctx context.Context, data []byte, start, depth int) (jsonToken, int, bool, bool) {
 	i := start + 1
+	nextContextCheck := i + 4_096
+	tooLong := false
 	for i < len(data) {
+		if i >= nextContextCheck {
+			if ctx.Err() != nil {
+				return jsonToken{}, i, false, false
+			}
+			nextContextCheck = i + 4_096
+		}
+		if i-start-1 > maxStructuredStringLen {
+			tooLong = true
+		}
 		switch data[i] {
 		case '\\':
 			if i+1 >= len(data) {
-				return jsonToken{}, len(data), false
+				return jsonToken{}, len(data), false, true
 			}
 			i += 2
 		case '"':
 			end := i + 1
-			if i-start-1 > maxStructuredStringLen {
-				return jsonToken{}, end, false
+			if tooLong || i-start-1 > maxStructuredStringLen {
+				return jsonToken{}, end, false, true
 			}
 			return jsonToken{
 				kind:         jsonString,
@@ -243,17 +276,74 @@ func scanJSONString(data []byte, start, depth int) (jsonToken, int, bool) {
 				contentStart: start + 1,
 				contentEnd:   i,
 				depth:        depth,
-			}, end, true
+			}, end, true, true
 		default:
 			i++
 		}
 	}
-	return jsonToken{}, len(data), false
+	return jsonToken{}, len(data), false, true
 }
 
 func decodeJSONString(data []byte, token jsonToken) (string, bool) {
-	decoded, err := strconv.Unquote(string(data[token.start:token.end]))
+	encoded := data[token.start:token.end]
+	if !utf8.Valid(encoded) || !hasValidJSONSurrogates(encoded) {
+		return "", false
+	}
+	var decoded string
+	err := json.Unmarshal(encoded, &decoded)
 	return decoded, err == nil && utf8.ValidString(decoded)
+}
+
+func hasValidJSONSurrogates(encoded []byte) bool {
+	for i := 1; i+1 < len(encoded); i++ {
+		if encoded[i] != '\\' {
+			continue
+		}
+		i++
+		if encoded[i] != 'u' {
+			continue
+		}
+		first, ok := decodeHexQuad(encoded, i+1)
+		if !ok {
+			return false
+		}
+		i += 4
+		switch {
+		case first >= 0xd800 && first <= 0xdbff:
+			if i+6 >= len(encoded) || encoded[i+1] != '\\' || encoded[i+2] != 'u' {
+				return false
+			}
+			second, secondOK := decodeHexQuad(encoded, i+3)
+			if !secondOK || second < 0xdc00 || second > 0xdfff {
+				return false
+			}
+			i += 6
+		case first >= 0xdc00 && first <= 0xdfff:
+			return false
+		}
+	}
+	return true
+}
+
+func decodeHexQuad(data []byte, start int) (uint16, bool) {
+	if start < 0 || start+4 > len(data) {
+		return 0, false
+	}
+	var value uint16
+	for _, b := range data[start : start+4] {
+		value <<= 4
+		switch {
+		case b >= '0' && b <= '9':
+			value += uint16(b - '0')
+		case b >= 'a' && b <= 'f':
+			value += uint16(b-'a') + 10
+		case b >= 'A' && b <= 'F':
+			value += uint16(b-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
 }
 
 func isJSONDelimiter(b byte) bool {
@@ -454,12 +544,41 @@ func isExternalSecretReference(lower, original string) bool {
 		isDollarReference(original) || isAngleReference(original) {
 		return true
 	}
+	if isFilesystemReference(lower) {
+		return true
+	}
 	for _, prefix := range []string{
 		"env:", "secret://", "vault://", "kv://", "keyvault://",
 		"aws-secretsmanager://", "gcp-secretmanager://", "op://", "1password://",
 		"@microsoft.keyvault(",
 	} {
 		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFilesystemReference(lower string) bool {
+	for _, prefix := range []string{
+		"/", "./", "../", "~/", "\\\\", "file:",
+		"secrets/", ".secrets/", "certs/", "certificates/", "run/secrets/", "var/run/secrets/",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	if len(lower) >= 3 && lower[1] == ':' && lower[0] >= 'a' && lower[0] <= 'z' &&
+		(lower[2] == '/' || lower[2] == '\\') {
+		return true
+	}
+	if !strings.ContainsAny(lower, "/\\") {
+		return false
+	}
+	for _, suffix := range []string{
+		".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".crt", ".cer",
+	} {
+		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
 	}
@@ -497,15 +616,11 @@ func isKeyMaterialReference(key, lower string) bool {
 		return false
 	}
 	for _, prefix := range []string{
-		"/", "./", "../", "~/", "\\\\", "file://", "pkcs11:", "arn:aws:kms:", "alias/",
+		"pkcs11:", "arn:aws:kms:", "alias/",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
-	}
-	if len(lower) >= 3 && lower[1] == ':' &&
-		(lower[0] >= 'a' && lower[0] <= 'z') && (lower[2] == '/' || lower[2] == '\\') {
-		return true
 	}
 	return false
 }

@@ -118,9 +118,10 @@ type findingEntropyGate interface {
 }
 
 type locatedVerifyPair struct {
-	pair       verifier.VerifyPair
-	start, end int
-	isFallback bool
+	pair        verifier.VerifyPair
+	start, end  int
+	isFallback  bool
+	isAuthority bool
 }
 
 // isEntropyBased reports whether the detector opts into the engine entropy gate.
@@ -354,9 +355,10 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 		// Aho-Corasick pre-filtering: only run matched detectors.
 		matchedDetectors := e.matcher.Match(chunk.Data)
 		// Broad fallback detectors run first and buffer only their bounded result
-		// set. Specialized findings can then stream immediately while removing
-		// overlapping fallbacks. This preserves the engine's bounded raw-secret
-		// memory model instead of accumulating every provider finding in a chunk.
+		// set. Other findings can then stream immediately; only explicitly
+		// authoritative provider findings may remove overlapping fallbacks. This
+		// preserves the bounded raw-secret memory model instead of accumulating
+		// every provider finding in a chunk.
 		sort.SliceStable(matchedDetectors, func(i, j int) bool {
 			return detectorIsOverlapFallback(matchedDetectors[i]) && !detectorIsOverlapFallback(matchedDetectors[j])
 		})
@@ -419,10 +421,11 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 				}
 
 				candidate := locatedVerifyPair{
-					pair:       verifier.VerifyPair{Finding: f, Raw: raw},
-					start:      offset,
-					end:        rawFindingEnd(chunk.Data, raw, offset),
-					isFallback: detectorIsOverlapFallback(det),
+					pair:        verifier.VerifyPair{Finding: f, Raw: raw},
+					start:       offset,
+					end:         rawFindingEnd(chunk.Data, raw, offset),
+					isFallback:  detectorIsOverlapFallback(det),
+					isAuthority: detectorIsOverlapAuthority(det),
 				}
 				if candidate.isFallback {
 					fallbackPairs = append(fallbackPairs, candidate)
@@ -453,15 +456,21 @@ func detectorIsOverlapFallback(det detector.Detector) bool {
 	return ok && fallback.FallbackOnSpecializedOverlap()
 }
 
+func detectorIsOverlapAuthority(det detector.Detector) bool {
+	authority, ok := det.(detector.OverlapAuthority)
+	return ok && authority.AuthoritativeOnOverlap()
+}
+
 // suppressFallbacksForSpecialized drops a buffered broad-context finding only
-// when the newly produced specialized finding intersects its source bytes.
-// Provider-provider overlaps and repeated values at distinct locations never
-// enter this function and therefore remain separate findings.
+// when the newly produced authoritative, equal-or-higher-severity finding
+// intersects its source bytes. Provider-provider overlaps and repeated values
+// at distinct locations remain separate findings.
 func suppressFallbacksForSpecialized(
 	fallbacks []locatedVerifyPair,
 	specialized locatedVerifyPair,
 ) []locatedVerifyPair {
-	if len(fallbacks) == 0 || specialized.start < 0 || specialized.end <= specialized.start {
+	if len(fallbacks) == 0 || !specialized.isAuthority ||
+		specialized.start < 0 || specialized.end <= specialized.start {
 		return fallbacks
 	}
 	result := fallbacks[:0]
@@ -470,7 +479,8 @@ func suppressFallbacksForSpecialized(
 			result = append(result, candidate)
 			continue
 		}
-		if candidate.start >= specialized.end || specialized.start >= candidate.end {
+		if specialized.pair.Finding.Severity < candidate.pair.Finding.Severity ||
+			candidate.start >= specialized.end || specialized.start >= candidate.end {
 			result = append(result, candidate)
 		}
 	}

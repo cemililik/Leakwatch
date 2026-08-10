@@ -120,7 +120,10 @@ func TestStructuredConfigDetector_HardNegatives(t *testing.T) {
     "AuthToken": "$auth_token",
     "BearerToken": "$(BEARER_TOKEN)",
     "AppSecret": "<secret>",
+    "ClientSecret": "/run/secrets/client-secret",
+    "Password": "file:///run/secrets/db-password",
     "PrivateKey": "/etc/ssl/private/key.pem",
+    "PrivateKey": "certs/private-key.pem",
     "PrivateKey": "C:\\certs\\private-key.pem",
     "PrivateKey": "\\\\server\\share\\private-key.pem",
     "MasterKey": "pkcs11:token=application;object=master-key",
@@ -155,6 +158,40 @@ func TestStructuredConfigDetector_EscapedKeyAndExactSourceSpan(t *testing.T) {
 	assert.Equal(t, "Password", findings[0].ExtraData["key_name"])
 	assert.Equal(t, `ab\\cd-9mN2pQ7r`, string(findings[0].Raw), "Raw must be the exact source representation, not a whole line")
 	assert.Equal(t, string(findings[0].Raw), string(data[findings[0].ByteStart:findings[0].ByteEnd]))
+}
+
+func TestStructuredConfigDetector_StrictJSONEscapes(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "escaped slash", data: []byte(`{"Password":"ab\/cd-secret"}`)},
+		{name: "BMP unicode", data: []byte(`{"Password":"secret-\u00e7"}`)},
+		{name: "surrogate pair", data: []byte(`{"Password":"secret-\uD83D\uDE00"}`)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := (&StructuredConfigDetector{}).Scan(context.Background(), tc.data)
+			require.Len(t, findings, 1)
+			assert.Equal(t, string(findings[0].Raw), string(tc.data[findings[0].ByteStart:findings[0].ByteEnd]))
+		})
+	}
+
+	invalid := [][]byte{
+		[]byte(`{"Password":"secret-\x41"}`),
+		[]byte(`{"Password":"secret-\a"}`),
+		[]byte(`{"Password":"secret-\uD83D"}`),
+		[]byte(`{"Password":"secret-\uDE00"}`),
+		[]byte(`{"Password":"secret-\uD83D\u0041"}`),
+	}
+	for _, data := range invalid {
+		assert.Empty(t, (&StructuredConfigDetector{}).Scan(context.Background(), data))
+	}
+}
+
+func TestStructuredConfigDetector_SlashBearingSecretIsNotMistakenForPath(t *testing.T) {
+	data := []byte(`{"ClientSecret":"abc/def+ghi=9mN2"}`)
+	require.Len(t, (&StructuredConfigDetector{}).Scan(context.Background(), data), 1)
 }
 
 func TestStructuredConfigDetector_KeyNormalization(t *testing.T) {
@@ -313,13 +350,15 @@ func TestStructuredConfigDetector_MalformedAndNonJSONInputsDoNotPanic(t *testing
 
 func TestStructuredConfigDetector_LexerAndReferenceBoundaries(t *testing.T) {
 	t.Run("string bounds", func(t *testing.T) {
-		_, next, ok := scanJSONString([]byte(`"trailing\`), 0, 0)
+		_, next, ok, complete := scanJSONString(context.Background(), []byte(`"trailing\`), 0, 0)
 		assert.False(t, ok)
+		assert.True(t, complete)
 		assert.Equal(t, len(`"trailing\`), next)
 
 		overlong := []byte(`"` + strings.Repeat("a", maxStructuredStringLen+1) + `"`)
-		_, next, ok = scanJSONString(overlong, 0, 0)
+		_, next, ok, complete = scanJSONString(context.Background(), overlong, 0, 0)
 		assert.False(t, ok)
+		assert.True(t, complete)
 		assert.Equal(t, len(overlong), next)
 	})
 
@@ -354,6 +393,56 @@ func TestStructuredConfigDetector_LexerAndReferenceBoundaries(t *testing.T) {
 	})
 }
 
+type pollCancelContext struct {
+	done   chan struct{}
+	polls  int
+	closed bool
+}
+
+func newPollCancelContext() *pollCancelContext {
+	return &pollCancelContext{done: make(chan struct{})}
+}
+
+func (c *pollCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *pollCancelContext) Done() <-chan struct{} {
+	c.poll()
+	return c.done
+}
+
+func (c *pollCancelContext) Err() error {
+	c.poll()
+	if c.closed {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (c *pollCancelContext) Value(any) any { return nil }
+
+func (c *pollCancelContext) poll() {
+	c.polls++
+	if c.polls >= 2 && !c.closed {
+		close(c.done)
+		c.closed = true
+	}
+}
+
+func TestStructuredConfigDetector_LongTokenLoopsHonorCancellation(t *testing.T) {
+	inputs := map[string][]byte{
+		"string":        []byte(`"` + strings.Repeat("a", 1<<20)),
+		"line comment":  []byte(`//` + strings.Repeat("a", 1<<20)),
+		"block comment": []byte(`/*` + strings.Repeat("a", 1<<20)),
+		"bare scalar":   []byte(strings.Repeat("a", 1<<20)),
+	}
+	for name, data := range inputs {
+		t.Run(name, func(t *testing.T) {
+			_, _, complete := lexJSONLike(newPollCancelContext(), data)
+			assert.False(t, complete)
+		})
+	}
+}
+
 func TestStructuredConfigDetector_DeterministicSourceOrder(t *testing.T) {
 	data := []byte(`{"Z":{"Password":"fixture-z-9mN2pQ7r"},"A":{"ClientSecret":"fixture-a-9mN2pQ7r"}}`)
 	findings := (&StructuredConfigDetector{}).Scan(context.Background(), data)
@@ -367,6 +456,8 @@ func FuzzStructuredConfigDetector(f *testing.F) {
 	f.Add([]byte(`{"Password":"fixture-secret-9mN2pQ7r"}`))
 	f.Add([]byte(`{"SensitiveHeaders":["Password"]}`))
 	f.Add([]byte(`{"Password":"${PASSWORD}"}`))
+	f.Add([]byte(`{"Password":"ab\/cd-secret"}`))
+	f.Add([]byte(`{"Password":"secret-\uD83D\uDE00"}`))
 	f.Add([]byte(strings.Repeat("[", maxStructuredDepth+2) + `"Password"` + strings.Repeat("]", maxStructuredDepth+2)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 1<<20 {

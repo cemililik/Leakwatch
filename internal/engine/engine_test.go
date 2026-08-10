@@ -70,6 +70,12 @@ type fallbackMockDetector struct {
 
 func (d *fallbackMockDetector) FallbackOnSpecializedOverlap() bool { return true }
 
+type authorityMockDetector struct {
+	*mockDetector
+}
+
+func (d *authorityMockDetector) AuthoritativeOnOverlap() bool { return true }
+
 func (m *mixedEntropyDetector) EntropyGated(_ detector.RawFinding) bool {
 	return m.gateFinding
 }
@@ -142,7 +148,7 @@ func TestScan_SpecializedOverlapSuppressesOnlyFallbackFinding(t *testing.T) {
 			ByteEnd:    wholeEnd,
 		}},
 	}}
-	specialized := &mockDetector{
+	specialized := &authorityMockDetector{mockDetector: &mockDetector{
 		id:       "provider-specialized",
 		severity: finding.SeverityCritical,
 		findings: []detector.RawFinding{{
@@ -150,7 +156,7 @@ func TestScan_SpecializedOverlapSuppressesOnlyFallbackFinding(t *testing.T) {
 			Raw:        data[wholeStart:wholeEnd],
 			Redacted:   "provider-redacted",
 		}},
-	}
+	}}
 
 	eng := New(Config{Concurrency: 1, Detectors: []detector.Detector{fallback, specialized}, Clock: fixedClock})
 	result, err := eng.Scan(context.Background(), &mockSource{chunks: []source.Chunk{{
@@ -162,10 +168,41 @@ func TestScan_SpecializedOverlapSuppressesOnlyFallbackFinding(t *testing.T) {
 	assert.Equal(t, finding.SeverityCritical, result.Findings[0].Severity)
 }
 
+func TestScan_NonAuthorityOverlapCannotEraseFindingThroughSeverityFilter(t *testing.T) {
+	data := []byte(`{"Password":"fixture-secret-value"}`)
+	start := bytes.Index(data, []byte("fixture-secret-value"))
+	end := start + len("fixture-secret-value")
+	fallback := &fallbackMockDetector{mockDetector: &mockDetector{
+		id:       "structured-fallback",
+		severity: finding.SeverityHigh,
+		findings: []detector.RawFinding{{
+			DetectorID: "structured-fallback", Raw: data[start:end], Redacted: "fallback", ByteStart: start, ByteEnd: end,
+		}},
+	}}
+	customLike := &mockDetector{
+		id:       "custom-low",
+		severity: finding.SeverityLow,
+		findings: []detector.RawFinding{{
+			DetectorID: "custom-low", Raw: data[start:end], Redacted: "custom", ByteStart: start, ByteEnd: end,
+		}},
+	}
+
+	eng := New(Config{
+		Concurrency: 1,
+		Detectors:   []detector.Detector{fallback, customLike},
+		MinSeverity: finding.SeverityHigh,
+		Clock:       fixedClock,
+	})
+	result, err := eng.Scan(context.Background(), &mockSource{chunks: []source.Chunk{{Data: data}}})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "structured-fallback", result.Findings[0].DetectorID)
+}
+
 func TestSuppressFallbacksForSpecialized_PreservesDistinctLocations(t *testing.T) {
-	makePair := func(id string, start, end int) locatedVerifyPair {
+	makePair := func(id string, start, end int, severity finding.Severity) locatedVerifyPair {
 		return locatedVerifyPair{
-			pair:  verifier.VerifyPair{Finding: finding.Finding{DetectorID: id}},
+			pair:  verifier.VerifyPair{Finding: finding.Finding{DetectorID: id, Severity: severity}},
 			start: start,
 			end:   end,
 		}
@@ -179,26 +216,58 @@ func TestSuppressFallbacksForSpecialized_PreservesDistinctLocations(t *testing.T
 		{
 			name: "same value at distinct location remains",
 			fallbacks: []locatedVerifyPair{
-				makePair("fallback", 10, 20),
+				makePair("fallback", 10, 20, finding.SeverityHigh),
 			},
-			specialized: makePair("specialized", 30, 40),
-			want:        []string{"fallback"},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 30, 40, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
 		},
 		{
 			name: "specialized subset suppresses containing fallback",
 			fallbacks: []locatedVerifyPair{
-				makePair("fallback", 10, 40),
+				makePair("fallback", 10, 40, finding.SeverityHigh),
 			},
-			specialized: makePair("specialized", 20, 30),
-			want:        []string{},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 20, 30, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{},
 		},
 		{
 			name: "unknown fallback location is not suppressed",
 			fallbacks: []locatedVerifyPair{
-				makePair("fallback", -1, -1),
+				makePair("fallback", -1, -1, finding.SeverityHigh),
 			},
-			specialized: makePair("specialized", 10, 20),
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 10, 20, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
+		},
+		{
+			name: "overlapping non-authority cannot suppress",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20, finding.SeverityHigh),
+			},
+			specialized: makePair("custom", 10, 20, finding.SeverityLow),
 			want:        []string{"fallback"},
+		},
+		{
+			name: "lower-severity authority cannot suppress",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20, finding.SeverityHigh),
+			},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 10, 20, finding.SeverityLow)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
 		},
 	}
 

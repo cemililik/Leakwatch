@@ -16,6 +16,7 @@ func TestDetector_Metadata_ReturnsExpectedValues(t *testing.T) {
 	assert.Equal(t, "Shopify Access Token", d.Description())
 	assert.Equal(t, finding.SeverityCritical, d.Severity())
 	assert.NotEmpty(t, d.Keywords())
+	assert.True(t, d.AuthoritativeOnOverlap())
 }
 
 func TestDetector_Scan_MatchAndReject(t *testing.T) {
