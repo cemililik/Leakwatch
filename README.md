@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://hodetech.github.io/Leakwatch/"><img src="docs/assets/banner.png" alt="Leakwatch — detect, verify & report leaked secrets" width="100%"></a>
+<a href="https://hodetech.github.io/Leakwatch/"><img src="docs/assets/banner.svg" alt="Leakwatch — detect, verify & report leaked secrets" width="100%"></a>
 
 **Detect, verify & report leaked secrets across code, Git history, containers, and the cloud.**
 Open source (MIT) · single binary · built for CI.

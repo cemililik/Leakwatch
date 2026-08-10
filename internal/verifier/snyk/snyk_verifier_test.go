@@ -17,9 +17,9 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/self", r.URL.Path)
 		// The Snyk REST API requires the version as a query parameter.
-		assert.Equal(t, "2024-04-29", r.URL.Query().Get("version"))
+		assert.Equal(t, "2024-10-15", r.URL.Query().Get("version"))
 		assert.Equal(t, "token test-snyk-api-key-abcdef1234567890", r.Header.Get("Authorization"))
-		assert.Equal(t, "2024-04-29", r.Header.Get("Version"))
+		assert.Equal(t, "2024-10-15", r.Header.Get("Version"))
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -68,7 +68,7 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "Snyk API key is invalid or revoked", result.Message)
 }
 
-func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
+func TestVerify_ForbiddenKey_ReturnsVerifyError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"code":403,"message":"Forbidden"}`))
@@ -88,8 +88,35 @@ func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
 
 	result := v.Verify(context.Background(), raw)
 
-	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "Snyk API key is invalid or revoked", result.Message)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Contains(t, result.Message, "403")
+}
+
+func TestVerify_MalformedSuccessResponse_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing data", contentType: "application/vnd.api+json", body: `{}`},
+		{name: "null data", contentType: "application/json", body: `{"data":null}`},
+		{name: "wrong content type", contentType: "text/plain", body: `{"data":{}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

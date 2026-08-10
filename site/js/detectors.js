@@ -793,7 +793,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "sbp_[a-f0-9]{40}"
+        "src": "\\bsbp_[a-f0-9]{40}\\b"
       }
     ]
   },

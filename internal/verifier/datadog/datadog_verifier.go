@@ -5,6 +5,7 @@ package datadog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -58,22 +59,27 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 			URL:    apiURL + "/api/v1/validate",
 			Header: map[string]string{"DD-API-KEY": token},
 		},
-		InactiveStatuses: []int{http.StatusForbidden},
-		ActiveMessage:    "Datadog API key is active",
-		InactiveMessage:  "Datadog API key is invalid or revoked",
-		Decode:           decodeValidate,
+		InactiveStatuses:       []int{http.StatusForbidden},
+		ActiveMessage:          "Datadog API key is active",
+		InactiveMessage:        "Datadog API key is invalid or revoked",
+		Decode:                 decodeValidate,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
 }
 
 // decodeValidate downgrades a 200 response to inactive when valid=false.
 func decodeValidate(body io.Reader) (map[string]string, string, error) {
 	var resp struct {
-		Valid bool `json:"valid"`
+		Valid *bool `json:"valid"`
 	}
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {
 		return nil, "", err
 	}
-	if !resp.Valid {
+	if resp.Valid == nil {
+		return nil, "", fmt.Errorf("missing Datadog valid field")
+	}
+	if !*resp.Valid {
 		return nil, "Datadog API key is invalid", nil
 	}
 	return nil, "", nil

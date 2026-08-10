@@ -117,3 +117,29 @@ func TestVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "trusted GitHub API origin is not configured", result.Message)
 }
+
+func TestVerify_MissingIdentityOrWrongContentType_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing login", contentType: "application/json", body: `{}`},
+		{name: "wrong content type", contentType: "text/html", body: `{"login":"octocat"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
+}

@@ -26,8 +26,9 @@ var validInactiveContracts = map[InactiveStatusContract]struct{}{
 	InactiveAllRegionsHTTP401: {}, InactiveRegionAppropriateRejection: {},
 	InactiveProviderBodyRejection: {}, InactiveProviderSpecificRejection: {},
 	InactivePairedAuthRejection: {}, InactiveTrustedInstanceHTTP401: {},
-	InactiveTrustedIssuerHTTP401: {}, InactiveTrustedOriginRejection: {},
-	InactiveTrustedSiteRejection: {}, InactiveTrustedStoreRejection: {},
+	InactiveTrustedIssuerHTTP401: {}, InactiveTrustedOriginHTTP401: {},
+	InactiveTrustedOriginRejection: {},
+	InactiveTrustedSiteRejection:   {}, InactiveTrustedStoreRejection: {},
 	InactiveTypedAuthenticationError: {},
 }
 
@@ -90,7 +91,7 @@ func TestVerificationCapabilities_ReturnsDefensiveCopy(t *testing.T) {
 	first := VerificationCapabilities()
 	require.NotEmpty(t, first)
 	originalID := first[0].DetectorID
-	contextIndex, regionIndex := -1, -1
+	contextIndex, regionIndex, subtypeIndex := -1, -1, -1
 	for i := range first {
 		if contextIndex < 0 && len(first[i].RequiredContextFields) > 0 {
 			contextIndex = i
@@ -98,19 +99,52 @@ func TestVerificationCapabilities_ReturnsDefensiveCopy(t *testing.T) {
 		if regionIndex < 0 && len(first[i].ProviderRegions) > 0 {
 			regionIndex = i
 		}
+		if subtypeIndex < 0 && len(first[i].VerifiableSubtypes) > 0 && len(first[i].UnverifiableSubtypes) > 0 {
+			subtypeIndex = i
+		}
 	}
 	require.NotEqual(t, -1, contextIndex)
 	require.NotEqual(t, -1, regionIndex)
+	require.NotEqual(t, -1, subtypeIndex)
 	originalContext := first[contextIndex].RequiredContextFields[0]
 	originalRegion := first[regionIndex].ProviderRegions[0]
+	originalVerifiableSubtype := first[subtypeIndex].VerifiableSubtypes[0]
+	originalUnverifiableSubtype := first[subtypeIndex].UnverifiableSubtypes[0]
 	first[0].DetectorID = "mutated"
 	first[contextIndex].RequiredContextFields[0] = "mutated"
 	first[regionIndex].ProviderRegions[0] = "mutated"
+	first[subtypeIndex].VerifiableSubtypes[0] = "mutated"
+	first[subtypeIndex].UnverifiableSubtypes[0] = "mutated"
 
 	second := VerificationCapabilities()
 	assert.Equal(t, originalID, second[0].DetectorID)
 	assert.Equal(t, originalContext, second[contextIndex].RequiredContextFields[0])
 	assert.Equal(t, originalRegion, second[regionIndex].ProviderRegions[0])
+	assert.Equal(t, originalVerifiableSubtype, second[subtypeIndex].VerifiableSubtypes[0])
+	assert.Equal(t, originalUnverifiableSubtype, second[subtypeIndex].UnverifiableSubtypes[0])
+}
+
+func TestVerificationCapabilities_GitHubOAuthSubtypeContract(t *testing.T) {
+	for _, capability := range VerificationCapabilities() {
+		if capability.DetectorID != "github-oauth-token" {
+			continue
+		}
+		assert.Equal(t, []string{"gho", "ghu", "ghs"}, capability.VerifiableSubtypes)
+		assert.Equal(t, []string{"ghr"}, capability.UnverifiableSubtypes)
+		return
+	}
+	t.Fatal("github-oauth-token capability missing")
+}
+
+func TestVerificationCapabilities_SnykInactiveContractIsTrustedOrigin401Only(t *testing.T) {
+	for _, capability := range VerificationCapabilities() {
+		if capability.DetectorID != "snyk-api-key" {
+			continue
+		}
+		assert.Equal(t, InactiveTrustedOriginHTTP401, capability.InactiveStatusContract)
+		return
+	}
+	t.Fatal("snyk-api-key capability missing")
 }
 
 func TestVerificationCapabilities_CriticalContextContracts(t *testing.T) {
@@ -122,7 +156,7 @@ func TestVerificationCapabilities_CriticalContextContracts(t *testing.T) {
 		"aws-access-key-id":    {VerifierLive, []string{"raw_v2"}, nil},
 		"databricks-token":     {VerifierLive, []string{"host"}, nil},
 		"okta-api-token":       {VerifierLive, []string{"domain"}, nil},
-		"datadog-api-key":      {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"US1", "US3", "US5", "EU", "AP1", "AP2", "UK1", "FED"}},
+		"datadog-api-key":      {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"US1", "US3", "US5", "EU", "AP1", "AP2", "UK1", "US1-FED", "US2-FED"}},
 		"github-token":         {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"GitHub.com", "GHES"}},
 		"github-oauth-token":   {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"GitHub.com", "GHES"}},
 		"snyk-api-key":         {VerifierRequiresContext, []string{"trusted_api_origin"}, []string{"US1", "US2", "EU", "AU", "GOV", "PRIVATE"}},

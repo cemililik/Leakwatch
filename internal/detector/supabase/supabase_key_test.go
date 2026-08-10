@@ -55,6 +55,16 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 			expected: 0,
 		},
 		{
+			name:     "no match - suffix longer than forty hex characters",
+			input:    "sbp_" + suffix40 + "a",
+			expected: 0,
+		},
+		{
+			name:     "no match - token embedded in identifier",
+			input:    "prefix_sbp_" + suffix40,
+			expected: 0,
+		},
+		{
 			name:     "no match - plain text",
 			input:    "this is just normal text",
 			expected: 0,

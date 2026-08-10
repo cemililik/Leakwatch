@@ -28,6 +28,7 @@ const (
 // managedFiles are rewritten relative to the repository root.
 var managedFiles = []string{
 	"docs/assets/banner.html",
+	"docs/assets/banner.svg",
 	"site/assets/og.svg",
 }
 
@@ -83,7 +84,7 @@ func main() {
 	}
 
 	if len(stale) > 0 {
-		fail(fmt.Errorf("stat blocks out of date in: %s\nrun `go generate ./...` and re-render the PNGs",
+		fail(fmt.Errorf("stat blocks out of date in: %s\nrun `go generate ./...`",
 			strings.Join(stale, ", ")))
 	}
 }

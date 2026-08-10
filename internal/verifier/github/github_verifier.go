@@ -5,6 +5,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -60,9 +61,11 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				"Accept":        "application/vnd.github+json",
 			},
 		},
-		ActiveMessage:   "GitHub token is active",
-		InactiveMessage: "GitHub token is invalid or revoked",
-		Decode:          decodeUser,
+		ActiveMessage:          "GitHub token is active",
+		InactiveMessage:        "GitHub token is invalid or revoked",
+		Decode:                 decodeUser,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
 }
 
@@ -80,6 +83,9 @@ func decodeUser(body io.Reader) (map[string]string, string, error) {
 	}
 	if err := json.NewDecoder(body).Decode(&user); err != nil {
 		return nil, "", err
+	}
+	if user.Login == "" {
+		return nil, "", fmt.Errorf("missing GitHub user login")
 	}
 	return map[string]string{"login": user.Login}, "", nil
 }

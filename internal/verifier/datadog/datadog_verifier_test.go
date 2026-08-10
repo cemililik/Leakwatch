@@ -66,6 +66,33 @@ func TestVerify_InvalidKey_200False_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "Datadog API key is invalid", result.Message)
 }
 
+func TestVerify_MalformedSuccessResponse_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing valid", contentType: "application/json", body: `{}`},
+		{name: "null body", contentType: "application/json", body: `null`},
+		{name: "wrong content type", contentType: "text/plain", body: `{"valid":true}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("synthetic-datadog-key")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
+}
+
 func TestVerify_InvalidKey_403_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

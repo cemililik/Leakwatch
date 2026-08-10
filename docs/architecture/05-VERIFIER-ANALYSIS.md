@@ -27,7 +27,7 @@ All counts are verified by inspecting `detector.Register(` and `verifier.Registe
 All current verifiers follow a consistent pattern:
 
 - **AWS** (`aws-access-key-id`): Uses STS `GetCallerIdentity` with the key pair (requires both Access Key ID in `Raw` and Secret Access Key in `RawV2`). Returns account/ARN metadata on success.
-- **GitHub** (`github-token`, `github-oauth-token`): GitHub.com and GHES share token formats. Production has no operator-controlled trusted origin yet, so both return `unverified` without a request; a validated trusted origin is required before `/user` may be called.
+- **GitHub** (`github-token`, `github-oauth-token`): GitHub.com and GHES share token formats. Production has no operator-controlled trusted origin yet, so both return `unverified` without a request. With a trusted origin, PAT/`gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and `ghr_` remains unverified because exchange would rotate it.
 - **Slack** (`slack-token`): HTTP POST to `https://slack.com/api/auth.test` with `Bearer` token. Returns team/user metadata on success.
 
 ## 2. Verifier Classification
@@ -87,7 +87,7 @@ These require either extracting additional information from the finding context 
 | 6 | `shopify-access-token` | `https://{shop}.myshopify.com/admin/api/2024-01/shop.json` | GET | `X-Shopify-Access-Token: {token}` | Medium | P1 | Requires `ExtraData["store_domain"]`, which the detector does not currently populate — findings resolve to `unverified` until this wiring lands (tracked in the ROADMAP) |
 | 7 | `okta-api-token` | `https://{domain}/api/v1/users/me` | GET | `SSWS {token}` | Medium | P1 | Domain is captured by the detector from a co-located org domain in `ExtraData["domain"]`; without it, the result is `unverified` (never a false invalid) |
 | 8 | `databricks-token` | `https://{workspace-host}/api/2.0/preview/scim/v2/Me` | GET | `Bearer {token}` | Medium | P1 | Workspace host captured by the detector in `ExtraData["host"]` (a Databricks PAT only authenticates against its own workspace host); without it, the result is `unverified` |
-| 9 | `github-oauth-token` | Trusted GitHub.com/GHES `/user` | GET | `Bearer {token}` | Context required | P1 | GHES issues the same OAuth/App token prefixes; current production registration returns `unverified` without a trusted origin |
+| 9 | `github-oauth-token` | Trusted GitHub.com/GHES subtype-specific identity endpoint | GET | `Bearer {token}` | Context required | P1 | `gho_`/`ghu_` → `/user`; `ghs_` → `/installation/repositories`; `ghr_` is never exchanged because verification would rotate it; current production registration returns `unverified` without a trusted origin |
 | 10 | `auth0-management-token` | `https://{tenant}/api/v2/` | GET | `Bearer {token}` | Medium | P2 | JWT-format; the tenant host is decoded from the token's own `iss` claim (unverified signature — used only for routing, not trust), falling back to `unverified` when the claim is absent |
 | 11 | `datadog-api-key` | Trusted Datadog site `/api/v1/validate` | GET | `DD-API-KEY: {key}` | Context required | P2 | Keys are site-bound across official regions; current production registration returns `unverified` without a trusted site |
 | 12 | `terraform-cloud-token` | `https://app.terraform.io/api/v2/account/details` | GET | `Bearer {token}` | Medium | P2 | Standard Bearer auth; some tokens may be for Terraform Enterprise (custom URL) |

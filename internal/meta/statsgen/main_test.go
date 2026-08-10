@@ -8,9 +8,9 @@ import (
 
 // TestManagedAssetsUpToDate fails when a marketing asset's stat block no longer
 // matches internal/meta — i.e. a count was bumped but `go generate ./...` was
-// not run. It validates the HTML/SVG sources; the derived PNG is visually
-// reviewed separately. It runs as part of `go test ./...`, so CI catches source
-// drift without a dedicated workflow step.
+// not run. README renders the directly managed SVG, so the visible banner is
+// covered without a browser-dependent rasterization step. It runs as part of
+// `go test ./...`, so CI catches source drift without a dedicated workflow step.
 func TestManagedAssetsUpToDate(t *testing.T) {
 	root, err := repoRoot()
 	if err != nil {
@@ -26,7 +26,7 @@ func TestManagedAssetsUpToDate(t *testing.T) {
 			t.Fatalf("%s: %v", rel, err)
 		}
 		if updated != string(orig) {
-			t.Errorf("%s stat block is stale; run `go generate ./...` and re-render its PNG", rel)
+			t.Errorf("%s stat block is stale; run `go generate ./...`", rel)
 		}
 	}
 }

@@ -4,6 +4,9 @@ package snyk
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -17,7 +20,7 @@ const detectorID = "snyk-api-key"
 
 // apiVersion is the Snyk REST API version. The REST API mandates a
 // ?version=YYYY-MM-DD query parameter; omitting it makes the API respond 400.
-const apiVersion = "2024-04-29"
+const apiVersion = "2024-10-15"
 
 // Verifier checks whether a Snyk API key is active by calling the
 // Snyk REST API. It NEVER logs or persists raw key values.
@@ -67,8 +70,24 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				"Version":       apiVersion,
 			},
 		},
-		InactiveStatuses: []int{http.StatusUnauthorized, http.StatusForbidden},
-		ActiveMessage:    "Snyk API key is active",
-		InactiveMessage:  "Snyk API key is invalid or revoked",
+		InactiveStatuses:       []int{http.StatusUnauthorized},
+		ActiveMessage:          "Snyk API key is active",
+		InactiveMessage:        "Snyk API key is invalid or revoked",
+		Decode:                 decodeSelf,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
+}
+
+func decodeSelf(body io.Reader) (map[string]string, string, error) {
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		return nil, "", err
+	}
+	if len(response.Data) == 0 || string(response.Data) == "null" {
+		return nil, "", fmt.Errorf("missing Snyk self data")
+	}
+	return nil, "", nil
 }

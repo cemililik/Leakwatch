@@ -49,6 +49,7 @@ const (
 	InactivePairedAuthRejection        InactiveStatusContract = "paired_credential_auth_rejection"
 	InactiveTrustedInstanceHTTP401     InactiveStatusContract = "trusted_instance_http_401"
 	InactiveTrustedIssuerHTTP401       InactiveStatusContract = "trusted_issuer_http_401"
+	InactiveTrustedOriginHTTP401       InactiveStatusContract = "trusted_origin_http_401"
 	InactiveTrustedOriginRejection     InactiveStatusContract = "trusted_origin_auth_rejection"
 	InactiveTrustedSiteRejection       InactiveStatusContract = "trusted_site_auth_rejection"
 	InactiveTrustedStoreRejection      InactiveStatusContract = "trusted_store_auth_rejection"
@@ -66,6 +67,8 @@ type VerificationCapability struct {
 	VerifierKind           VerifierKind
 	RequiredContextFields  []string
 	ProviderRegions        []string
+	VerifiableSubtypes     []string
+	UnverifiableSubtypes   []string
 	EndpointClass          EndpointClass
 	InactiveStatusContract InactiveStatusContract
 	LastContractReviewedAt string
@@ -87,7 +90,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "coinbase-api-key", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
 	{DetectorID: "database-connection-string", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "databricks-token", VerifierKind: VerifierLive, RequiredContextFields: []string{"host"}, EndpointClass: "detector_context_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
-	{DetectorID: "datadog-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"US1", "US3", "US5", "EU", "AP1", "AP2", "UK1", "FED"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_site_auth_rejection", LastContractReviewedAt: "2026-08-11"},
+	{DetectorID: "datadog-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"US1", "US3", "US5", "EU", "AP1", "AP2", "UK1", "US1-FED", "US2-FED"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_site_auth_rejection", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "deepseek-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "digitalocean-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "discord-bot-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
@@ -98,7 +101,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "ftp-credentials", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "gcp-service-account", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
 	{DetectorID: "generic-api-key", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
-	{DetectorID: "github-oauth-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
+	{DetectorID: "github-oauth-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, VerifiableSubtypes: []string{"gho", "ghu", "ghs"}, UnverifiableSubtypes: []string{"ghr"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "github-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "gitlab-pat", VerifierKind: VerifierLive, EndpointClass: "detector_context_or_public_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "grafana-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_instance_origin"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_instance_http_401", LastContractReviewedAt: "2026-08-10"},
@@ -129,7 +132,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "slack-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "provider_body_auth_rejection"},
 	{DetectorID: "slack-webhook", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "snowflake-credentials", VerifierKind: VerifierFormatOnly, EndpointClass: "offline_format", InactiveStatusContract: "none"},
-	{DetectorID: "snyk-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"US1", "US2", "EU", "AU", "GOV", "PRIVATE"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_auth_rejection", LastContractReviewedAt: "2026-08-11"},
+	{DetectorID: "snyk-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"US1", "US2", "EU", "AU", "GOV", "PRIVATE"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "sonarcloud-token", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "stripe-api-key-live", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
 	{DetectorID: "stripe-api-key-test", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},
@@ -150,6 +153,8 @@ func VerificationCapabilities() []VerificationCapability {
 		out[i] = capability
 		out[i].RequiredContextFields = append([]string(nil), capability.RequiredContextFields...)
 		out[i].ProviderRegions = append([]string(nil), capability.ProviderRegions...)
+		out[i].VerifiableSubtypes = append([]string(nil), capability.VerifiableSubtypes...)
+		out[i].UnverifiableSubtypes = append([]string(nil), capability.UnverifiableSubtypes...)
 	}
 	return out
 }

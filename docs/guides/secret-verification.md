@@ -129,9 +129,9 @@ These implementations are registered, but a bare detector finding cannot safely 
 | Twilio API Key | `twilio-api-key` | Account SID plus the API Key Secret paired with the detected `SK...` Key SID; the normal detector finding does not supply the paired secret |
 | Shopify Access Token | `shopify-access-token` | Trusted issuing store domain; the normal detector finding emits only the token, so no request is made without operator context |
 | GitHub PAT | `github-token` | Trusted GitHub.com or GHES API origin; both issuers use `ghp_`/`github_pat_`, so the registered production verifier makes no request without explicit issuer trust |
-| GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; GHES also issues `gho_`/`ghu_`/`ghs_`/`ghr_` credentials, so the production verifier makes no request without explicit issuer trust |
-| Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/FED; the production verifier makes no request without it |
-| Snyk API Key | `snyk-api-key` | Trusted Snyk regional, government, or private API origin; the production verifier makes no request without it |
+| GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; `gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and side-effectful `ghr_` refresh-token exchange is never attempted |
+| Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED; the production verifier makes no request without it |
+| Snyk API Key | `snyk-api-key` | Trusted Snyk regional, government, or private API origin; only `401` is inactive, while permission/plan `403` remains `verify_error`; production makes no request without a trusted origin |
 
 ### Format Validation (6 detectors)
 
@@ -230,10 +230,10 @@ If the Secret Access Key is not found alongside the Access Key ID, verification 
 GitHub.com and GitHub Enterprise Server (GHES) issue credentials with the same token prefixes. A token alone therefore cannot identify its issuer. Leakwatch sends a `GET /user` request only after a trusted GitHub API origin has been selected by operator-controlled configuration. The current production registration does not yet expose that configuration, so GitHub token findings return `unverified` without making a network request.
 
 - **Detector IDs:** `github-token`, `github-oauth-token`
-- **API endpoint:** trusted GitHub.com or GHES API origin plus `/user`
+- **API endpoints:** trusted GitHub.com or GHES API origin plus `/user` for PAT/`gho_`/`ghu_`; `/installation/repositories` for `ghs_`
 - **Headers:** `Authorization: Bearer <token>`, `User-Agent: leakwatch-verifier`
 
-This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. When trusted-origin wiring is available, only an authentication rejection from that selected issuer may produce `verified_inactive`.
+This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. Refresh tokens (`ghr_`) are detected but never exchanged because exchange rotates them; they remain `unverified` even when an issuer is trusted. When trusted-origin wiring is available, only an authentication rejection from the selected issuer and subtype-appropriate endpoint may produce `verified_inactive`.
 
 ### What It Reveals
 

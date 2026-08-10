@@ -65,9 +65,9 @@ Bu implementasyonlar registry'de kayıtlıdır; ancak çıplak bir dedektör bul
 | `twilio-api-key` | Account SID ve tespit edilen `SK...` Key SID ile eşleşen API Key Secret | Dedektör yakındaki Account SID'yi bulabilir ancak eşleşen API Key Secret'ı üretmez; normal bulgular `unverified` kalır. |
 | `shopify-access-token` | Token'ı yayınlayan mağaza domain'i | Mevcut dedektör yalnızca token'ı üretir; güvenilir mağaza domain'i olmadan verifier istek yapmaz ve `unverified` döndürür. |
 | `github-token` | Güvenilir GitHub.com veya GitHub Enterprise Server API origin'i | GHES, GitHub.com ile aynı `ghp_` ve `github_pat_` biçimlerini kullanır. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
-| `github-oauth-token` | Güvenilir GitHub.com veya GitHub Enterprise Server API origin'i | GHES ayrıca `gho_`, `ghu_`, `ghs_` ve `ghr_` kimlik bilgileri yayınlar. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
-| `datadog-api-key` | Güvenilir Datadog site/API origin'i | Datadog anahtarları US1/US3/US5/EU/AP1/AP2/UK1/FED sitelerine bağlıdır. Mevcut üretim kaydında güvenilir site yoktur; istek yapmaz ve `unverified` döndürür. |
-| `snyk-api-key` | Güvenilir Snyk bölgesel, kamu veya özel API origin'i | Yanlış Snyk bölgesinin anahtarı reddetmesi iptal kanıtı değildir. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
+| `github-oauth-token` | Güvenilir GitHub.com veya GitHub Enterprise Server API origin'i | Güvenilir issuer ile `gho_`/`ghu_`, `/user`; `ghs_` ise installation repositories endpoint'ini kullanır. `ghr_` refresh token'ı exchange sırasında döndürüldüğü için istek yapılmadan `unverified` kalır. Mevcut üretim kaydında güvenilir origin yoktur; tüm alt türler istek yapmadan `unverified` döner. |
+| `datadog-api-key` | Güvenilir Datadog site/API origin'i | Datadog anahtarları US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED sitelerine bağlıdır. Mevcut üretim kaydında güvenilir site yoktur; istek yapmaz ve `unverified` döndürür. |
+| `snyk-api-key` | Güvenilir Snyk bölgesel, kamu veya özel API origin'i | Yanlış Snyk bölgesinin anahtarı reddetmesi iptal kanıtı değildir. Güvenilir origin üzerinde yalnızca `401` inaktifliği kanıtlar; `403`, geçerli token'ın API planı veya endpoint izni yetersiz olabileceğinden `verify_error` kalır. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
 
 ## Yalnızca format doğrulaması (6 dedektör türü)
 

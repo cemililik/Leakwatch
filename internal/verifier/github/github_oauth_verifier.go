@@ -5,8 +5,10 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -50,29 +52,57 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw detector.RawFinding) fin
 		}
 	}
 	apiURL := v.apiURL
+	path := "/user"
+	decode := decodeUser
+	switch {
+	case strings.HasPrefix(token, "gho_"), strings.HasPrefix(token, "ghu_"):
+		// OAuth and GitHub App user access tokens authenticate a user.
+	case strings.HasPrefix(token, "ghs_"):
+		// Installation tokens do not support GET /user. This endpoint is a
+		// read-only identity-safe probe and works even when the installation has
+		// access to zero repositories.
+		path = "/installation/repositories"
+		decode = decodeInstallationRepositories
+	case strings.HasPrefix(token, "ghr_"):
+		// Verifying a refresh token requires exchanging it, which rotates the
+		// token. A verifier must never create that side effect.
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "GitHub refresh token cannot be verified without rotating it",
+		}
+	default:
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "unsupported GitHub token subtype",
+		}
+	}
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "github oauth",
 		Request: httpx.Request{
-			URL: apiURL + "/user",
+			URL: apiURL + path,
 			Header: map[string]string{
 				"Authorization": "Bearer " + token,
 				"Accept":        "application/vnd.github+json",
 			},
 		},
-		ActiveMessage:   "GitHub OAuth token is active",
-		InactiveMessage: "GitHub OAuth token is invalid or revoked",
-		Decode:          decodeOAuthUser,
+		ActiveMessage:          "GitHub OAuth or installation token is active",
+		InactiveMessage:        "GitHub OAuth or installation token is invalid or revoked",
+		Decode:                 decode,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
 }
 
-// decodeOAuthUser parses the GitHub API response for a valid OAuth token.
-func decodeOAuthUser(body io.Reader) (map[string]string, string, error) {
-	var user struct {
-		Login string `json:"login"`
+func decodeInstallationRepositories(body io.Reader) (map[string]string, string, error) {
+	var response struct {
+		TotalCount *int `json:"total_count"`
 	}
-	if err := json.NewDecoder(body).Decode(&user); err != nil {
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
 		return nil, "", err
 	}
-	return map[string]string{"login": user.Login}, "", nil
+	if response.TotalCount == nil {
+		return nil, "", fmt.Errorf("missing GitHub installation repository count")
+	}
+	return map[string]string{"token_subtype": "ghs"}, "", nil
 }

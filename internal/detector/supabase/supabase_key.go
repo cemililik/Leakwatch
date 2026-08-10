@@ -9,7 +9,7 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var supabaseKeyPattern = regexp.MustCompile(`sbp_[a-f0-9]{40}`)
+var supabaseKeyPattern = regexp.MustCompile(`\bsbp_[a-f0-9]{40}\b`)
 
 // Detector detects legacy Supabase Management API personal access tokens. The
 // stable detector ID predates this naming correction; sbp_ is not a project
