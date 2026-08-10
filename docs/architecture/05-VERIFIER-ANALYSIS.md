@@ -47,7 +47,7 @@ These detectors can be verified with a single HTTP request using only the detect
 | 6 | `sendgrid-api-key` | `https://api.sendgrid.com/v3/scopes` | GET | `Bearer {token}` | Easy | P0 | Needs no specific scope, so a restricted-permission key is never misread as revoked; 401 = invalid, other unexpected statuses fall through to a verify error rather than a false negative |
 | 7 | `digitalocean-token` | `https://api.digitalocean.com/v2/account` | GET | `Bearer {token}` | Easy | P0 | Returns account info |
 | 8 | `cloudflare-api-token` | `https://api.cloudflare.com/client/v4/user/tokens/verify` | GET | `Bearer {token}` | Easy | P0 | Dedicated verify endpoint |
-| 9 | `newrelic-api-key` | `https://api.newrelic.com/v2/users.json` | GET | `Api-Key: {token}` | Easy | P0 | Returns user list; 401 if invalid |
+| 9 | `newrelic-api-key` | US/EU NerdGraph `/graphql` | POST (read-only query) | `Api-Key: {token}` | Regional fallback | P0 | `requestContext { userId }`; inactive only when every documented region returns 401; 403 is inconclusive |
 | 10 | `heroku-api-key` | `https://api.heroku.com/account` | GET | `Bearer {token}` | Easy | P0 | Requires `Accept: application/vnd.heroku+json; version=3` |
 | 11 | `notion-token` | `https://api.notion.com/v1/users/me` | GET | `Bearer {token}` | Easy | P0 | Requires `Notion-Version` header |
 | 12 | `telegram-bot-token` | `https://api.telegram.org/bot{token}/getMe` | GET | Token in URL path | Easy | P0 | Token is part of URL, not header |
@@ -202,7 +202,7 @@ Implementation: Use `golang.org/x/time/rate` (already a dependency) with a per-v
 ### Timeout Handling
 
 - All verifier HTTP requests MUST respect the `context.Context` deadline.
-- Default per-request timeout: **10 seconds**.
+- Default per-finding verification-operation timeout: **10 seconds**, including bounded provider-region fallback.
 - If the verification API is unreachable or times out, return `StatusVerifyError` (not `StatusVerifiedInactive`). A network failure does not mean the secret is invalid.
 - Implement exponential backoff for transient failures (429, 503) with a maximum of 2 retries.
 

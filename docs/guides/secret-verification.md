@@ -111,7 +111,7 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
 | **Monitoring** | Grafana service-account token | `grafana-api-key` | Issuing instance `/api/access-control/user/permissions`; pass the trusted HTTPS origin with `--grafana-instance-url`. Without it Leakwatch makes no request and returns `unverified`; repository config and finding metadata cannot set this target. |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
-| **Monitoring** | New Relic API Key | `newrelic-api-key` | `api.newrelic.com/v2/users.json` |
+| **Monitoring** | New Relic user API key | `newrelic-api-key` | Read-only NerdGraph `requestContext { userId }`; fixed official US/EU endpoints with bounded fallback. Only all-region 401 is inactive; 403 and partial failures remain inconclusive. |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
 | **Security** | Snyk API Key | `snyk-api-key` | `api.snyk.io/rest/self` |
 | **Security** | Twilio API Key | `twilio-api-key` | `api.twilio.com/2010-04-01/Accounts.json` (Basic auth paired as API Key SID + API Key Secret, not Account SID + Auth Token) |
@@ -291,7 +291,7 @@ The verification engine manages API calls carefully to avoid overwhelming provid
 |-----------|---------|-------------|
 | Concurrency | 4 workers | Number of parallel verification goroutines |
 | Rate limit | 10 req/sec | Maximum verification requests per second (token bucket) |
-| Timeout | 10 seconds | Per-request timeout for each verification API call |
+| Timeout | 10 seconds | Per-finding timeout for the complete verification operation, including bounded provider-region fallback |
 
 ### How It Works
 
@@ -299,7 +299,7 @@ The verification engine uses a worker pool pattern with a shared rate limiter:
 
 1. **Worker pool** -- A fixed number of goroutines (default 4) process verification jobs concurrently.
 2. **Token bucket rate limiter** -- Before each API call, the worker acquires a token from a `golang.org/x/time/rate` limiter. If the bucket is empty, the worker waits until a token becomes available.
-3. **Per-request timeout** -- Each verification call has its own context timeout (default 10s). If the provider does not respond in time, the finding is marked `verify_error`.
+3. **Per-finding timeout** -- Each finding's complete verification operation has one context timeout (default 10s), including bounded provider-region fallback. If the provider does not respond in time, the finding is marked `verify_error`.
 4. **Context cancellation** -- If the parent context is cancelled (e.g., the user presses Ctrl+C), all pending verifications are abandoned gracefully.
 
 ### Configuration

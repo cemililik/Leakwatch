@@ -14,7 +14,8 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-// DefaultTimeout is the default per-request verification timeout.
+// DefaultTimeout is the default timeout for one finding's complete verification
+// operation, including any bounded provider-region fallback requests.
 const DefaultTimeout = 10 * time.Second
 
 // DefaultConcurrency is the default number of concurrent verification workers.
@@ -23,12 +24,17 @@ const DefaultConcurrency = 4
 // DefaultRateLimit is the default maximum verification requests per second.
 const DefaultRateLimit = 10.0
 
+// maxVerificationRequestBudget prevents a buggy verifier from reserving an
+// unbounded number of limiter tokens for one finding.
+const maxVerificationRequestBudget = 8
+
 // Config holds the verification engine configuration.
 type Config struct {
 	// Enabled controls whether verification is performed at all.
 	Enabled bool
 
-	// Timeout is the maximum duration for a single verification request.
+	// Timeout is the maximum duration for one finding's complete verification
+	// operation, including bounded provider-region fallback requests.
 	Timeout time.Duration
 
 	// Concurrency is the number of concurrent verification workers.
@@ -55,7 +61,7 @@ func DefaultConfig() Config {
 
 // Engine orchestrates concurrent secret verification with rate limiting.
 // It maps findings to the appropriate verifier by detector ID and applies
-// per-request timeouts and global rate limiting.
+// per-finding operation timeouts and global rate limiting.
 type Engine struct {
 	verifiers map[string]Verifier
 
@@ -74,6 +80,10 @@ type Engine struct {
 	timeout     time.Duration
 	concurrency int
 	enabled     bool
+}
+
+type requestBudgeter interface {
+	VerificationRequestBudget() int
 }
 
 // NewEngine creates a verification engine from the given config and verifier list.
@@ -216,12 +226,20 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 
 	// Apply rate limiting: the per-detector limiter first (independent budget
 	// per provider), then the global ceiling shared across all providers.
-	if res := e.waitRateLimit(ctx, pair.Raw.DetectorID); res != nil {
+	requestBudget, err := verificationRequestBudget(v)
+	if err != nil {
+		f.Verification = finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: "verifier declared an invalid request budget",
+		}
+		return f
+	}
+	if res := e.waitRateLimit(ctx, pair.Raw.DetectorID, requestBudget); res != nil {
 		f.Verification = *res
 		return f
 	}
 
-	// Apply per-request timeout.
+	// Apply one timeout to the complete provider verification operation.
 	verifyCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
@@ -247,21 +265,38 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 // admit a request, honoring ctx cancellation. It returns a non-nil result
 // describing a StatusVerifyError when the context is cancelled while waiting,
 // and nil when the request may proceed.
-func (e *Engine) waitRateLimit(ctx context.Context, detectorID string) *finding.VerificationResult {
-	for _, l := range []*rate.Limiter{e.limiterFor(detectorID), e.rateLimiter} {
-		if err := l.Wait(ctx); err != nil {
-			slog.Warn(
-				"rate limiter wait cancelled",
-				"detector_id", detectorID,
-				"error", err,
-			)
-			return &finding.VerificationResult{
-				Status:  finding.StatusVerifyError,
-				Message: fmt.Sprintf("rate limiter cancelled: %v", err),
+
+func (e *Engine) waitRateLimit(ctx context.Context, detectorID string, budget int) *finding.VerificationResult {
+	for request := 0; request < budget; request++ {
+		for _, l := range []*rate.Limiter{e.limiterFor(detectorID), e.rateLimiter} {
+			if err := l.Wait(ctx); err != nil {
+				slog.Warn(
+					"rate limiter wait cancelled",
+					"detector_id", detectorID,
+					"error", err,
+				)
+				return &finding.VerificationResult{
+					Status:  finding.StatusVerifyError,
+					Message: fmt.Sprintf("rate limiter cancelled: %v", err),
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func verificationRequestBudget(v Verifier) (int, error) {
+	budget := 1
+	if provider, ok := v.(requestBudgeter); ok {
+		budget = provider.VerificationRequestBudget()
+	}
+	if budget < 1 {
+		return 1, nil
+	}
+	if budget > maxVerificationRequestBudget {
+		return 0, fmt.Errorf("verification request budget %d exceeds maximum %d", budget, maxVerificationRequestBudget)
+	}
+	return budget, nil
 }
 
 // safeVerify invokes v.Verify with panic recovery so that a single misbehaving

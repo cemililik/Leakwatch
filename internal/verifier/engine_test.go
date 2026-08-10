@@ -14,10 +14,11 @@ import (
 
 // testVerifier is a configurable mock verifier for engine tests.
 type testVerifier struct {
-	detectorID string
-	result     finding.VerificationResult
-	delay      time.Duration
-	callCount  atomic.Int64
+	detectorID    string
+	result        finding.VerificationResult
+	delay         time.Duration
+	callCount     atomic.Int64
+	requestBudget int
 
 	// inFlight tracks how many Verify calls are currently executing, and
 	// maxInFlight records the peak. They let tests assert genuine concurrency
@@ -27,6 +28,8 @@ type testVerifier struct {
 }
 
 func (v *testVerifier) Type() string { return v.detectorID }
+
+func (v *testVerifier) VerificationRequestBudget() int { return v.requestBudget }
 
 func (v *testVerifier) Verify(ctx context.Context, _ detector.RawFinding) finding.VerificationResult {
 	v.callCount.Add(1)
@@ -123,6 +126,61 @@ func TestVerifyAll_MatchingVerifier_UpdatesFinding(t *testing.T) {
 	assert.Equal(t, finding.StatusVerifiedActive, results[0].Verification.Status)
 	assert.Equal(t, "token is active", results[0].Verification.Message)
 	assert.Equal(t, int64(1), v.callCount.Load())
+}
+
+func TestVerifyAll_ReservesDeclaredRequestBudget(t *testing.T) {
+	v := &testVerifier{
+		detectorID:    "regional-provider",
+		requestBudget: 2,
+		result:        finding.VerificationResult{Status: finding.StatusVerifiedActive},
+	}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1}, []Verifier{v})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	results := engine.VerifyAll(ctx, []VerifyPair{makePair("regional-provider", "regional****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
+	assert.Zero(t, v.callCount.Load(), "verifier must not run until its full bounded request budget is admitted")
+}
+
+func TestVerificationRequestBudget_IsBounded(t *testing.T) {
+	tests := []struct {
+		name    string
+		budget  int
+		want    int
+		wantErr bool
+	}{
+		{name: "zero uses one", budget: 0, want: 1},
+		{name: "negative uses one", budget: -1, want: 1},
+		{name: "declared budget", budget: 2, want: 2},
+		{name: "excessive fails closed", budget: 1000, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := verificationRequestBudget(&testVerifier{requestBudget: tc.budget})
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestVerifyAll_ExcessiveRequestBudgetFailsClosed(t *testing.T) {
+	v := &testVerifier{
+		detectorID:    "unsafe-regional-provider",
+		requestBudget: maxVerificationRequestBudget + 1,
+		result:        finding.VerificationResult{Status: finding.StatusVerifiedActive},
+	}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 100}, []Verifier{v})
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(v.detectorID, "unsafe****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
+	assert.Zero(t, v.callCount.Load(), "verifier with an unsafe request budget must not run")
 }
 
 func TestVerifyAll_NoMatchingVerifier_LeavesUnverified(t *testing.T) {

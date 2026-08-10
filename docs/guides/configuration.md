@@ -97,7 +97,8 @@ verification:
   # Default: true
   enabled: true
 
-  # Maximum timeout for a single verification request.
+  # Maximum timeout for one finding's verification operation, including any
+  # bounded provider-region fallback requests.
   # Go duration format: "10s", "30s", "1m"
   # Default: 10s
   timeout: 10s
@@ -210,7 +211,7 @@ flowchart LR
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable verification |
-| `timeout` | duration | `10s` | Timeout per request |
+| `timeout` | duration | `10s` | Timeout for one finding's complete verification operation, including bounded provider-region fallback |
 | `concurrency` | int | `4` | Number of parallel verifications |
 | `rate-limit` | float64 | `10.0` | Max verification API requests per second (must be positive when enabled) |
 
