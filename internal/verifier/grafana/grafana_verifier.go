@@ -1,10 +1,11 @@
-// Package grafana provides a verifier for Grafana API keys.
-// It uses the Grafana HTTP API GET /api/user endpoint to check key validity.
+// Package grafana provides a verifier for Grafana service-account tokens.
+// It uses the issuing instance's read-only access-control permissions endpoint.
 package grafana
 
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -14,13 +15,15 @@ import (
 
 const detectorID = "grafana-api-key"
 
-// defaultAPIURL is the base URL for the Grafana Cloud API.
-const defaultAPIURL = "https://grafana.com"
+const permissionsPath = "/api/access-control/user/permissions"
 
-// Verifier checks whether a Grafana API key is active by calling the
-// Grafana Cloud API. It NEVER logs or persists raw key values.
+// Verifier checks whether a Grafana service-account token is active against
+// its issuing instance. It NEVER logs or persists raw token values.
 type Verifier struct {
-	// apiURL overrides the Grafana Cloud API base URL (for testing).
+	// apiURL is a trusted Grafana instance base URL supplied by the application.
+	// It is intentionally unexported and currently used only by hermetic tests;
+	// repository content and RawFinding.ExtraData must never populate it because
+	// doing so would turn verification into an SSRF primitive.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
@@ -35,25 +38,34 @@ func (v *Verifier) Type() string {
 	return detectorID
 }
 
-// Verify checks if the detected Grafana API key is valid/active.
+// Verify checks if the detected Grafana service-account token is valid/active.
 // Raw contains the key value.
 //
-// This calls GET /api/user, matching docs/architecture/05-VERIFIER-ANALYSIS.md
-// and docs/guides/secret-verification.md (the code previously called the
-// nonexistent /api/viewer path). Note the caveat those docs already record:
-// glsa_ tokens are Grafana Cloud service-account tokens scoped to the stack
-// that issued them, so a token minted on a self-hosted or per-stack instance
-// will not authenticate against the central grafana.com host used here —
-// there is currently no per-instance URL captured for this detector to
-// verify against, the same limitation documented for Okta.
+// Grafana service-account tokens are scoped to the instance that issued them.
+// The detector does not currently have a trusted instance URL, so the
+// production-registered verifier deliberately performs no request and returns
+// unverified. In particular, it never trusts an arbitrary URL extracted from
+// repository content or falls back to the central grafana.com portal.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "empty token",
+		}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "Grafana instance URL required",
+		}
+	}
+	apiURL := strings.TrimRight(v.apiURL, "/")
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "grafana",
 		Request: httpx.Request{
-			URL:    apiURL + "/api/user",
+			URL:    apiURL + permissionsPath,
 			Header: map[string]string{"Authorization": "Bearer " + token},
 		},
 		ActiveMessage:   "Grafana API key is active",

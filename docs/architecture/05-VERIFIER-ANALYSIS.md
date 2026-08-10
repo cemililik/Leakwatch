@@ -63,7 +63,7 @@ These detectors can be verified with a single HTTP request using only the detect
 | 22 | `snyk-api-key` | `https://api.snyk.io/rest/self?version=2024-04-22` | GET | `Authorization: token {key}` | Easy | P1 | Returns user info |
 | 23 | `figma-pat` | `https://api.figma.com/v1/me` | GET | `X-FIGMA-TOKEN: {token}` | Easy | P1 | Returns user info |
 | 24 | `postmark-server-token` | `https://api.postmarkapp.com/server` | GET | `X-Postmark-Server-Token: {token}` | Easy | P1 | Returns server info |
-| 25 | `grafana-api-key` | `https://grafana.com/api/user` | GET | `Bearer {token}` | Easy | P1 | Note: instance URL needed for self-hosted |
+| 25 | `grafana-api-key` | Issuing instance `/api/access-control/user/permissions` | GET | `Bearer {token}` | Context required | P1 | No trusted instance URL: no request, `unverified`; repository-provided URLs are never trusted |
 | 26 | `doppler-token` | `https://api.doppler.com/v3/me` | GET | `Bearer {token}` | Easy | P1 | Returns user/workplace info |
 | 27 | `sonarcloud-token` | `https://sonarcloud.io/api/authentication/validate` | GET | Basic `{token}:` | Easy | P2 | Dedicated validate endpoint; Basic auth with token as username |
 | 28 | `pypi-api-token` | `https://upload.pypi.org/legacy/` | POST | Basic `__token__:{token}` | Easy | P2 | Check via upload endpoint returns 400 (active) vs 403 (invalid) |

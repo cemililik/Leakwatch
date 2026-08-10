@@ -109,7 +109,7 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
 | **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
 | **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
-| **Monitoring** | Grafana API Key | `grafana-api-key` | `grafana.com/api/user` -- self-hosted/per-stack tokens are not verifiable against this central host (no per-instance URL is captured) |
+| **Monitoring** | Grafana service-account token | `grafana-api-key` | Issuing instance `/api/access-control/user/permissions`; without a trusted instance URL Leakwatch makes no request and returns `unverified` |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
 | **Monitoring** | New Relic API Key | `newrelic-api-key` | `api.newrelic.com/v2/users.json` |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
