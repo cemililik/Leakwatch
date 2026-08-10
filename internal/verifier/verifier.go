@@ -27,7 +27,7 @@ type Verifier interface {
 // verification request. A RequestGatedVerifier must call it immediately before
 // every provider request and must return a non-nil result without sending the
 // request when admission fails.
-type RequestGate func(ctx context.Context) *finding.VerificationResult
+type RequestGate func() *finding.VerificationResult
 
 // RequestGatedVerifier is implemented by verifiers that may issue more than
 // one provider request for a finding (for example a bounded regional fallback).

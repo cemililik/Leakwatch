@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
@@ -63,12 +65,18 @@ func (v *testVerifier) Verify(ctx context.Context, _ detector.RawFinding) findin
 type gatedTestVerifier struct {
 	*testVerifier
 	requestBudget int
+	budgetPanic   string
 	attempts      int
 	admittedMu    sync.Mutex
 	admittedAt    []time.Time
 }
 
-func (v *gatedTestVerifier) VerificationRequestBudget() int { return v.requestBudget }
+func (v *gatedTestVerifier) VerificationRequestBudget() int {
+	if v.budgetPanic != "" {
+		panic(v.budgetPanic)
+	}
+	return v.requestBudget
+}
 
 func (v *gatedTestVerifier) VerifyWithRequestGate(
 	ctx context.Context,
@@ -76,7 +84,7 @@ func (v *gatedTestVerifier) VerifyWithRequestGate(
 	gate RequestGate,
 ) finding.VerificationResult {
 	for attempt := 0; attempt < v.attempts; attempt++ {
-		if rejection := gate(ctx); rejection != nil {
+		if rejection := gate(); rejection != nil {
 			return *rejection
 		}
 		v.admittedMu.Lock()
@@ -98,6 +106,14 @@ type panicVerifier struct {
 	detectorID string
 	callCount  atomic.Int64
 	panicRaw   bool
+}
+
+type panicTypeVerifier struct{ payload string }
+
+func (v *panicTypeVerifier) Type() string { panic(v.payload) }
+
+func (v *panicTypeVerifier) Verify(context.Context, detector.RawFinding) finding.VerificationResult {
+	return finding.VerificationResult{Status: finding.StatusVerifiedActive}
 }
 
 func (v *panicVerifier) Type() string { return v.detectorID }
@@ -266,6 +282,38 @@ func TestVerifyAll_GatedVerifierCannotExceedDeclaredBudget(t *testing.T) {
 	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
 	assert.Zero(t, base.callCount.Load(), "verifier result must not run after it exceeds the request budget")
 	assert.Len(t, v.admissionTimes(), 2)
+}
+
+func TestVerifyAll_RequestBudgetPanicFailsClosedWithoutPayload(t *testing.T) {
+	const canary = "budget-panic-secret-canary-7rQ2mN9p"
+	base := &testVerifier{detectorID: "panic-budget-provider", result: finding.VerificationResult{Status: finding.StatusVerifiedActive}}
+	v := &gatedTestVerifier{testVerifier: base, requestBudget: 2, attempts: 1, budgetPanic: canary}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 100}, []Verifier{v})
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(v.detectorID, "budget****canary")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusVerifyError, results[0].Verification.Status)
+	assert.NotContains(t, results[0].Verification.Message, canary)
+	assert.Zero(t, base.callCount.Load())
+}
+
+func TestWaitRateLimit_GlobalFailureRefundsUnusedProviderReservation(t *testing.T) {
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1}, nil)
+	require.True(t, engine.rateLimiter.Allow(), "consume the global limiter's initial token")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	rejection := engine.waitRateLimit(ctx, "refunded-provider")
+	require.NotNil(t, rejection)
+	assert.Equal(t, finding.StatusVerifyError, rejection.Status)
+
+	// Replace only the global limiter with an immediately available one. The
+	// second admission can succeed under a short deadline only if the failed
+	// combined reservation refunded the provider token.
+	engine.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer secondCancel()
+	assert.Nil(t, engine.waitRateLimit(secondCtx, "refunded-provider"))
 }
 
 func TestVerifyAll_NoMatchingVerifier_LeavesUnverified(t *testing.T) {
@@ -550,4 +598,22 @@ func TestNewEngine_DefaultValues_AppliedForZeroConfig(t *testing.T) {
 	assert.Equal(t, DefaultConcurrency, engine.concurrency)
 	assert.Equal(t, DefaultTimeout, engine.timeout)
 	assert.True(t, engine.enabled)
+}
+
+func TestNewEngine_InvalidVerifierEntriesCannotCrashConstruction(t *testing.T) {
+	const canary = "type-panic-secret-canary-5pN8qR2m"
+	var typedNil *testVerifier
+	var engine *Engine
+	assert.NotPanics(t, func() {
+		engine = NewEngine(Config{Enabled: true}, []Verifier{
+			typedNil,
+			&panicTypeVerifier{payload: canary},
+		})
+	})
+	require.NotNil(t, engine)
+	assert.Empty(t, engine.verifiers)
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair("invalid-provider", "invalid****key")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusUnverified, results[0].Verification.Status)
 }

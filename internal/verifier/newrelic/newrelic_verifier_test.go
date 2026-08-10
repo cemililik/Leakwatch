@@ -163,7 +163,7 @@ func TestVerifyWithRequestGate_AdmitsOnlyActualRegionalRequests(t *testing.T) {
 			}
 
 			v := &Verifier{endpoints: endpoints, httpClient: servers[0].Client()}
-			result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func(context.Context) *finding.VerificationResult {
+			result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func() *finding.VerificationResult {
 				gates.Add(1)
 				return nil
 			})
@@ -192,7 +192,7 @@ func TestVerifyWithRequestGate_RejectionPreventsFallbackRequest(t *testing.T) {
 		httpClient: servers[0].Client(),
 	}
 	var gates atomic.Int32
-	result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func(context.Context) *finding.VerificationResult {
+	result := v.VerifyWithRequestGate(context.Background(), rawFinding(testToken), func() *finding.VerificationResult {
 		if gates.Add(1) == 2 {
 			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "rate limiter cancelled"}
 		}

@@ -102,7 +102,7 @@ func (v *Verifier) verify(
 			}
 		}
 		if gate != nil {
-			if rejection := gate(ctx); rejection != nil {
+			if rejection := gate(); rejection != nil {
 				return *rejection
 			}
 		}

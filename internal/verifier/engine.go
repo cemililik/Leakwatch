@@ -96,17 +96,26 @@ func NewEngine(cfg Config, vs []Verifier) *Engine {
 	}
 
 	vMap := make(map[string]Verifier, len(vs))
-	for _, v := range vs {
-		if _, exists := vMap[v.Type()]; exists {
+	for i, v := range vs {
+		if isNilVerifier(v) {
+			slog.Error("nil verifier ignored while building verification engine", "index", i)
+			continue
+		}
+		id, ok := safeVerifierType(v)
+		if !ok || id == "" {
+			slog.Error("invalid verifier ignored while building verification engine", "index", i)
+			continue
+		}
+		if _, exists := vMap[id]; exists {
 			// Unlike registry.Register (which panics), NewEngine tolerates a
 			// duplicate Type() but must not lose it silently: warn so the
 			// capability loss is observable.
 			slog.Warn(
 				"duplicate verifier type; later verifier overwrites earlier",
-				"verifier_type", v.Type(),
+				"verifier_type", id,
 			)
 		}
-		vMap[v.Type()] = v
+		vMap[id] = v
 	}
 
 	burst := int(cfg.RateLimit)
@@ -124,6 +133,18 @@ func NewEngine(cfg Config, vs []Verifier) *Engine {
 		concurrency: cfg.Concurrency,
 		enabled:     cfg.Enabled,
 	}
+}
+
+func safeVerifierType(v Verifier) (id string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			// Type implementations are not allowed to crash engine construction;
+			// the recovered value may contain sensitive data and is discarded.
+			id = ""
+			ok = false
+		}
+	}()
+	return v.Type(), true
 }
 
 // limiterFor returns the per-detector rate limiter for detectorID, creating it
@@ -233,7 +254,7 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 
 	var result finding.VerificationResult
 	if gated, ok := v.(RequestGatedVerifier); ok {
-		requestBudget, err := verificationRequestBudget(gated)
+		requestBudget, err := safeVerificationRequestBudget(gated)
 		if err != nil {
 			f.Verification = finding.VerificationResult{
 				Status:  finding.StatusVerifyError,
@@ -245,7 +266,7 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 			verifyCtx,
 			gated,
 			pair.Raw,
-			e.boundedRequestGate(pair.Raw.DetectorID, requestBudget),
+			e.boundedRequestGate(verifyCtx, pair.Raw.DetectorID, requestBudget),
 		)
 	} else {
 		// Single-request verifiers are admitted immediately before Verify. Their
@@ -273,20 +294,69 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 // and nil when the request may proceed.
 
 func (e *Engine) waitRateLimit(ctx context.Context, detectorID string) *finding.VerificationResult {
-	for _, l := range []*rate.Limiter{e.limiterFor(detectorID), e.rateLimiter} {
-		if err := l.Wait(ctx); err != nil {
-			slog.Warn(
-				"rate limiter wait cancelled",
-				"detector_id", detectorID,
-				"error", err,
-			)
-			return &finding.VerificationResult{
-				Status:  finding.StatusVerifyError,
-				Message: fmt.Sprintf("rate limiter cancelled: %v", err),
-			}
+	if err := ctx.Err(); err != nil {
+		return rateLimitFailure(detectorID, err)
+	}
+
+	now := time.Now()
+	reservations := []*rate.Reservation{
+		e.limiterFor(detectorID).ReserveN(now, 1),
+		e.rateLimiter.ReserveN(now, 1),
+	}
+	for _, reservation := range reservations {
+		if !reservation.OK() {
+			cancelRateReservations(reservations, now)
+			return rateLimitFailure(detectorID, fmt.Errorf("rate limiter reservation rejected"))
 		}
 	}
-	return nil
+
+	delay := time.Duration(0)
+	for _, reservation := range reservations {
+		if candidate := reservation.DelayFrom(now); candidate > delay {
+			delay = candidate
+		}
+	}
+	if deadline, ok := ctx.Deadline(); ok && now.Add(delay).After(deadline) {
+		cancelRateReservations(reservations, now)
+		return rateLimitFailure(detectorID, context.DeadlineExceeded)
+	}
+	if delay <= 0 {
+		if err := ctx.Err(); err != nil {
+			cancelRateReservations(reservations, now)
+			return rateLimitFailure(detectorID, err)
+		}
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		cancelRateReservations(reservations, time.Now())
+		return rateLimitFailure(detectorID, ctx.Err())
+	}
+}
+
+func cancelRateReservations(reservations []*rate.Reservation, at time.Time) {
+	for _, reservation := range reservations {
+		if reservation != nil && reservation.OK() {
+			reservation.CancelAt(at)
+		}
+	}
+}
+
+func rateLimitFailure(detectorID string, err error) *finding.VerificationResult {
+	slog.Warn(
+		"rate limiter wait cancelled",
+		"detector_id", detectorID,
+		"error", err,
+	)
+	return &finding.VerificationResult{
+		Status:  finding.StatusVerifyError,
+		Message: fmt.Sprintf("rate limiter cancelled: %v", err),
+	}
 }
 
 func verificationRequestBudget(v RequestGatedVerifier) (int, error) {
@@ -300,14 +370,26 @@ func verificationRequestBudget(v RequestGatedVerifier) (int, error) {
 	return budget, nil
 }
 
+func safeVerificationRequestBudget(v RequestGatedVerifier) (budget int, err error) {
+	defer func() {
+		if recover() != nil {
+			// The recovered value can contain a raw credential. Do not format,
+			// return, or log it.
+			budget = 0
+			err = fmt.Errorf("verifier panicked while declaring its request budget")
+		}
+	}()
+	return verificationRequestBudget(v)
+}
+
 // boundedRequestGate returns a concurrency-safe admission gate tied to one
 // finding. Each successful invocation consumes one unit of the verifier's
 // declared request budget and one token from both the provider and global
 // limiters at the actual request send point.
-func (e *Engine) boundedRequestGate(detectorID string, budget int) RequestGate {
+func (e *Engine) boundedRequestGate(ctx context.Context, detectorID string, budget int) RequestGate {
 	var mu sync.Mutex
 	used := 0
-	return func(ctx context.Context) *finding.VerificationResult {
+	return func() *finding.VerificationResult {
 		mu.Lock()
 		if used >= budget {
 			mu.Unlock()
