@@ -124,10 +124,13 @@ func isEntropyBased(d detector.Detector) bool {
 }
 
 func isEntropyGated(d detector.Detector, raw detector.RawFinding) bool {
+	if !isEntropyBased(d) {
+		return false
+	}
 	if policy, ok := d.(findingEntropyGate); ok {
 		return policy.EntropyGated(raw)
 	}
-	return isEntropyBased(d)
+	return true
 }
 
 // Scan scans the given source and returns results.
@@ -374,12 +377,7 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			}
 
 			for _, raw := range rawFindings {
-				var offset int
-				if offsetCursor != nil {
-					offset = nextMatchOffset(chunk.Data, raw.Raw, offsetCursor)
-				} else {
-					offset = firstMatchOffset(chunk.Data, raw.Raw)
-				}
+				offset := rawFindingOffset(chunk.Data, raw, offsetCursor)
 
 				// Resolve the 1-based line number and its text in a single pass;
 				// both the ID/line derivation and the inline-ignore check reuse it
@@ -415,6 +413,21 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			}
 		}
 	}
+}
+
+// rawFindingOffset returns a detector-provided exact byte span when it is
+// internally consistent, otherwise it preserves the legacy raw-value search.
+// Exact spans prevent a same-valued decoy earlier in the chunk from stealing a
+// finding's line number or inline-ignore decision.
+func rawFindingOffset(data []byte, raw detector.RawFinding, cursor map[string]int) int {
+	if raw.ByteEnd > raw.ByteStart && raw.ByteStart >= 0 && raw.ByteEnd <= len(data) &&
+		bytes.Equal(data[raw.ByteStart:raw.ByteEnd], raw.Raw) {
+		return raw.ByteStart
+	}
+	if cursor != nil {
+		return nextMatchOffset(data, raw.Raw, cursor)
+	}
+	return firstMatchOffset(data, raw.Raw)
 }
 
 // firstMatchOffset returns the byte offset of the first occurrence of raw in

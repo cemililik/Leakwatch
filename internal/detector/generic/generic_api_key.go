@@ -61,7 +61,7 @@ func (d *APIKeyDetector) EntropyBased() bool { return true }
 // keys are commonly 32-character hex values whose Shannon entropy can be below
 // the generic threshold. Other generic assignments retain both entropy gates.
 func (d *APIKeyDetector) EntropyGated(raw detector.RawFinding) bool {
-	return !isAPISIXKeyName(raw.ExtraData["key_name"])
+	return raw.ExtraData["key_context"] != "apisix"
 }
 
 // minEntropy is the Shannon entropy floor a candidate value must clear to be
@@ -110,7 +110,7 @@ func (d *APIKeyDetector) Scan(_ context.Context, data []byte) []detector.RawFind
 			continue
 		}
 
-		strongContext := isAPISIXKeyName(string(key))
+		strongContext := hasStrongAPISIXContext(data, string(key), match[10], match[11])
 
 		// Skip low-entropy values — unlikely to be real secrets
 		if !strongContext && entropy.Calculate(value) < minEntropy {
@@ -125,17 +125,22 @@ func (d *APIKeyDetector) Scan(_ context.Context, data []byte) []detector.RawFind
 		}
 
 		// Skip placeholder/example values
-		if isPlaceholder(value) {
+		if isPlaceholder(value) || isDegenerateValue(value) || isBareReference(value) {
 			continue
+		}
+
+		extraData := map[string]string{"key_name": string(key)}
+		if strongContext {
+			extraData["key_context"] = "apisix"
 		}
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        value,
 			Redacted:   detector.RedactBytes(value),
-			ExtraData: map[string]string{
-				"key_name": string(key),
-			},
+			ExtraData:  extraData,
+			ByteStart:  match[10],
+			ByteEnd:    match[11],
 		})
 	}
 	return findings
@@ -170,14 +175,62 @@ func hasAssignmentBoundary(data []byte, end int) bool {
 	}
 }
 
-func isAPISIXKeyName(key string) bool {
+func hasStrongAPISIXContext(data []byte, key string, valueStart, valueEnd int) bool {
 	canonical := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(key))
 	switch canonical {
-	case "xapikey", "xapisixkey", "apisixkey", "apisixadminkey":
+	case "xapisixkey", "apisixkey", "apisixadminkey":
 		return true
+	case "xapikey":
+		// Context must be independent of the candidate value itself. Otherwise a
+		// generic X-API-KEY whose value happens to contain "apisix" could disable
+		// its own false-positive gates.
+		return containsASCIIFold(data[:valueStart], []byte("apisix")) ||
+			containsASCIIFold(data[valueEnd:], []byte("apisix"))
 	default:
 		return false
 	}
+}
+
+func containsASCIIFold(data, needle []byte) bool {
+	for i := 0; i+len(needle) <= len(data); i++ {
+		if bytes.EqualFold(data[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDegenerateValue(value []byte) bool {
+	if len(value) == 0 {
+		return true
+	}
+	for _, b := range value[1:] {
+		if b != value[0] {
+			return false
+		}
+	}
+	return true
+}
+
+// isBareReference rejects identifier-like indirections such as
+// APISIX_ADMIN_KEY. Braced environment/secret-manager references are already
+// outside the candidate character class; this covers the common unbraced form
+// without suppressing mixed-case or punctuation-rich real credentials.
+func isBareReference(value []byte) bool {
+	hasSeparator := false
+	hasLetter := false
+	for _, b := range value {
+		switch {
+		case b >= 'A' && b <= 'Z':
+			hasLetter = true
+		case b >= '0' && b <= '9':
+		case b == '_':
+			hasSeparator = true
+		default:
+			return false
+		}
+	}
+	return hasLetter && hasSeparator
 }
 
 // placeholderPatterns are common dummy values used in example configs. Every

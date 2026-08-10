@@ -68,6 +68,22 @@ func (m *mixedEntropyDetector) EntropyGated(_ detector.RawFinding) bool {
 	return m.gateFinding
 }
 
+// policyOnlyDetector intentionally has EntropyGated but not EntropyBased. It
+// proves that a coincidentally named method cannot opt a structural detector
+// into the entropy floor.
+type policyOnlyDetector struct {
+	findings []detector.RawFinding
+}
+
+func (d *policyOnlyDetector) ID() string                            { return "policy-only" }
+func (d *policyOnlyDetector) Description() string                   { return "policy only" }
+func (d *policyOnlyDetector) Keywords() []string                    { return nil }
+func (d *policyOnlyDetector) Severity() finding.Severity            { return finding.SeverityMedium }
+func (d *policyOnlyDetector) EntropyGated(detector.RawFinding) bool { return true }
+func (d *policyOnlyDetector) Scan(_ context.Context, _ []byte) []detector.RawFinding {
+	return d.findings
+}
+
 var fixedClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 // --- Tests ---
@@ -343,6 +359,27 @@ func TestScan_RepeatedSecret_DistinctLinesAndIDs(t *testing.T) {
 	lines := []int{result.Findings[0].SourceMetadata.Line, result.Findings[1].SourceMetadata.Line}
 	assert.ElementsMatch(t, []int{1, 3}, lines, "the two occurrences must report distinct lines")
 	assert.NotEqual(t, result.Findings[0].ID, result.Findings[1].ID, "distinct lines must yield distinct IDs")
+}
+
+func TestRawFindingOffset_ExactSpanWinsAndInvalidSpanFallsBack(t *testing.T) {
+	rawBytes := []byte("SAME_SECRET")
+	data := []byte("SAME_SECRET decoy\nSAME_SECRET actual\n")
+	second := bytes.LastIndex(data, rawBytes)
+
+	exact := detector.RawFinding{
+		Raw:       rawBytes,
+		ByteStart: second,
+		ByteEnd:   second + len(rawBytes),
+	}
+	assert.Equal(t, second, rawFindingOffset(data, exact, nil))
+
+	invalid := exact
+	invalid.ByteEnd-- // span bytes no longer equal Raw
+	assert.Equal(t, 0, rawFindingOffset(data, invalid, nil), "invalid detector spans must use the legacy safe fallback")
+
+	outOfBounds := exact
+	outOfBounds.ByteEnd = len(data) + 1
+	assert.Equal(t, 0, rawFindingOffset(data, outOfBounds, nil))
 }
 
 func TestScan_RepeatedSecret_FirstIgnored_SecondReported(t *testing.T) {
@@ -818,6 +855,47 @@ func TestScan_EntropyGating_PerFindingPolicy(t *testing.T) {
 			result, err := eng.Scan(context.Background(), src)
 			require.NoError(t, err)
 			assert.Len(t, result.Findings, tc.wantCount)
+		})
+	}
+}
+
+func TestScan_EntropyGating_PerFindingPolicyCannotOptInStructuralDetector(t *testing.T) {
+	low := "01234567012345670123456701234567"
+	src := &mockSource{chunks: []source.Chunk{{
+		Data:           []byte(low),
+		SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"},
+	}}}
+	raw := detector.RawFinding{DetectorID: "structural", Raw: []byte(low), Redacted: "r***"}
+
+	tests := []struct {
+		name string
+		det  detector.Detector
+	}{
+		{
+			name: "EntropyBased false",
+			det: &mixedEntropyDetector{
+				mockDetector: &mockDetector{id: "mixed-structural", findings: []detector.RawFinding{raw}},
+				gateFinding:  true,
+			},
+		},
+		{
+			name: "EntropyBased absent",
+			det:  &policyOnlyDetector{findings: []detector.RawFinding{raw}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := New(Config{
+				Concurrency:      1,
+				Detectors:        []detector.Detector{tc.det},
+				EnableEntropy:    true,
+				EntropyThreshold: 4.0,
+				Clock:            fixedClock,
+			})
+			result, err := eng.Scan(context.Background(), src)
+			require.NoError(t, err)
+			assert.Len(t, result.Findings, 1, "per-finding refinement must never opt a structural detector into gating")
 		})
 	}
 }

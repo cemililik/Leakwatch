@@ -33,4 +33,11 @@ type RawFinding struct {
 	RawV2      []byte
 	Redacted   string
 	ExtraData  map[string]string
+	// ByteStart and ByteEnd identify Raw's exact half-open byte span in the
+	// scanned chunk. A zero/zero span means "not provided" for backward
+	// compatibility. The engine validates both bounds and bytes before trusting
+	// the span, then falls back to legacy raw-value searching when absent or
+	// invalid.
+	ByteStart int
+	ByteEnd   int
 }
