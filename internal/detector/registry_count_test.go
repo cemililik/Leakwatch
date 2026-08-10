@@ -7,9 +7,9 @@ package detector_test
 // (each subpackage imports the detector package under test).
 //
 // Counts measured from the codebase:
-//   - 64 detectors registered at compile time via init() (detector.Register).
-//   - 59 packages register statically; azure, github, slack, stripe and
-//     discord each register two detectors (59 + 5 = 64).
+//   - 65 detectors registered at compile time via init() (detector.Register).
+//   - 59 packages register statically; azure, github, slack, stripe, discord
+//     and generic each register two detectors (59 + 6 = 65).
 //   - 60 detector subpackages exist in total; the 60th, "custom", registers its
 //     rules at runtime (detector.RegisterIfAbsent) and is therefore not part of
 //     the compile-time count.
@@ -55,7 +55,7 @@ import (
 	_ "github.com/HodeTech/leakwatch/internal/detector/figma"        // register figma detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/ftp"          // register ftp credentials detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/gcp"          // register gcp service-account detector
-	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic api-key detector
+	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic API-key and structured-config detectors
 	_ "github.com/HodeTech/leakwatch/internal/detector/github"       // register github detectors (pat + oauth)
 	_ "github.com/HodeTech/leakwatch/internal/detector/gitlab"       // register gitlab detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/grafana"      // register grafana detector
@@ -124,11 +124,12 @@ func TestAll_RegisteredDetectorCount_MatchesGolden(t *testing.T) {
 // "custom", and "testutil" detector packages because the in-browser regex
 // scanner cannot reproduce their detection faithfully (see
 // tools/site-build/detectors.go detectorSkipDirs). Of those, only the generic
-// detector is registered at compile time, so it is the sole expected omission;
-// "custom" registers at runtime (not in detector.All()) and "testutil" is a test
-// helper, not a detector.
+// package is registered at compile time with two detectors, so both are
+// expected omissions; "custom" registers at runtime (not in detector.All())
+// and "testutil" is a test helper, not a detector.
 var playgroundSkippedIDs = map[string]bool{
-	"generic-api-key": true,
+	"generic-api-key":          true,
+	"structured-config-secret": true,
 }
 
 // TestDetectorsJS_CoversEveryRegisteredDetector guards the generated playground

@@ -214,6 +214,25 @@ func init() {
 		},
 	})
 
+	Register("structured-config-secret", finding.Remediation{
+		Title: "Move Configuration Secret to Secure Storage",
+		Steps: []string{
+			"Treat the exposed value as compromised and rotate or revoke it at its owning service.",
+			"Remove the plaintext value from the configuration file and its version history.",
+			"Store the replacement in a secrets manager or the platform's protected local-secret mechanism.",
+			"Reference the protected value through environment or secret-manager indirection.",
+			"Redeploy affected services and verify that the old credential no longer works.",
+		},
+		DocURL:  "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
+		Urgency: "immediate",
+		Checklist: []string{
+			"Review repository, artifact, backup, log, and chat history for additional copies.",
+			"Audit the owning service for unauthorized use of the exposed credential.",
+			checkNotifySecurityTeam,
+			checkScanCodebaseForKey,
+		},
+	})
+
 	Register("openai-api-key", finding.Remediation{
 		Title: "Rotate OpenAI API Key",
 		Steps: []string{

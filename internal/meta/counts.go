@@ -22,7 +22,7 @@ package meta
 const (
 	// Detectors is the number of compile-time registered secret detectors;
 	// it must equal len(detector.All()).
-	Detectors = 64
+	Detectors = 65
 
 	// Verifiers is the number of registered verifiers; it must equal
 	// len(verifier.All()).
