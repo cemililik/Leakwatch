@@ -28,7 +28,7 @@ flowchart LR
         E4[Custom Rules]
     end
 
-    subgraph Verifiers["Verification (45 direct-live + 3 context-required + 6 format-only)"]
+    subgraph Verifiers["Verification (41 direct-live + 7 context-required + 6 format-only)"]
         V1[AWS STS]
         V2[GitHub API]
         V3[Slack API]

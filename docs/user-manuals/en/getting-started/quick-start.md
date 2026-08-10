@@ -62,7 +62,7 @@ Each row in the table (or object in JSON) represents one finding. The key fields
 | **STATUS** | Verification outcome: `verified_active`, `verified_inactive`, `unverified`, or `verify_error` |
 | **REMEDIATION** | Rotation/revocation guidance title, or `-` when `--remediation` was not passed |
 
-A `verified_active` status means Leakwatch confirmed the secret is still live by making a read-only API call to the provider. **Treat every `verified_active` finding as an open incident.**
+A `verified_active` status means Leakwatch confirmed the secret is still live with a contract-valid, non-destructive provider check. **Treat every `verified_active` finding as an open incident.**
 
 ## Common scan options
 

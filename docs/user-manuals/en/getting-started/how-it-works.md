@@ -92,7 +92,7 @@ After detection completes for all chunks, the engine passes findings to a separa
 - Makes only **read-only, non-destructive** calls to the provider (e.g. `sts:GetCallerIdentity` for AWS keys).
 - Marks each finding with one of four statuses: `verified_active`, `verified_inactive`, `unverified`, or `verify_error`.
 
-Leakwatch registers **54 verifier implementations** for 65 detector types (83.1%), but registry presence is not live coverage: 45 are direct-live, 3 require trusted or companion context, and 6 are format-only. The remaining 11 types have no verifier. Context-required, format-only, and no-verifier findings remain `unverified` unless their stated live-verification preconditions are met.
+Leakwatch registers **54 verifier implementations** for 65 detector types (83.1%), but registry presence is not live coverage: 41 are direct-live, 7 require trusted issuer/region/companion context, and 6 are format-only. The remaining 11 types have no verifier. Context-required, format-only, and no-verifier findings remain `unverified` unless their stated live-verification preconditions are met.
 
 Pass `--no-verify` to skip this stage entirely — useful for fast, offline scans.
 

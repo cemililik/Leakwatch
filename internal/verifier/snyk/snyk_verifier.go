@@ -15,9 +15,6 @@ import (
 
 const detectorID = "snyk-api-key"
 
-// defaultAPIURL is the base URL for the Snyk API.
-const defaultAPIURL = "https://api.snyk.io"
-
 // apiVersion is the Snyk REST API version. The REST API mandates a
 // ?version=YYYY-MM-DD query parameter; omitting it makes the API respond 400.
 const apiVersion = "2024-04-29"
@@ -25,7 +22,9 @@ const apiVersion = "2024-04-29"
 // Verifier checks whether a Snyk API key is active by calling the
 // Snyk REST API. It NEVER logs or persists raw key values.
 type Verifier struct {
-	// apiURL overrides the Snyk API base URL (for testing).
+	// apiURL is reserved for a validated, trusted Snyk API origin. The
+	// production registration leaves it empty until operator wiring exists;
+	// tests inject a local server.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
@@ -44,7 +43,16 @@ func (v *Verifier) Type() string {
 // Raw contains the key value.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted Snyk API origin is not configured",
+		}
+	}
+	apiURL := v.apiURL
 
 	// The Snyk REST API requires the version as a query parameter; without it
 	// the live API returns 400. The Version header is kept for compatibility.

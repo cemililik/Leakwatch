@@ -111,7 +111,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | `redis-connection-string` | Redis Bağlantı Dizesi | Critical |
 | `rabbitmq-connection-string` | RabbitMQ Bağlantı Dizesi | Critical |
 | `snowflake-credentials` | Snowflake Bağlantı Kimlik Bilgileri | Critical |
-| `supabase-service-key` | Supabase Servis Rolü Anahtarı | Critical |
+| `supabase-service-key` | Supabase Kişisel Erişim Token'ı (`sbp_`; kararlı eski dedektör ID'si) | Critical |
 
 ## Kimlik ve Erişim
 

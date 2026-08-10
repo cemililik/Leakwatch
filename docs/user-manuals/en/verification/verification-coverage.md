@@ -5,17 +5,15 @@ description: "Which of the 65 built-in detectors are live-verified, context-requ
 
 # Verification Coverage
 
-Leakwatch ships **65 built-in detectors** and 54 registered verifier implementations. Registry presence is not the same as live capability: **45** detectors can make a live check in the normal production path, **3** require trusted operator or companion context, **6** perform offline format validation only, and **11** have no verifier. This page maps every detector to its actual verification contract.
+Leakwatch ships **65 built-in detectors** and 54 registered verifier implementations. Registry presence is not the same as live capability: **41** detectors can make a live check in the normal production path, **7** require trusted operator or companion context, **6** perform offline format validation only, and **11** have no verifier. This page maps every detector to its actual verification contract.
 
-## Live-verified (45 detector types)
+## Live-verified (41 detector types)
 
-For these types, Leakwatch makes a controlled, read-only API call to the provider and returns `verified_active` or `verified_inactive`. No data is created or modified; the call uses the minimum endpoint needed to confirm identity.
+For these types, Leakwatch can make a controlled, non-destructive provider check in the normal production path. A contract-valid success can return `verified_active`; only a definitive authentication rejection on the correct issuer can return `verified_inactive`. Ambiguous responses remain `verify_error`.
 
 | Detector type | Provider |
 |--------------|---------|
 | `aws-access-key-id` | AWS STS (`GetCallerIdentity`) |
-| `github-token` | GitHub REST API |
-| `github-oauth-token` | GitHub REST API |
 | `gitlab-pat` | GitLab REST API (targets a self-hosted GitLab host when one is captured alongside the token; falls back to gitlab.com) |
 | `slack-token` | Slack Web API |
 | `openai-api-key` | OpenAI API |
@@ -42,8 +40,6 @@ For these types, Leakwatch makes a controlled, read-only API call to the provide
 | `sentry-token` | Sentry API |
 | `pagerduty-api-key` | PagerDuty API |
 | `newrelic-api-key` | New Relic NerdGraph (bounded official US/EU fallback; inactive only when both regions return `401`) |
-| `datadog-api-key` | Datadog API |
-| `snyk-api-key` | Snyk API |
 | `doppler-token` | Doppler API |
 | `launchdarkly-sdk-key` | LaunchDarkly API |
 | `sonarcloud-token` | SonarCloud API |
@@ -55,11 +51,11 @@ For these types, Leakwatch makes a controlled, read-only API call to the provide
 | `auth0-management-token` | Auth0 Management API (targets the tenant decoded from the token's own JWT `iss` claim) |
 | `databricks-token` | Databricks REST API (calls the workspace host captured alongside the token) |
 | `bitbucket-app-password` | Bitbucket REST API |
-| `supabase-service-key` | Supabase API |
+| `supabase-service-key` | Supabase Management API (`sbp_` personal access token; `401` is inactive, `403` remains `verify_error`) |
 | `infura-api-key` | Infura API |
 | `teams-webhook` | Microsoft Teams |
 
-## Requires trusted or companion context (3 detector types)
+## Requires trusted or companion context (7 detector types)
 
 These implementations are registered, but a bare detector finding is not enough to choose a safe issuer or authenticate the verification request. When the required context is absent, Leakwatch makes no unsafe guess and returns `unverified`.
 
@@ -68,6 +64,10 @@ These implementations are registered, but a bare detector finding is not enough 
 | `grafana-api-key` | Trusted Grafana instance origin supplied with `--grafana-instance-url` | Calls only the validated HTTPS instance. Repository content and finding metadata cannot choose the target; `401` is inactive only on that trusted issuer. |
 | `twilio-api-key` | Account SID and the API Key Secret paired with the detected `SK...` Key SID | The detector may find a nearby Account SID but does not expose the paired API Key Secret, so ordinary findings remain `unverified`. |
 | `shopify-access-token` | Store domain that issued the token | The current detector emits only the token; without a trusted store domain the verifier makes no request and returns `unverified`. |
+| `github-token` | Trusted GitHub.com or GitHub Enterprise Server API origin | GHES uses the same `ghp_` and `github_pat_` formats as GitHub.com. The current production registration has no trusted origin, so it makes no request and returns `unverified`. |
+| `github-oauth-token` | Trusted GitHub.com or GitHub Enterprise Server API origin | GHES also issues `gho_`, `ghu_`, `ghs_`, and `ghr_` credentials. The current production registration has no trusted origin, so it makes no request and returns `unverified`. |
+| `datadog-api-key` | Trusted Datadog site/API origin | Datadog keys are site-bound across US1/US3/US5/EU/AP1/AP2/UK1/FED. The current production registration has no trusted site, so it makes no request and returns `unverified`. |
+| `snyk-api-key` | Trusted Snyk regional, government, or private API origin | A key rejected by the wrong Snyk region is not proof of revocation. The current production registration has no trusted origin, so it makes no request and returns `unverified`. |
 
 ## Format-validated only (6 detector types)
 
@@ -108,8 +108,8 @@ These detector types have no verifier at all. Findings from them are always `unv
 
 | Category | Count |
 |----------|-------|
-| Live-verified | 45 |
-| Requires trusted/companion context | 3 |
+| Live-verified | 41 |
+| Requires trusted/companion context | 7 |
 | Format-validated only | 6 |
 | Not verifiable | 11 |
 | **Total detectors** | **65** |

@@ -28,7 +28,7 @@ window.LW_T = {
     "hero.lede": "Detect, verify, and report leaked API keys, tokens, and credentials across code, Git history, containers, and the cloud — then watch the redactions lift.",
     "hero.cta.run": "▸ Run the scan",
     "hero.cta.docs": "Read the docs",
-    "hero.kv": "65 detectors · 45 direct-live · 3 context-required · 6 sources",
+    "hero.kv": "65 detectors · 41 direct-live · 7 context-required · 6 sources",
     "hero.doc.redacted": "3 REDACTED",
     "hero.doc.hint": "Leakwatch finds the secrets that shouldn't be visible.",
 
@@ -77,9 +77,9 @@ window.LW_T = {
     "verify.title": "Is it still live?",
     "verify.intro": "Detection is half the job. Leakwatch distinguishes direct live checks from checks that require trusted context and from offline format validation, so registry counts never overstate live capability.",
     "verify.live.k": "Direct live",
-    "verify.live.d": "A read-only API call can confirm the key in the normal production path.",
+    "verify.live.d": "A non-destructive provider check can confirm the key in the normal production path.",
     "verify.context.k": "Context required",
-    "verify.context.d": "A trusted issuer or paired credential must be supplied before a safe live check.",
+    "verify.context.d": "A trusted issuer, region, or paired credential must be supplied before a safe live check.",
     "verify.fmt.k": "Format checked",
     "verify.fmt.d": "Validated by structure where no safe live check exists.",
     "verify.no.k": "Not verifiable",
@@ -93,7 +93,7 @@ window.LW_T = {
     "formats.github": "Inline pull-request annotations in GitHub Actions.",
 
     "index.title": "Redacted index — 65 detectors",
-    "index.intro": "A sample of the catalog: 45 direct-live, 3 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.",
+    "index.intro": "A sample of the catalog: 41 direct-live, 7 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.",
     "index.more": "+ 46 more · view full catalog →",
 
     "cta.title": "Declassify your repo",
@@ -204,7 +204,7 @@ window.LW_T = {
     "hero.lede": "Sızan API anahtarlarını, token'ları ve kimlik bilgilerini kodda, Git geçmişinde, konteynerlerde ve bulutta tespit edin, doğrulayın ve raporlayın — sonra sansürlerin kalkışını izleyin.",
     "hero.cta.run": "▸ Taramayı çalıştır",
     "hero.cta.docs": "Dokümanları oku",
-    "hero.kv": "65 dedektör · 45 doğrudan canlı · 3 bağlam gerektiren · 6 kaynak",
+    "hero.kv": "65 dedektör · 41 doğrudan canlı · 7 bağlam gerektiren · 6 kaynak",
     "hero.doc.redacted": "3 REDAKTE",
     "hero.doc.hint": "Leakwatch, görünür olmaması gereken sırları bulur.",
 
@@ -253,9 +253,9 @@ window.LW_T = {
     "verify.title": "Hâlâ etkin mi?",
     "verify.intro": "Tespit işin yarısıdır. Leakwatch doğrudan canlı kontrolleri, güvenilir bağlam gerektiren kontrollerden ve çevrimdışı format doğrulamasından ayırır; böylece registry sayısı canlı kabiliyeti abartmaz.",
     "verify.live.k": "Doğrudan canlı",
-    "verify.live.d": "Salt-okunur bir API çağrısı anahtarı normal üretim yolunda doğrulayabilir.",
+    "verify.live.d": "Yıkıcı olmayan bir sağlayıcı kontrolü anahtarı normal üretim yolunda doğrulayabilir.",
     "verify.context.k": "Bağlam gerekli",
-    "verify.context.d": "Güvenli canlı kontrolden önce güvenilir issuer veya eşleştirilmiş kimlik bilgisi sağlanmalıdır.",
+    "verify.context.d": "Güvenli canlı kontrolden önce güvenilir issuer, bölge veya eşleştirilmiş kimlik bilgisi sağlanmalıdır.",
     "verify.fmt.k": "Format kontrollü",
     "verify.fmt.d": "Güvenli bir canlı kontrolün olmadığı yerlerde yapısına göre doğrulanır.",
     "verify.no.k": "Doğrulanamayan",
@@ -269,7 +269,7 @@ window.LW_T = {
     "formats.github": "GitHub Actions içinde satır içi pull-request ek açıklamaları.",
 
     "index.title": "Redakteli indeks — 65 dedektör",
-    "index.intro": "Katalogdan bir örnek: 45 doğrudan canlı, 3 bağlam gerektiren, 6 yalnız format ve 11 doğrulayıcısız. YAML özel kurallarıyla kendi dedektörlerinizi ekleyin.",
+    "index.intro": "Katalogdan bir örnek: 41 doğrudan canlı, 7 bağlam gerektiren, 6 yalnız format ve 11 doğrulayıcısız. YAML özel kurallarıyla kendi dedektörlerinizi ekleyin.",
     "index.more": "+ 46 tane daha · tüm kataloğu görüntüle →",
 
     "cta.title": "Deponuzun gizliliğini kaldırın",

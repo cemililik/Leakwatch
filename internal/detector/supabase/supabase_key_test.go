@@ -13,7 +13,7 @@ import (
 func TestDetector_Metadata_ReturnsExpectedValues(t *testing.T) {
 	d := &Detector{}
 	assert.Equal(t, "supabase-service-key", d.ID())
-	assert.Equal(t, "Supabase Service Role Key", d.Description())
+	assert.Equal(t, "Supabase Personal Access Token", d.Description())
 	assert.Equal(t, finding.SeverityCritical, d.Severity())
 	assert.NotEmpty(t, d.Keywords())
 }
@@ -36,7 +36,7 @@ func TestDetector_Scan_MatchAndReject(t *testing.T) {
 		},
 		{
 			name:     "key embedded in env var",
-			input:    `SUPABASE_SERVICE_ROLE_KEY=sbp_` + suffix40,
+			input:    `SUPABASE_ACCESS_TOKEN=sbp_` + suffix40,
 			expected: 1,
 		},
 		{

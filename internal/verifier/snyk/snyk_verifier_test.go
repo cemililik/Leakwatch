@@ -135,3 +135,11 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
 }
+
+func TestVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
+	v := &Verifier{}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Snyk API origin is not configured", result.Message)
+}

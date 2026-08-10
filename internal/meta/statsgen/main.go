@@ -43,7 +43,7 @@ func replacements() []replacement {
 	capabilities := meta.VerificationCapabilityCounts()
 	return []replacement{
 		{regexp.MustCompile(`\d+ detectors`), fmt.Sprintf("%d detectors", meta.Detectors)},
-		{regexp.MustCompile(`\d+ direct-live checks`), fmt.Sprintf("%d direct-live checks", capabilities.Live)},
+		{regexp.MustCompile(`\d+ (?:live verifiers|direct-live checks)`), fmt.Sprintf("%d direct-live checks", capabilities.Live)},
 		{regexp.MustCompile(`\d+ sources`), fmt.Sprintf("%d sources", meta.Sources)},
 		{regexp.MustCompile(`\d+ output formats`), fmt.Sprintf("%d output formats", meta.OutputFormats)},
 	}

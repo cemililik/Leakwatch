@@ -20,13 +20,13 @@ Tüm sırlar aynı şekilde doğrulanamaz. Leakwatch doğrudan canlı kontroller
 
 ### Canlı API doğrulaması
 
-45 dedektör türü için Leakwatch normal üretim yolunda sağlayıcıya **kontrollü, salt-okunur bir API çağrısı** yapabilir — örneğin AWS anahtarları için `sts:GetCallerIdentity`, GitHub token'ları için `GET /user`. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez, kaynak oluşturmaz veya faturalandırma olayı tetiklemez.
+41 dedektör türü için Leakwatch normal üretim yolunda **kontrollü, yıkıcı olmayan bir sağlayıcı kontrolü** yapabilir — örneğin AWS anahtarları için `sts:GetCallerIdentity`, OpenAI anahtarları için sabit sağlayıcı kimlik uç noktası. Çağrı yalnızca kimliği doğrulamak için gereken minimum uç noktayı kullanır; hiçbir zaman veri değiştirmez veya kaynak oluşturmaz, ancak sağlayıcı kotası tüketebilir.
 
 Sağlayıcı sözleşmeye uygun başarılı bir yanıt döndürürse bulgu `verified_active` olarak işaretlenir. Bir bulgu yalnızca sağlayıcı yanıtı ilgili doğrulayıcı sözleşmesine göre kesin olduğunda `verified_inactive` olur. İzin reddi ve belirsiz yanıtlar `verify_error` olarak kalır; örneğin SendGrid yalnız HTTP `401` yanıtını inaktif sayar, `403` ise sonuçsuzdur.
 
 ### Güvenilir veya eşlik eden bağlam gerekli
 
-Kayıtlı üç implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Grafana güvenilir instance origin'i, Twilio Account SID ile eşleşen API Key Secret'ı, Shopify ise token'ı yayınlayan mağaza domain'ini gerektirir. Bu bağlam olmadan Leakwatch issuer tahmin etmek veya gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
+Kayıtlı yedi implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Grafana, GitHub/GHES, Datadog ve Snyk güvenilir issuer/site/API origin'i; Twilio Account SID ile eşleşen API Key Secret'ı; Shopify ise token'ı yayınlayan mağaza domain'ini gerektirir. Bu bağlam olmadan Leakwatch issuer tahmin etmek veya gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
 
 ### Yalnızca format doğrulaması
 

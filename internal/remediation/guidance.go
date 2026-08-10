@@ -747,14 +747,14 @@ func init() {
 	})
 
 	Register("supabase-service-key", finding.Remediation{
-		Title: "Rotate Supabase Service Key",
+		Title: "Revoke Supabase Personal Access Token",
 		Steps: []string{
-			"Go to app.supabase.com > Project Settings > API.",
-			"Regenerate the service role key.",
-			"Update all backend services with the new key.",
+			"Open the Supabase Dashboard account access-token page.",
+			"Identify and revoke the compromised personal access token.",
+			"Create a replacement only if the CLI or automation still requires one, then update those consumers.",
 		},
-		DocURL:     "https://supabase.com/docs/guides/api",
-		ConsoleURL: "https://app.supabase.com",
+		DocURL:     "https://supabase.com/docs/reference/api/introduction",
+		ConsoleURL: "https://supabase.com/dashboard/account/tokens",
 		Urgency:    "immediate",
 	})
 

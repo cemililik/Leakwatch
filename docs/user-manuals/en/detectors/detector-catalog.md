@@ -111,7 +111,7 @@ This page lists every built-in detector. For verification coverage details see [
 | `redis-connection-string` | Redis Connection String | Critical |
 | `rabbitmq-connection-string` | RabbitMQ Connection String | Critical |
 | `snowflake-credentials` | Snowflake Connection Credentials | Critical |
-| `supabase-service-key` | Supabase Service Role Key | Critical |
+| `supabase-service-key` | Supabase Personal Access Token (`sbp_`; stable legacy detector ID) | Critical |
 
 ## Identity and Access
 

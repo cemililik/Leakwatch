@@ -13,7 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var markdownDetectorRow = regexp.MustCompile("^\\| `([^`]+)` \\|")
+var (
+	markdownDetectorRow = regexp.MustCompile("^\\| `([^`]+)` \\|")
+	siteCapabilityRow   = regexp.MustCompile(`(?s)<div class="vrow">.*?data-i18n="verify\.(live|context|fmt|no)\.k".*?<span class="vcount">(\d+)</span>.*?</div>`)
+	siteStatCell        = regexp.MustCompile(`(?s)<div class="cell"><div class="n"><b>(\d+)</b></div><div class="l" data-i18n="stats\.(detectors|verifiers|sources|formats)">`)
+)
 
 type documentedCategory struct {
 	heading string
@@ -84,7 +88,7 @@ func TestVerificationCoverageDocs_MatchCapabilityManifest(t *testing.T) {
 
 func TestPublishedCapabilityClaims_MatchManifest(t *testing.T) {
 	counts := VerificationCapabilityCounts()
-	require.Equal(t, CapabilityCounts{Live: 45, FormatOnly: 6, RequiresContext: 3, None: 11}, counts)
+	require.Equal(t, CapabilityCounts{Live: 41, FormatOnly: 6, RequiresContext: 7, None: 11}, counts)
 	registryCoverage := 100 * float64(Verifiers) / float64(Detectors)
 
 	tests := []struct {
@@ -124,7 +128,7 @@ func TestPublishedCapabilityClaims_MatchManifest(t *testing.T) {
 			path: filepath.Join("..", "..", "docs", "guides", "secret-verification.md"),
 			required: []string{
 				fmt.Sprintf("**%d** detectors support a direct live check", counts.Live),
-				fmt.Sprintf("**%d** require trusted or companion context", counts.RequiresContext),
+				fmt.Sprintf("**%d** require trusted issuer, region, or companion context", counts.RequiresContext),
 				fmt.Sprintf("### Not Verifiable (%d detectors)", counts.None),
 			},
 			forbid: []string{"Live API Verification (48 detectors)", "84.4% of its 64 detectors"},
@@ -144,6 +148,38 @@ func TestPublishedCapabilityClaims_MatchManifest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSiteVisibleCounts_MatchCapabilityManifest(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "site", "index.html"))
+	require.NoError(t, err)
+	counts := VerificationCapabilityCounts()
+
+	wantCapabilities := map[string]int{
+		"live": counts.Live, "context": counts.RequiresContext,
+		"fmt": counts.FormatOnly, "no": counts.None,
+	}
+	gotCapabilities := make(map[string]int, len(wantCapabilities))
+	for _, match := range siteCapabilityRow.FindAllStringSubmatch(string(contents), -1) {
+		var count int
+		_, err := fmt.Sscanf(match[2], "%d", &count)
+		require.NoError(t, err)
+		gotCapabilities[match[1]] = count
+	}
+	assert.Equal(t, wantCapabilities, gotCapabilities)
+
+	wantStats := map[string]int{
+		"detectors": Detectors, "verifiers": counts.Live,
+		"sources": Sources, "formats": OutputFormats,
+	}
+	gotStats := make(map[string]int, len(wantStats))
+	for _, match := range siteStatCell.FindAllStringSubmatch(string(contents), -1) {
+		var count int
+		_, err := fmt.Sscanf(match[1], "%d", &count)
+		require.NoError(t, err)
+		gotStats[match[2]] = count
+	}
+	assert.Equal(t, wantStats, gotStats)
 }
 
 func parseDocumentedCapabilities(

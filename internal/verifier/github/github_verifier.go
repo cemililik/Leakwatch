@@ -16,13 +16,12 @@ import (
 
 const detectorID = "github-token"
 
-// defaultAPIURL is the base URL for the GitHub API.
-const defaultAPIURL = "https://api.github.com"
-
 // Verifier checks whether a GitHub token is active by calling the
 // GitHub API. It NEVER logs or persists raw token values.
 type Verifier struct {
-	// apiURL overrides the GitHub API base URL (for testing).
+	// apiURL is reserved for a validated, trusted GitHub.com or GHES API
+	// origin. The production registration leaves it empty until operator wiring
+	// exists; tests inject a local server.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
@@ -41,7 +40,16 @@ func (v *Verifier) Type() string {
 // Raw contains the token value.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted GitHub API origin is not configured",
+		}
+	}
+	apiURL := v.apiURL
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "github",

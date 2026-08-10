@@ -5,17 +5,15 @@ description: "65 yerleşik dedektörün hangilerinin canlı doğrulandığı, ba
 
 # Doğrulama Kapsamı
 
-Leakwatch **65 yerleşik dedektör** ve kayıtlı 54 doğrulayıcı implementasyonuyla gelir. Registry kaydı canlı kabiliyetle aynı şey değildir: **45** dedektör normal üretim yolunda canlı kontrol yapabilir, **3** dedektör güvenilir operatör veya eşlik eden bağlam gerektirir, **6** dedektör yalnızca çevrimdışı format doğrular ve **11** dedektörün doğrulayıcısı yoktur. Bu sayfa her dedektörü gerçek doğrulama sözleşmesine göre eşler.
+Leakwatch **65 yerleşik dedektör** ve kayıtlı 54 doğrulayıcı implementasyonuyla gelir. Registry kaydı canlı kabiliyetle aynı şey değildir: **41** dedektör normal üretim yolunda canlı kontrol yapabilir, **7** dedektör güvenilir operatör veya eşlik eden bağlam gerektirir, **6** dedektör yalnızca çevrimdışı format doğrular ve **11** dedektörün doğrulayıcısı yoktur. Bu sayfa her dedektörü gerçek doğrulama sözleşmesine göre eşler.
 
-## Canlı doğrulanan (45 dedektör türü)
+## Canlı doğrulanan (41 dedektör türü)
 
-Bu türler için Leakwatch, sağlayıcıya kontrollü, salt-okunur bir API çağrısı yapar ve `verified_active` ya da `verified_inactive` döndürür. Hiçbir veri oluşturulmaz veya değiştirilmez; çağrı, kimliği doğrulamak için gereken minimum uç noktayı kullanır.
+Bu türler için Leakwatch normal üretim yolunda kontrollü, yıkıcı olmayan bir sağlayıcı kontrolü yapabilir. Sözleşmeye uygun başarı `verified_active` döndürebilir; yalnızca doğru issuer üzerindeki kesin kimlik doğrulama reddi `verified_inactive` döndürebilir. Belirsiz yanıtlar `verify_error` kalır.
 
 | Dedektör türü | Sağlayıcı |
 |--------------|----------|
 | `aws-access-key-id` | AWS STS (`GetCallerIdentity`) |
-| `github-token` | GitHub REST API |
-| `github-oauth-token` | GitHub REST API |
 | `gitlab-pat` | GitLab REST API (token ile birlikte yakalanan kendi barındırılan bir GitLab sunucusu varsa onu hedefler; yoksa gitlab.com'a geri döner) |
 | `slack-token` | Slack Web API |
 | `openai-api-key` | OpenAI API |
@@ -42,8 +40,6 @@ Bu türler için Leakwatch, sağlayıcıya kontrollü, salt-okunur bir API çağ
 | `sentry-token` | Sentry API |
 | `pagerduty-api-key` | PagerDuty API |
 | `newrelic-api-key` | New Relic NerdGraph (resmî ABD/AB uçlarında sınırlı fallback; yalnızca iki bölge de `401` döndürürse inaktif) |
-| `datadog-api-key` | Datadog API |
-| `snyk-api-key` | Snyk API |
 | `doppler-token` | Doppler API |
 | `launchdarkly-sdk-key` | LaunchDarkly API |
 | `sonarcloud-token` | SonarCloud API |
@@ -55,11 +51,11 @@ Bu türler için Leakwatch, sağlayıcıya kontrollü, salt-okunur bir API çağ
 | `auth0-management-token` | Auth0 Management API (token'ın kendi JWT `iss` iddiasından çözülen kiracıyı hedefler) |
 | `databricks-token` | Databricks REST API (token ile birlikte yakalanan çalışma alanı ana bilgisayarını çağırır) |
 | `bitbucket-app-password` | Bitbucket REST API |
-| `supabase-service-key` | Supabase API |
+| `supabase-service-key` | Supabase Management API (`sbp_` kişisel erişim token'ı; `401` inaktiftir, `403` `verify_error` kalır) |
 | `infura-api-key` | Infura API |
 | `teams-webhook` | Microsoft Teams |
 
-## Güvenilir veya eşlik eden bağlam gerektiren (3 dedektör türü)
+## Güvenilir veya eşlik eden bağlam gerektiren (7 dedektör türü)
 
 Bu implementasyonlar registry'de kayıtlıdır; ancak çıplak bir dedektör bulgusu güvenli issuer seçmek veya doğrulama isteğinde kimlik doğrulamak için yeterli değildir. Gerekli bağlam yoksa Leakwatch güvenli olmayan bir varsayım yapmaz ve `unverified` döndürür.
 
@@ -68,6 +64,10 @@ Bu implementasyonlar registry'de kayıtlıdır; ancak çıplak bir dedektör bul
 | `grafana-api-key` | `--grafana-instance-url` ile verilen güvenilir Grafana instance origin'i | Yalnızca doğrulanmış HTTPS instance'ını çağırır. Repo içeriği veya finding metadata hedef seçemez; `401` yalnızca bu güvenilir issuer üzerinde inaktiftir. |
 | `twilio-api-key` | Account SID ve tespit edilen `SK...` Key SID ile eşleşen API Key Secret | Dedektör yakındaki Account SID'yi bulabilir ancak eşleşen API Key Secret'ı üretmez; normal bulgular `unverified` kalır. |
 | `shopify-access-token` | Token'ı yayınlayan mağaza domain'i | Mevcut dedektör yalnızca token'ı üretir; güvenilir mağaza domain'i olmadan verifier istek yapmaz ve `unverified` döndürür. |
+| `github-token` | Güvenilir GitHub.com veya GitHub Enterprise Server API origin'i | GHES, GitHub.com ile aynı `ghp_` ve `github_pat_` biçimlerini kullanır. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
+| `github-oauth-token` | Güvenilir GitHub.com veya GitHub Enterprise Server API origin'i | GHES ayrıca `gho_`, `ghu_`, `ghs_` ve `ghr_` kimlik bilgileri yayınlar. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
+| `datadog-api-key` | Güvenilir Datadog site/API origin'i | Datadog anahtarları US1/US3/US5/EU/AP1/AP2/UK1/FED sitelerine bağlıdır. Mevcut üretim kaydında güvenilir site yoktur; istek yapmaz ve `unverified` döndürür. |
+| `snyk-api-key` | Güvenilir Snyk bölgesel, kamu veya özel API origin'i | Yanlış Snyk bölgesinin anahtarı reddetmesi iptal kanıtı değildir. Mevcut üretim kaydında güvenilir origin yoktur; istek yapmaz ve `unverified` döndürür. |
 
 ## Yalnızca format doğrulaması (6 dedektör türü)
 
@@ -108,8 +108,8 @@ Bu dedektör türlerinin hiç doğrulayıcısı yoktur. Bunlardan gelen bulgular
 
 | Kategori | Sayı |
 |----------|------|
-| Canlı doğrulanan | 45 |
-| Güvenilir/eşlik eden bağlam gerektiren | 3 |
+| Canlı doğrulanan | 41 |
+| Güvenilir/eşlik eden bağlam gerektiren | 7 |
 | Yalnızca format doğrulaması | 6 |
 | Doğrulanamaz | 11 |
 | **Toplam dedektör** | **65** |

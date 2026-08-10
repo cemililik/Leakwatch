@@ -8,11 +8,11 @@
 
 ## 1. What is Secret Verification?
 
-Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **45** detectors support a direct live check, **3** require trusted or companion context, **6** are format-only, and **11** have no verifier.
+Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **41** detectors support a direct live check, **7** require trusted issuer, region, or companion context, **6** are format-only, and **11** have no verifier.
 
 Verification is classified into three methods:
-- **Direct live API verification** (45 detectors) -- controlled, non-destructive API calls available in the normal production path
-- **Context-required verification** (3 detectors) -- a trusted issuer or paired credential is required before any safe request
+- **Direct live API verification** (41 detectors) -- controlled, non-destructive API calls available in the normal production path
+- **Context-required verification** (7 detectors) -- a trusted issuer, region, or paired credential is required before any safe request
 - **Format validation** (6 detectors) -- structural checks (decode, parse, validate format) without network calls
 
 **Why it matters:**
@@ -71,7 +71,7 @@ stateDiagram-v2
 
 Leakwatch provides 54 registered verifier implementations (51 packages) across three verification types. The following tables classify capability rather than equating registry count with live coverage.
 
-### Direct Live API Verification (45 detectors)
+### Direct Live API Verification (41 detectors)
 
 These verifiers make a controlled, non-destructive API call to the provider to confirm whether the secret is active or inactive. The majority use HTTP GET; a small number (e.g., the Teams webhook verifier) use a non-destructive POST to a validation endpoint.
 
@@ -86,8 +86,6 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **AI/ML** | Anthropic API Key | `anthropic-api-key` | `api.anthropic.com/v1/models` |
 | **AI/ML** | Hugging Face Token | `huggingface-token` | `huggingface.co/api/whoami-v2` |
 | **AI/ML** | DeepSeek API Key | `deepseek-api-key` | `api.deepseek.com/models` |
-| **DevTools** | GitHub PAT | `github-token` | `api.github.com/user` |
-| **DevTools** | GitHub OAuth Token | `github-oauth-token` | `api.github.com/user` |
 | **DevTools** | GitLab PAT | `gitlab-pat` | `{host}/api/v4/user` (defaults to `gitlab.com`; honors a co-located self-hosted instance host) |
 | **DevTools** | Bitbucket App Password | `bitbucket-app-password` | `api.bitbucket.org/2.0/user` |
 | **DevTools** | NPM Token | `npm-token` | `registry.npmjs.org/-/npm/v1/user` |
@@ -105,15 +103,13 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Email** | Postmark Server Token | `postmark-server-token` | `api.postmarkapp.com/server` |
 | **Payment** | Stripe Live Key | `stripe-api-key-live` | `api.stripe.com/v1/charges?limit=1` |
 | **Payment** | Stripe Test Key | `stripe-api-key-test` | `api.stripe.com/v1/charges?limit=1` |
-| **Database** | Supabase Service Key | `supabase-service-key` | `api.supabase.com/v1/projects` (Bearer token only; no project ref or `apikey` header) |
+| **DevTools** | Supabase Personal Access Token | `supabase-service-key` | Supabase Management API `api.supabase.com/v1/projects` (`sbp_` Bearer PAT; `401` is inactive, `403` remains inconclusive) |
 | **Infrastructure** | Databricks PAT | `databricks-token` | `{workspace-host}/api/2.0/preview/scim/v2/Me` (workspace host captured alongside the token; no host means unverified) |
 | **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
 | **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
-| **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
 | **Monitoring** | New Relic user API key | `newrelic-api-key` | Read-only NerdGraph `requestContext { userId }`; fixed official US/EU endpoints with bounded fallback. Only all-region 401 is inactive; 403 and partial failures remain inconclusive. |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
-| **Security** | Snyk API Key | `snyk-api-key` | `api.snyk.io/rest/self` |
 | **Secrets Mgmt** | Doppler Service Token | `doppler-token` | `api.doppler.com/v3/me` |
 | **Feature Flags** | LaunchDarkly SDK Key | `launchdarkly-sdk-key` | `app.launchdarkly.com/api/v2/caller-identity` |
 | **Code Quality** | SonarCloud Token | `sonarcloud-token` | `sonarcloud.io/api/authentication/validate` |
@@ -123,7 +119,7 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **SaaS** | Airtable PAT | `airtable-pat` | `api.airtable.com/v0/meta/whoami` |
 | **Blockchain** | Infura API Key | `infura-api-key` | `mainnet.infura.io/v3/{key}` |
 
-### Requires Trusted or Companion Context (3 detectors)
+### Requires Trusted or Companion Context (7 detectors)
 
 These implementations are registered, but a bare detector finding cannot safely select the issuer or authenticate the verification request. Missing context produces `unverified` without a network request.
 
@@ -132,6 +128,10 @@ These implementations are registered, but a bare detector finding cannot safely 
 | Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
 | Twilio API Key | `twilio-api-key` | Account SID plus the API Key Secret paired with the detected `SK...` Key SID; the normal detector finding does not supply the paired secret |
 | Shopify Access Token | `shopify-access-token` | Trusted issuing store domain; the normal detector finding emits only the token, so no request is made without operator context |
+| GitHub PAT | `github-token` | Trusted GitHub.com or GHES API origin; both issuers use `ghp_`/`github_pat_`, so the registered production verifier makes no request without explicit issuer trust |
+| GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; GHES also issues `gho_`/`ghu_`/`ghs_`/`ghr_` credentials, so the production verifier makes no request without explicit issuer trust |
+| Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/FED; the production verifier makes no request without it |
+| Snyk API Key | `snyk-api-key` | Trusted Snyk regional, government, or private API origin; the production verifier makes no request without it |
 
 ### Format Validation (6 detectors)
 
@@ -227,11 +227,13 @@ If the Secret Access Key is not found alongside the Access Key ID, verification 
 
 ### How It Works
 
-The GitHub verifier sends a `GET /user` request to the GitHub API using the discovered token as a Bearer token. This is a read-only call that returns information about the authenticated user.
+GitHub.com and GitHub Enterprise Server (GHES) issue credentials with the same token prefixes. A token alone therefore cannot identify its issuer. Leakwatch sends a `GET /user` request only after a trusted GitHub API origin has been selected by operator-controlled configuration. The current production registration does not yet expose that configuration, so GitHub token findings return `unverified` without making a network request.
 
-- **Detector ID:** `github-token`
-- **API endpoint:** `https://api.github.com/user`
+- **Detector IDs:** `github-token`, `github-oauth-token`
+- **API endpoint:** trusted GitHub.com or GHES API origin plus `/user`
 - **Headers:** `Authorization: Bearer <token>`, `User-Agent: leakwatch-verifier`
+
+This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. When trusted-origin wiring is available, only an authentication rejection from that selected issuer may produce `verified_inactive`.
 
 ### What It Reveals
 
@@ -245,8 +247,9 @@ When the token is active, the verifier returns:
 
 | HTTP Status | Verification Result |
 |-------------|-------------------|
-| `200 OK` | `verified_active` -- token is valid |
-| `401 Unauthorized` | `verified_inactive` -- token is invalid or revoked |
+| No trusted API origin | `unverified` -- no request is made |
+| `200 OK` from trusted origin | `verified_active` -- token is valid |
+| `401 Unauthorized` from trusted origin | `verified_inactive` -- token is invalid or revoked for that issuer |
 | Other | `verify_error` -- unexpected response |
 
 ### Example Output
@@ -329,7 +332,7 @@ verification:
 
 Verification involves sending discovered credentials to provider APIs. Keep the following in mind:
 
-- **Credentials are transmitted over the network** -- The raw secret value is sent to the provider's API endpoint (e.g., `sts.amazonaws.com`, `api.github.com`) over HTTPS. Ensure your network allows outbound HTTPS traffic to these endpoints.
+- **Credentials are transmitted over the network** -- The raw secret value is sent only to the verifier's fixed provider endpoint, credential-derived endpoint, or explicitly trusted operator-selected origin over HTTPS. Context-dependent verifiers make no request when a trustworthy destination is unavailable.
 - **Leakwatch never logs raw secrets** -- Verifiers are designed to never log, persist, or cache the raw credential values. Only redacted values appear in logs.
 - **Non-destructive operations only** -- All verification calls are controlled and non-destructive. The majority use HTTP GET; where a POST is required (e.g., the Teams webhook verifier), it targets a validation endpoint and does not cause state changes or side effects.
 - **Network requirements** -- Verification requires outbound HTTPS access. In air-gapped or restricted environments, use `--no-verify` to skip verification entirely.

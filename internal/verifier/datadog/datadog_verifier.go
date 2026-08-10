@@ -16,13 +16,12 @@ import (
 
 const detectorID = "datadog-api-key"
 
-// defaultAPIURL is the base URL for the Datadog API.
-const defaultAPIURL = "https://api.datadoghq.com"
-
 // Verifier checks whether a Datadog API key is active by calling the
 // Datadog validation API. It NEVER logs or persists raw key values.
 type Verifier struct {
-	// apiURL overrides the Datadog API base URL (for testing).
+	// apiURL is reserved for a validated, trusted Datadog site origin. The
+	// production registration leaves it empty until operator wiring exists;
+	// tests inject a local server.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
@@ -42,7 +41,16 @@ func (v *Verifier) Type() string {
 // 403 (not 401) for a rejected key.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted Datadog site is not configured",
+		}
+	}
+	apiURL := v.apiURL
 
 	return httpx.VerifyToken(ctx, v.httpClient, token, httpx.TokenSpec{
 		Name: "datadog",

@@ -143,6 +143,14 @@ func TestOAuthVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 	assert.Equal(t, "empty token", result.Message)
 }
 
+func TestOAuthVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
+	v := &OAuthVerifier{}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-github-oauth-token")})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted GitHub API origin is not configured", result.Message)
+}
+
 func TestOAuthVerify_MalformedJSON_ReturnsVerifyError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

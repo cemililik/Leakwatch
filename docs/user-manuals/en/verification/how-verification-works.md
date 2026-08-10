@@ -20,13 +20,13 @@ Not all secrets can be verified the same way. Leakwatch distinguishes direct liv
 
 ### Live API verification
 
-For 45 detector types, Leakwatch can make a **controlled, read-only API call** in the normal production path — for example, calling `sts:GetCallerIdentity` for AWS keys or `GET /user` for GitHub tokens. The call uses only the minimum endpoint required to confirm identity; it never modifies data, creates resources, or triggers billing events.
+For 41 detector types, Leakwatch can make a **controlled, non-destructive provider check** in the normal production path — for example, calling `sts:GetCallerIdentity` for AWS keys or a fixed provider identity endpoint for OpenAI keys. The call uses only the minimum endpoint required to confirm identity; it never modifies data or creates resources, though it may consume provider quota.
 
 If the provider returns a contract-valid success response, the finding is marked `verified_active`. A finding is marked `verified_inactive` only when the provider response is definitive under that verifier's contract. Permission denial and ambiguous responses remain `verify_error`; for example, SendGrid treats only HTTP `401` as inactive, while `403` remains inconclusive.
 
 ### Trusted or companion context required
 
-Three registered implementations cannot safely make a live request from a bare detector finding. Grafana requires a trusted instance origin; Twilio requires the Account SID and paired API Key Secret; Shopify requires the issuing store domain. Without that context Leakwatch sends no request and returns `unverified`, rather than guessing an issuer or misreporting a real credential as inactive.
+Seven registered implementations cannot safely make a live request from a bare detector finding. Grafana, GitHub/GHES, Datadog, and Snyk require a trusted issuer/site/API origin; Twilio requires the Account SID and paired API Key Secret; Shopify requires the issuing store domain. Without that context Leakwatch sends no request and returns `unverified`, rather than guessing an issuer or misreporting a real credential as inactive.
 
 ### Format validation only
 

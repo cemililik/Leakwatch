@@ -62,7 +62,7 @@ Tablodaki her satır (veya JSON'daki her nesne) bir bulguyu temsil eder. Temel a
 | **STATUS** | Doğrulama sonucu: `verified_active`, `verified_inactive`, `unverified` veya `verify_error` |
 | **REMEDIATION** | Döndürme/iptal rehberi başlığı, veya `--remediation` geçilmediğinde `-` |
 
-`verified_active` durumu, Leakwatch'ın sağlayıcıya salt-okunur bir API çağrısı yaparak sırrın hâlâ etkin olduğunu doğruladığı anlamına gelir. **Her `verified_active` bulgusunu açık bir olay olarak değerlendirin.**
+`verified_active` durumu, Leakwatch'ın sözleşmeye uygun, yıkıcı olmayan bir sağlayıcı kontrolüyle sırrın hâlâ etkin olduğunu doğruladığı anlamına gelir. **Her `verified_active` bulgusunu açık bir olay olarak değerlendirin.**
 
 ## Yaygın tarama seçenekleri
 
