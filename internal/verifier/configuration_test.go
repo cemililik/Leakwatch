@@ -13,9 +13,10 @@ import (
 )
 
 type trustedInstanceMock struct {
-	id       string
-	instance string
-	err      error
+	id          string
+	instance    string
+	err         error
+	replacement Verifier
 }
 
 func (m *trustedInstanceMock) Type() string { return m.id }
@@ -27,6 +28,9 @@ func (m *trustedInstanceMock) Verify(context.Context, detector.RawFinding) findi
 func (m *trustedInstanceMock) WithTrustedInstance(instanceURL string) (Verifier, error) {
 	if m.err != nil {
 		return nil, m.err
+	}
+	if m.replacement != nil {
+		return m.replacement, nil
 	}
 	return &trustedInstanceMock{id: m.id, instance: instanceURL}, nil
 }
@@ -47,6 +51,7 @@ func TestConfigureTrustedInstance_ReturnsIndependentReplacement(t *testing.T) {
 }
 
 func TestConfigureTrustedInstance_RejectsInvalidContracts(t *testing.T) {
+	var typedNil *trustedInstanceMock
 	tests := []struct {
 		name string
 		vs   []Verifier
@@ -55,6 +60,12 @@ func TestConfigureTrustedInstance_RejectsInvalidContracts(t *testing.T) {
 		{name: "missing", vs: []Verifier{newMock("other")}, id: "missing"},
 		{name: "not configurable", vs: []Verifier{newMock("plain")}, id: "plain"},
 		{name: "configuration error", vs: []Verifier{&trustedInstanceMock{id: "bad", err: fmt.Errorf("invalid origin")}}, id: "bad"},
+		{name: "nil entry", vs: []Verifier{nil}, id: "nil"},
+		{name: "typed nil entry", vs: []Verifier{typedNil}, id: "nil"},
+		{name: "duplicate type", vs: []Verifier{newMock("duplicate"), newMock("duplicate")}, id: "duplicate"},
+		{name: "mismatched replacement", vs: []Verifier{&trustedInstanceMock{id: "contextual", replacement: newMock("other")}}, id: "contextual"},
+		{name: "typed nil replacement", vs: []Verifier{&trustedInstanceMock{id: "contextual", replacement: typedNil}}, id: "contextual"},
+		{name: "empty target ID", vs: []Verifier{newMock("other")}, id: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

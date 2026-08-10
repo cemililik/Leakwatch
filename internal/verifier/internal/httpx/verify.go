@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,6 +94,11 @@ type TokenSpec struct {
 	// MaxBodyBytes+1 bound before Decode runs. Responses over the bound are
 	// rejected instead of letting a truncated prefix appear valid.
 	RequireCompleteBody bool
+
+	// RequireJSONContentType rejects an active response unless its media type is
+	// application/json or an application/*+json subtype. The raw header is never
+	// reflected into logs or result messages.
+	RequireJSONContentType bool
 }
 
 // BaseURL returns override when it is non-empty, otherwise fallback. Verifiers
@@ -132,6 +138,12 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 	code := resp.StatusCode
 	switch {
 	case containsStatus(spec.activeStatuses(), code):
+		if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: "200 OK but response Content-Type is not JSON",
+			}
+		}
 		return spec.handleActive(ctx, resp.Body)
 	case containsStatus(spec.inactiveStatuses(), code):
 		slog.DebugContext(ctx, spec.Name+" verifier: secret is inactive")
@@ -147,6 +159,16 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 	default:
 		return UnexpectedStatus(ctx, spec.Name, code)
 	}
+}
+
+func isJSONContentType(header string) bool {
+	mediaType, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	return mediaType == "application/json" ||
+		(strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json"))
 }
 
 // send builds and performs the request, applying the shared safety policy. On a

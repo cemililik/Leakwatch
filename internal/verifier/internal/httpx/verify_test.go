@@ -52,6 +52,40 @@ func TestVerifyToken_Active_NoDecode_NoExtra(t *testing.T) {
 	assert.Nil(t, res.ExtraData)
 }
 
+func TestVerifyToken_RequiredJSONContentType(t *testing.T) {
+	tests := []struct {
+		contentType string
+		want        finding.VerificationStatus
+	}{
+		{contentType: "application/json", want: finding.StatusVerifiedActive},
+		{contentType: "application/json; charset=utf-8", want: finding.StatusVerifiedActive},
+		{contentType: "application/problem+json", want: finding.StatusVerifiedActive},
+		{contentType: "text/html", want: finding.StatusVerifyError},
+		{contentType: "", want: finding.StatusVerifyError},
+		{contentType: "not a media type", want: finding.StatusVerifyError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.contentType, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.contentType != "" {
+					w.Header().Set("Content-Type", tc.contentType)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+
+			result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+				Name:                   "x",
+				Request:                Request{URL: server.URL},
+				ActiveMessage:          "active",
+				RequireJSONContentType: true,
+			})
+			assert.Equal(t, tc.want, result.Status)
+		})
+	}
+}
+
 func TestVerifyToken_Active_NoDecode_WithActiveExtra(t *testing.T) {
 	server := jsonServer(t, http.StatusOK, `{}`)
 	defer server.Close()

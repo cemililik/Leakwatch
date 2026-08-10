@@ -218,6 +218,9 @@ func TestVerify_InvalidSuccessBodiesAreNotActive(t *testing.T) {
 		body        string
 	}{
 		{name: "HTML login page", contentType: "text/html", body: "<html>Sign in</html>"},
+		{name: "HTML content type with JSON object", contentType: "text/html", body: `{}`},
+		{name: "plain content type with JSON object", contentType: "text/plain", body: `{}`},
+		{name: "missing content type with JSON object", body: `{}`},
 		{name: "malformed JSON", contentType: "application/json", body: `{not-json`},
 		{name: "null", contentType: "application/json", body: `null`},
 		{name: "array", contentType: "application/json", body: `[]`},
@@ -272,6 +275,9 @@ func TestNewForTrustedInstance_Validation(t *testing.T) {
 		"https://grafana.com", "https://www.grafana.com/", "https://localhost",
 		"https://grafana.localhost", "https://127.0.0.1", "https://10.0.0.1",
 		"https://169.254.169.254", "https://[::1]", "https://*.grafana.net",
+		"https://[fe80::1%25en0]", "https://[::ffff:127.0.0.1]",
+		"https://127.1", "https://2130706433", "https://017700000001", "https://0x7f000001",
+		"https://8.8.8.8", "https://[2001:4860:4860::8888]",
 	}
 	for i, rawURL := range invalid {
 		t.Run(fmt.Sprintf("invalid-%d", i), func(t *testing.T) {

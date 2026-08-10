@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 
@@ -92,10 +92,11 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				"Authorization": "Bearer " + token,
 			},
 		},
-		ActiveMessage:       "Grafana API key is active",
-		InactiveMessage:     "Grafana API key is invalid or revoked",
-		Decode:              decodePermissionsObject,
-		RequireCompleteBody: true,
+		ActiveMessage:          "Grafana API key is active",
+		InactiveMessage:        "Grafana API key is invalid or revoked",
+		Decode:                 decodePermissionsObject,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
 }
 
@@ -125,15 +126,28 @@ func normalizeTrustedInstanceURL(rawURL string) (string, error) {
 	if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") {
 		return "", fmt.Errorf("invalid Grafana instance URL: local targets are not allowed")
 	}
-	if ip := net.ParseIP(hostname); ip != nil &&
-		(!ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
-		return "", fmt.Errorf("invalid Grafana instance URL: non-public IP targets are not allowed")
+	if _, parseErr := netip.ParseAddr(hostname); parseErr == nil {
+		return "", fmt.Errorf("invalid Grafana instance URL: IP-literal targets are not allowed")
+	} else if strings.Contains(hostname, ":") || looksLikeNonCanonicalIPv4(hostname) {
+		return "", fmt.Errorf("invalid Grafana instance URL: malformed IP target")
 	}
 
 	u.Scheme = "https"
 	u.Path = ""
 	u.RawPath = ""
 	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func looksLikeNonCanonicalIPv4(hostname string) bool {
+	if strings.HasPrefix(hostname, "0x") {
+		return true
+	}
+	for _, r := range hostname {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func decodePermissionsObject(body io.Reader) (map[string]string, string, error) {
