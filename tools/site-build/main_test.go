@@ -154,12 +154,9 @@ func TestReadReleaseVersion_FailsClosed(t *testing.T) {
 func TestReplaceReleaseFooter(t *testing.T) {
 	input := []byte(`<footer><span class="mono-label" data-release-version>v0.9.0 · concept: redacted</span></footer>`)
 	want := `<footer><span class="mono-label" data-release-version>v1.7.0 · concept: redacted</span></footer>`
-	got, marked, err := replaceReleaseFooter(input, "v1.7.0")
+	got, err := replaceReleaseFooter(input, "v1.7.0")
 	if err != nil {
 		t.Fatalf("replaceReleaseFooter() error = %v", err)
-	}
-	if !marked {
-		t.Fatal("replaceReleaseFooter() marked = false, want true")
 	}
 	if string(got) != want {
 		t.Fatalf("replaceReleaseFooter() = %q, want %q", got, want)
@@ -180,7 +177,7 @@ func TestReplaceReleaseFooter_RejectsUnmanagedOrAmbiguousFooter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := replaceReleaseFooter([]byte(tt.input), "v1.7.0"); err == nil {
+			if _, err := replaceReleaseFooter([]byte(tt.input), "v1.7.0"); err == nil {
 				t.Fatal("replaceReleaseFooter() error = nil, want fail-closed error")
 			}
 		})
@@ -193,14 +190,12 @@ func TestSyncSiteReleaseVersion_UpdatesEveryMarkedPage(t *testing.T) {
 	if err := os.MkdirAll(siteDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"index.html", "docs.html"} {
+	modes := map[string]os.FileMode{"index.html": 0o600, "docs.html": 0o644}
+	for name, mode := range modes {
 		content := releaseFooterOpen + "v0.1.0" + releaseFooterText + "</span>"
-		if err := os.WriteFile(filepath.Join(siteDir, name), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(siteDir, name), []byte(content), mode); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.WriteFile(filepath.Join(siteDir, "no-footer.html"), []byte("<main>ok</main>"), 0o644); err != nil {
-		t.Fatal(err)
 	}
 
 	count, err := syncSiteReleaseVersion(root, "v1.7.0")
@@ -210,7 +205,7 @@ func TestSyncSiteReleaseVersion_UpdatesEveryMarkedPage(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("syncSiteReleaseVersion() count = %d, want 2", count)
 	}
-	for _, name := range []string{"index.html", "docs.html"} {
+	for name, wantMode := range modes {
 		content, err := os.ReadFile(filepath.Join(siteDir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -218,5 +213,46 @@ func TestSyncSiteReleaseVersion_UpdatesEveryMarkedPage(t *testing.T) {
 		if !strings.Contains(string(content), "v1.7.0"+releaseFooterText) {
 			t.Fatalf("%s was not synchronized: %s", name, content)
 		}
+		info, err := os.Stat(filepath.Join(siteDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != wantMode {
+			t.Fatalf("%s mode = %o, want %o", name, got, wantMode)
+		}
+	}
+}
+
+func TestSyncSiteReleaseVersion_ValidatesAllPagesBeforeWriting(t *testing.T) {
+	root := t.TempDir()
+	siteDir := filepath.Join(root, "site")
+	if err := os.MkdirAll(siteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	goodPath := filepath.Join(siteDir, "a-good.html")
+	original := releaseFooterOpen + "v0.1.0" + releaseFooterText + "</span>"
+	if err := os.WriteFile(goodPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(siteDir, "z-missing-footer.html"), []byte("<main>no footer</main>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncSiteReleaseVersion(root, "v1.7.0"); err == nil {
+		t.Fatal("syncSiteReleaseVersion() error = nil, want missing-marker error")
+	}
+	content, err := os.ReadFile(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("earlier page was partially rewritten: got %q, want %q", content, original)
+	}
+	info, err := os.Stat(goodPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("earlier page mode = %o, want 600", got)
 	}
 }

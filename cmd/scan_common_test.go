@@ -89,6 +89,26 @@ func TestSelectFormatter_AllFormats_ReturnsCorrectType(t *testing.T) {
 	}
 }
 
+func TestSelectFormatter_CanonicalFormatsHaveExactImplementations(t *testing.T) {
+	expected := map[string]interface{}{
+		"json":   &jsonout.Formatter{},
+		"sarif":  &sarifout.Formatter{},
+		"csv":    &csvout.Formatter{},
+		"table":  &tableout.Formatter{},
+		"github": &githubout.Formatter{},
+	}
+	require.Len(t, expected, len(meta.OutputFormatNames()))
+
+	for _, format := range meta.OutputFormatNames() {
+		want, ok := expected[format]
+		require.True(t, ok, "canonical format %q has no formatter contract", format)
+		assert.IsType(t, want, selectFormatter(format, false, false))
+	}
+	for format := range expected {
+		assert.True(t, meta.IsOutputFormat(format), "formatter %q is absent from canonical metadata", format)
+	}
+}
+
 func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	// Set known version info for deterministic output.
 	SetVersionInfo("1.0.0-test", "abc1234", "2026-03-24")
@@ -98,6 +118,11 @@ func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
 	rootCmd.SetArgs([]string{"version"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
 
 	err := rootCmd.Execute()
 	require.NoError(t, err)
@@ -106,9 +131,20 @@ func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	assert.Equal(t, want, buf.String())
 }
 
-func TestRootCommand_HelpMetadataMatchesGolden(t *testing.T) {
+func TestRootCommand_HelpMatchesGolden(t *testing.T) {
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"--help"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
+
+	require.NoError(t, rootCmd.Execute())
 	want := readGolden(t, "root-help.golden")
-	assert.Equal(t, strings.TrimSuffix(want, "\n"), rootCmd.Long)
+	assert.Equal(t, want, buf.String())
 }
 
 func TestOutputFormats_MatchGoldenAndFlagHelp(t *testing.T) {
@@ -122,6 +158,12 @@ func TestOutputFormats_MatchGoldenAndFlagHelp(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(defaultConfigTemplate, "{{OUTPUT_FORMATS}}"))
 	assert.Contains(t, defaultConfig, "# Output format: "+meta.OutputFormatList)
 	assert.NotContains(t, defaultConfig, "{{OUTPUT_FORMATS}}")
+
+	guide, err := os.ReadFile(filepath.Join("..", "docs", "guides", "configuration.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(guide), "# Valid values: "+meta.OutputFormatList)
+	assert.Contains(t, string(guide), "| `format` | string | `json` | `"+strings.Join(meta.OutputFormatNames(), "`, `")+"` |")
+	assert.Contains(t, string(guide), "| `output.format` | `"+strings.Join(meta.OutputFormatNames(), "`, `")+"` |")
 }
 
 func readGolden(t *testing.T, name string) string {

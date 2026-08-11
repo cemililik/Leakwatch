@@ -99,4 +99,11 @@ func TestReleaseMetadata_MatchesPublishedDocumentation(t *testing.T) {
 	assert.Contains(t, string(roadmap),
 		"| Review Remediation Release | Released | `"+ReleaseVersion+"` | "+ReleaseDate+" |",
 		"roadmap release record must match canonical release metadata")
+	assert.Contains(t, string(roadmap),
+		"| Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.8.0` | — |",
+		"the published v1.7.0 tag must not still be assigned to planned Phase 9")
+	assert.NotContains(t, string(roadmap),
+		"| Phase 9 — Detection Accuracy & FP Reduction | Planned | `"+ReleaseVersion+"` | — |")
+	assert.Contains(t, string(roadmap), "| Broaden OpenAI key coverage | Delivered in `v1.7.0` |")
+	assert.Contains(t, string(roadmap), "| GitHub fine-grained PAT support | Delivered in `v1.7.0` |")
 }

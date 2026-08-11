@@ -438,27 +438,27 @@ The product's core promise is **accurate, verified, low-noise secret findings**.
 
 ### Deliverables
 
-| Task | Priority | Description |
-|------|----------|-------------|
-| Centralized false-positive filter | Critical | Shared module applied before verification: common placeholder values, a dictionary/word-list of dummy strings, and known non-secret patterns, so individual detectors no longer each re-implement ad-hoc skips |
-| Engine-level entropy gating | Critical | Apply the configured `detection.entropy.threshold` in the detection engine itself (today only custom YAML rules honor it), so low-entropy matches are dropped consistently |
-| Keyword pre-filters for high-noise detectors | High | Add Aho-Corasick pre-filter keywords / context anchors to detectors that currently scan every chunk (e.g. Telegram, Discord), which today fire on any token-shaped string |
-| Broaden OpenAI key coverage | High | Detect legacy and service-account key variants in addition to project keys, anchoring on the embedded provider marker for precision (fewer misses, fewer false positives) |
-| GitHub fine-grained PAT support | High | Extend the GitHub detector to cover fine-grained personal access tokens (`github_pat_`), now a default token type |
-| Trusted Shopify issuer configuration | High | Expose a validated, operator-controlled Shopify store origin. Finding-controlled domains must never select the credential target; until this exists Shopify remains truthfully `requires_context` and makes no request |
-| Tighten Anthropic key regex | Medium | Anchor exact length and trailing marker; distinguish admin from standard keys |
-| Mailgun & JWT format breadth | Medium | Add the alternate Mailgun key format; broaden JWT matching to pretty-printed / base64-variant headers and optional padding |
-| Supabase service-role detection | Medium | Detect service-role JWTs (`role: service_role`) in addition to management PATs, so coverage matches the detector's name |
-| Bounded / streaming result buffering | Medium | Cap or stream the in-memory finding buffer so adversarially large inputs cannot exhaust memory before the verification phase |
-| Accuracy benchmark suite | High | Curated true/false corpus measuring precision and recall per detector, run in CI to guard against regressions |
+| Task | Status | Priority | Description |
+|------|--------|----------|-------------|
+| Centralized false-positive filter | Planned | Critical | Shared module applied before verification: common placeholder values, a dictionary/word-list of dummy strings, and known non-secret patterns, so individual detectors no longer each re-implement ad-hoc skips |
+| Engine-level entropy gating | Delivered in `v1.7.0` | Critical | The configured `detection.entropy.threshold` gates heuristic findings engine-wide while structural detectors remain eligible |
+| Keyword pre-filters for high-noise detectors | Planned | High | Add Aho-Corasick pre-filter keywords / context anchors to detectors that still scan every chunk; validate them against the accuracy corpus |
+| Broaden OpenAI key coverage | Delivered in `v1.7.0` | High | Legacy and service-account variants ship alongside project keys, anchored on provider-specific structure |
+| GitHub fine-grained PAT support | Delivered in `v1.7.0` | High | Fine-grained personal access tokens (`github_pat_`) are detected |
+| Trusted Shopify issuer configuration | Delivered after `v1.7.0` | High | The CLI accepts only an explicit, validated operator-controlled store origin; finding-controlled domains never select the target |
+| Tighten Anthropic key regex | Planned | Medium | Anchor exact length and trailing marker; distinguish admin from standard keys |
+| Mailgun & JWT format breadth | Planned | Medium | Add the alternate Mailgun key format; broaden JWT matching to pretty-printed / base64-variant headers and optional padding |
+| Supabase service-role detection | Planned | Medium | Detect service-role JWTs (`role: service_role`) in addition to management PATs; the existing `sbp_` detector is explicitly documented as a Management PAT |
+| Bounded result buffering | Delivered in `v1.7.0` | Medium | Scan result memory is explicitly bounded before verification |
+| Accuracy benchmark suite | Planned | High | Curated true/false corpus measuring precision and recall per detector, run in CI to guard against regressions |
 
 ### Acceptance Criteria
 
 - [ ] Verified-mode false-positive rate is measured on the benchmark corpus and meets the `<5%` target
-- [ ] The configured entropy threshold gates findings engine-wide, not only for custom rules
+- [x] The configured entropy threshold gates findings engine-wide, not only for custom rules (`v1.7.0`)
 - [ ] Telegram/Discord (and other previously keyword-less detectors) no longer fire on unrelated numeric/base64 strings in the corpus
-- [ ] Shopify findings reach verification only through a validated operator-trusted store origin; Okta and Bitbucket retain their existing detector-to-verifier context wiring
-- [ ] OpenAI legacy/service-account keys and GitHub `github_pat_` tokens are detected
+- [x] Shopify findings reach verification only through a validated operator-trusted store origin; Okta and Bitbucket retain their detector-to-verifier context wiring (post-`v1.7.0`, awaiting the next release)
+- [x] OpenAI legacy/service-account keys and GitHub `github_pat_` tokens are detected (`v1.7.0`)
 - [ ] Detector test coverage stays ≥95% for every touched detector
 
 ### Exit Criteria

@@ -133,7 +133,7 @@ filter:
 # ── Output Settings ─────────────────────────────────────────────
 output:
   # Output format.
-  # Valid values: json, sarif, csv, table
+  # Valid values: json, sarif, csv, table, github
   # Default: json
   format: json
 
@@ -226,7 +226,7 @@ flowchart LR
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `format` | string | `json` | `json`, `sarif`, `csv`, `table` |
+| `format` | string | `json` | `json`, `sarif`, `csv`, `table`, `github` |
 | `file` | string | `""` | Output file (empty = stdout) |
 | `show-raw` | bool | `false` | Show secret content without masking |
 | `severity-threshold` | string | `low` | Minimum reporting level |

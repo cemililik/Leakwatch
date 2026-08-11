@@ -74,9 +74,16 @@ func readReleaseVersion(root string) (string, error) {
 	return found, nil
 }
 
-// syncSiteReleaseVersion rewrites every marked top-level site page. Any page
-// carrying the release-footer text without the marker fails the build, so a
-// newly copied/manual footer cannot escape the canonical metadata pipeline.
+type sitePageUpdate struct {
+	path    string
+	content []byte
+	mode    os.FileMode
+}
+
+// syncSiteReleaseVersion validates every top-level site page before writing
+// any of them, then atomically replaces each stale page. Requiring the marker
+// on every page prevents a removed footer from silently escaping the canonical
+// metadata pipeline.
 func syncSiteReleaseVersion(root, version string) (int, error) {
 	if !stableReleasePattern.MatchString(version) {
 		return 0, fmt.Errorf("refuse unsafe release version %q", version)
@@ -90,63 +97,95 @@ func syncSiteReleaseVersion(root, version string) (int, error) {
 		return 0, fmt.Errorf("no top-level site HTML pages found")
 	}
 
-	marked := 0
+	updates := make([]sitePageUpdate, 0, len(pages))
 	for _, path := range pages {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return 0, fmt.Errorf("inspect %s: %w", filepath.Base(path), err)
+		}
+		if !info.Mode().IsRegular() {
+			return 0, fmt.Errorf("site page %s must be a regular file", filepath.Base(path))
+		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return 0, fmt.Errorf("read %s: %w", filepath.Base(path), err)
 		}
-		updated, hasFooter, err := replaceReleaseFooter(content, version)
+		updated, err := replaceReleaseFooter(content, version)
 		if err != nil {
 			return 0, fmt.Errorf("release footer %s: %w", filepath.Base(path), err)
 		}
-		if !hasFooter {
-			continue
-		}
-		marked++
 		if bytes.Equal(content, updated) {
 			continue
 		}
-		if err := os.WriteFile(path, updated, 0o644); err != nil {
-			return 0, fmt.Errorf("write %s: %w", filepath.Base(path), err)
+		updates = append(updates, sitePageUpdate{path: path, content: updated, mode: info.Mode().Perm()})
+	}
+
+	// Validation above is deliberately complete before this write phase: a
+	// malformed later page can never leave earlier pages partially regenerated.
+	for _, update := range updates {
+		if err := writeFileAtomic(update.path, update.content, update.mode); err != nil {
+			return 0, fmt.Errorf("write %s: %w", filepath.Base(update.path), err)
 		}
 	}
-	if marked == 0 {
-		return 0, fmt.Errorf("no release footer markers found in site HTML pages")
-	}
-	return marked, nil
+	return len(pages), nil
 }
 
-func replaceReleaseFooter(content []byte, version string) ([]byte, bool, error) {
+func replaceReleaseFooter(content []byte, version string) ([]byte, error) {
 	text := string(content)
 	markerCount := strings.Count(text, releaseFooterOpen)
 	if markerCount == 0 {
-		if strings.Contains(text, "concept: redacted") {
-			return nil, false, fmt.Errorf("footer text exists without data-release-version marker")
-		}
-		return content, false, nil
+		return nil, fmt.Errorf("missing data-release-version marker")
 	}
 	if markerCount != 1 {
-		return nil, false, fmt.Errorf("expected one data-release-version marker, found %d", markerCount)
+		return nil, fmt.Errorf("expected one data-release-version marker, found %d", markerCount)
 	}
 	footerTextCount := strings.Count(text, "concept: redacted")
 	if footerTextCount > 1 {
-		return nil, false, fmt.Errorf("expected at most one release footer text, found %d", footerTextCount)
+		return nil, fmt.Errorf("expected at most one release footer text, found %d", footerTextCount)
 	}
 
 	start := strings.Index(text, releaseFooterOpen)
 	bodyStart := start + len(releaseFooterOpen)
 	closeOffset := strings.Index(text[bodyStart:], "</span>")
 	if closeOffset < 0 {
-		return nil, false, fmt.Errorf("marked release footer has no closing span")
+		return nil, fmt.Errorf("marked release footer has no closing span")
 	}
 	close := bodyStart + closeOffset
 	if strings.ContainsAny(text[bodyStart:close], "<>") {
-		return nil, false, fmt.Errorf("marked release footer body must be plain text")
+		return nil, fmt.Errorf("marked release footer body must be plain text")
 	}
 	if footerTextCount == 1 && !strings.Contains(text[bodyStart:close], "concept: redacted") {
-		return nil, false, fmt.Errorf("release footer text exists outside the marked span")
+		return nil, fmt.Errorf("release footer text exists outside the marked span")
 	}
 	wanted := text[:bodyStart] + version + releaseFooterText + text[close:]
-	return []byte(wanted), true, nil
+	return []byte(wanted), nil
+}
+
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return nil
 }
