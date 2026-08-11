@@ -104,17 +104,12 @@ func Execute() int {
 	// ExecuteC returns the command that actually ran/failed so the error hint can
 	// point at that subcommand's own --help rather than the top-level one.
 	cmd, err := rootCmd.ExecuteC()
-	if err == nil {
-		return 0
+	code := exitCodeForError(err)
+	if code == 0 || code == 1 {
+		return code
 	}
 
-	var fErr *FindingsExitError
-	if errors.As(err, &fErr) {
-		return 1
-	}
-
-	var iErr *InterruptedExitError
-	if errors.As(err, &iErr) {
+	if code == 3 {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		slog.Debug("scan interrupted", "error", err)
 		return 3
@@ -124,6 +119,23 @@ func Execute() int {
 	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 	fmt.Fprintf(os.Stderr, "\nRun '%s --help' for usage information.\n", cmd.CommandPath())
 	slog.Debug("command failed", "error", err)
+	return 2
+}
+
+// exitCodeForError is the single testable mapping between typed command errors
+// and the process contract documented above.
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var findingsErr *FindingsExitError
+	if errors.As(err, &findingsErr) {
+		return 1
+	}
+	var interruptedErr *InterruptedExitError
+	if errors.As(err, &interruptedErr) {
+		return 3
+	}
 	return 2
 }
 

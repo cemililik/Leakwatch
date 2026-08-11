@@ -135,6 +135,19 @@ func (s *GCSSource) Err() error {
 	return s.err
 }
 
+// Close releases the GCS client. A close failure retains the client so callers
+// can report the error and retry cleanup; successful repeated calls are no-ops.
+func (s *GCSSource) Close() error {
+	if s.client == nil {
+		return nil
+	}
+	if err := s.client.Close(); err != nil {
+		return fmt.Errorf("gcs client close failed: %w", err)
+	}
+	s.client = nil
+	return nil
+}
+
 // captureErr records the first terminal error that aborted chunk production. It
 // is called only from the single Chunks goroutine, before close(ch), so a plain
 // field write is safe (the channel close/drain publishes it to Err's reader).
@@ -186,7 +199,7 @@ func (s *GCSSource) Chunks(ctx context.Context) <-chan source.Chunk {
 			return
 		}
 		defer func() {
-			if err := s.client.Close(); err != nil {
+			if err := s.Close(); err != nil {
 				slog.Warn("gcs client close failed", "error", err)
 			}
 		}()

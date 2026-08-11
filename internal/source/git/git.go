@@ -53,6 +53,7 @@ type GitSource struct {
 	excludePaths   []string
 	tmpDir         string // Temporary directory for cloned repos
 	resolvedBranch string // Cached branch resolution
+	removeAll      func(string) error
 
 	// err records the first terminal failure that aborted history production
 	// (start-commit resolution, git log, or the history walk). It is written
@@ -104,13 +105,16 @@ func (s *GitSource) Validate(ctx context.Context) error {
 	}
 
 	if s.branch != "" {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := s.resolveStartHash(); err != nil {
 			return err
 		}
 	}
 
 	if s.sinceCommit != "" {
-		if err := s.validateSinceCommit(); err != nil {
+		if err := s.validateSinceCommit(ctx); err != nil {
 			return err
 		}
 	}
@@ -122,9 +126,12 @@ func (s *GitSource) Validate(ctx context.Context) error {
 // ancestor of the walk's starting commit (the configured branch tip, or HEAD).
 // Returning an explicit error prevents the diff-based scan from silently
 // degrading into a full-history scan.
-func (s *GitSource) validateSinceCommit() error {
-	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
+func (s *GitSource) validateSinceCommit(ctx context.Context) error {
+	sinceCommitObj, err := s.resolveCommitHash(ctx, s.sinceCommit)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -132,17 +139,23 @@ func (s *GitSource) validateSinceCommit() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	startCommit, err := s.repo.CommitObject(startHash)
 	if err != nil {
 		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if sinceCommitObj.Hash == startCommit.Hash {
 		return nil
 	}
 
-	isAncestor, err := sinceCommitObj.IsAncestor(startCommit)
+	isAncestor, err := isAncestorContext(ctx, sinceCommitObj, startCommit)
 	if err != nil {
 		return fmt.Errorf("failed to check ancestry of since-commit %q: %w", s.sinceCommit, err)
 	}
@@ -158,7 +171,10 @@ func (s *GitSource) validateSinceCommit() error {
 // resolved by scanning the object store for a unique match, so the documented
 // `--since-commit abc1234` short-hash usage works rather than silently producing
 // a wrong zero-padded hash via plumbing.NewHash.
-func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
+func (s *GitSource) resolveCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ref = strings.TrimSpace(ref)
 
 	if len(ref) == fullHashLen {
@@ -168,6 +184,9 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		c, err := s.repo.CommitObject(plumbing.NewHash(ref))
 		if err != nil {
 			return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		return c, nil
 	}
@@ -198,6 +217,9 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		ambiguous bool
 	)
 	err = iter.ForEach(func(c *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !strings.HasPrefix(c.Hash.String(), lower) {
 			return nil
 		}
@@ -218,6 +240,25 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		return nil, fmt.Errorf("since-commit %q not found", ref)
 	}
 	return match, nil
+}
+
+func isAncestorContext(ctx context.Context, ancestor, descendant *object.Commit) (bool, error) {
+	iter := object.NewCommitPreorderIter(descendant, nil, nil)
+	defer iter.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		commit, err := iter.Next()
+		switch {
+		case errors.Is(err, io.EOF):
+			return false, nil
+		case err != nil:
+			return false, err
+		case commit.Hash == ancestor.Hash:
+			return true, nil
+		}
+	}
 }
 
 // resolveStartHash returns the commit hash the history walk should start from.
@@ -243,7 +284,11 @@ func (s *GitSource) resolveStartHash() (plumbing.Hash, error) {
 // the temporary directory.
 func (s *GitSource) Close() error {
 	if s.tmpDir != "" {
-		if err := os.RemoveAll(s.tmpDir); err != nil {
+		removeAll := s.removeAll
+		if removeAll == nil {
+			removeAll = os.RemoveAll
+		}
+		if err := removeAll(s.tmpDir); err != nil {
 			return fmt.Errorf("failed to remove temp directory %s: %w", s.tmpDir, err)
 		}
 		s.tmpDir = ""
@@ -274,6 +319,9 @@ func (s *GitSource) cloneRemote(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
+	// Own the directory immediately so every failure path can clean it through
+	// Close and a failed cleanup remains retryable by the caller.
+	s.tmpDir = tmpDir
 
 	cloneOpts := &git.CloneOptions{
 		URL:      s.target,
@@ -293,17 +341,26 @@ func (s *GitSource) cloneRemote(ctx context.Context) error {
 
 	repo, err := git.PlainCloneContext(ctx, tmpDir, false, cloneOpts)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
 		// go-git's HTTP transport and endpoint layers re-embed the raw
 		// user:password@host userinfo from the clone URL into their error
 		// strings, so the raw err must never be wrapped with %w. Sanitize it
 		// first so no credential can reach errors.Unwrap chains, stderr, or CI
 		// logs.
-		return fmt.Errorf("failed to clone git repository %s: %w",
-			s.displayTarget, sanitizeCloneError(err, s.target, s.displayTarget))
+		var cloneErr error
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Preserve cancellation identity so the CLI maps an interrupted clone
+			// to exit 3. The context error itself contains no clone credential.
+			cloneErr = ctxErr
+		} else {
+			cloneErr = fmt.Errorf("failed to clone git repository %s: %w",
+				s.displayTarget, sanitizeCloneError(err, s.target, s.displayTarget))
+		}
+		if cleanupErr := s.Close(); cleanupErr != nil {
+			return errors.Join(cloneErr, cleanupErr)
+		}
+		return cloneErr
 	}
 	s.repo = repo
-	s.tmpDir = tmpDir
 	return nil
 }
 
@@ -423,7 +480,7 @@ func (s *GitSource) chunksFullHistory(ctx context.Context, ch chan<- source.Chun
 // (exclusive) and the branch tip / HEAD (inclusive), diffing each commit against
 // its parent.
 func (s *GitSource) chunksSinceCommit(ctx context.Context, ch chan<- source.Chunk) {
-	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
+	sinceCommitObj, err := s.resolveCommitHash(ctx, s.sinceCommit)
 	if err != nil {
 		slog.Error("since-commit resolution failed", "commit", s.sinceCommit, "error", err)
 		s.captureErr(fmt.Errorf("since-commit resolution failed: %w", err))

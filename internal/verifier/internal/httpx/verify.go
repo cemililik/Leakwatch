@@ -389,7 +389,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client, token strin
 	// The shared client does not follow redirects: a 3xx from an API endpoint
 	// means the credential context is wrong, never that the secret is active.
 	if IsRedirect(resp.StatusCode) {
-		_ = resp.Body.Close()
+		closeResponse(resp)
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
 			Message: fmt.Sprintf("unexpected redirect (status %d)", resp.StatusCode),

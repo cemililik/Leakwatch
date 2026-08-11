@@ -434,6 +434,25 @@ func TestAddRetryJitter_IsBoundedAndNeverShortensRetryAfter(t *testing.T) {
 }
 
 func TestVerifyToken_RetryAndDecodePanicAlwaysCloseResponseBodies(t *testing.T) {
+	t.Run("redirect drains and closes response", func(t *testing.T) {
+		var closed atomic.Bool
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusTemporaryRedirect,
+				Header:     make(http.Header),
+				Body:       &closeTrackingBody{Reader: strings.NewReader("redirect body"), closed: &closed},
+			}, nil
+		})}
+
+		result := VerifyToken(context.Background(), client, testToken, TokenSpec{
+			Name:    "x",
+			Request: Request{URL: "https://provider.example.test/probe"},
+		})
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+		assert.Contains(t, result.Message, "redirect")
+		assert.True(t, closed.Load())
+	})
+
 	t.Run("retry closes the 429 response before the next request", func(t *testing.T) {
 		var (
 			calls       atomic.Int64

@@ -2,7 +2,10 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type cancelAfterErrChecks struct {
+	context.Context
+	remaining int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	c.remaining--
+	if c.remaining <= 0 {
+		return context.Canceled
+	}
+	return nil
+}
 
 // initTestRepo creates a temporary git repository for testing.
 func initTestRepo(t *testing.T, files map[string]string) (string, *gogit.Repository) {
@@ -486,6 +502,99 @@ func TestGitSource_Close_NoTmpDir(t *testing.T) {
 	// Close on a non-cloned source should be a no-op.
 	err := s.Close()
 	assert.NoError(t, err)
+}
+
+func TestGitSource_Close_FailedCleanupRemainsRetryable(t *testing.T) {
+	tmpDir := t.TempDir()
+	cleanupErr := errors.New("synthetic cleanup failure")
+	s := &GitSource{
+		tmpDir:    tmpDir,
+		removeAll: func(string) error { return cleanupErr },
+	}
+
+	err := s.Close()
+	require.ErrorIs(t, err, cleanupErr)
+	assert.Equal(t, tmpDir, s.tmpDir, "failed cleanup must retain ownership for a retry")
+
+	s.removeAll = os.RemoveAll
+	require.NoError(t, s.Close())
+	assert.Empty(t, s.tmpDir)
+	_, err = os.Stat(tmpDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestGitSource_ResolveCommitHash_CancellationStopsEnumeration(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"base.txt": "base"})
+	head, err := repo.Head()
+	require.NoError(t, err)
+	basePrefix := head.Hash().String()[:8]
+	for i := range 20 {
+		addCommit(t, dir, repo, map[string]string{
+			fmt.Sprintf("file-%d.txt", i): fmt.Sprintf("content-%d", i),
+		}, fmt.Sprintf("commit-%d", i))
+	}
+
+	s := New(dir)
+	require.NoError(t, s.openLocal())
+	ctx := &cancelAfterErrChecks{Context: context.Background(), remaining: 2}
+
+	_, err = s.resolveCommitHash(ctx, basePrefix)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestIsAncestorContext_CancellationStopsHistoryWalk(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"base.txt": "base"})
+	baseRef, err := repo.Head()
+	require.NoError(t, err)
+	base, err := repo.CommitObject(baseRef.Hash())
+	require.NoError(t, err)
+
+	for i := range 20 {
+		addCommit(t, dir, repo, map[string]string{
+			fmt.Sprintf("history-%d.txt", i): fmt.Sprintf("content-%d", i),
+		}, fmt.Sprintf("history-%d", i))
+	}
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	head, err := repo.CommitObject(headRef.Hash())
+	require.NoError(t, err)
+
+	ctx := &cancelAfterErrChecks{Context: context.Background(), remaining: 2}
+	_, err = isAncestorContext(ctx, base, head)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestGitSource_Validate_RemoteCloneCancellationIsPromptAndCleansUp(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	s := New(server.URL + "/repo.git")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Validate(ctx) }()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("clone did not start an HTTP request")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, s.tmpDir, "cancelled clone must clean up its temporary directory")
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote validation did not stop promptly after cancellation")
+	}
 }
 
 func TestSafeDisplayURL_StripsCredentials(t *testing.T) {

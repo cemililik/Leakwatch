@@ -57,17 +57,60 @@ func (v *Verifier) Type() string {
 // first probe is never treated as "inactive", so it is returned as-is
 // without a second call.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
+	return v.verify(ctx, raw, nil)
+}
+
+// VerificationRequestBudget allows one initial request and one bounded HTTP
+// 429 replay in each of Mailgun's two fixed regions.
+func (v *Verifier) VerificationRequestBudget() int { return 4 }
+
+// VerifyWithRequestGate admits every actual regional send through the engine's
+// global and per-provider limiters. HTTP 429 replays receive the same gate via
+// the shared httpx context.
+func (v *Verifier) VerifyWithRequestGate(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
+	return v.verify(ctx, raw, gate)
+}
+
+func (v *Verifier) verify(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
 	token := string(raw.Raw)
+	if token == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "empty token",
+		}
+	}
 
 	usURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
-	result := verifyDomains(ctx, v.httpClient, token, usURL)
+	result := v.verifyRegion(ctx, token, usURL, gate)
 	if result.Status != finding.StatusVerifiedInactive {
 		return result
 	}
 
 	slog.DebugContext(ctx, "mailgun verifier: US host reports inactive, retrying against EU host")
 	euURL := httpx.BaseURL(v.euAPIURL, defaultEUAPIURL)
-	return verifyDomains(ctx, v.httpClient, token, euURL)
+	return v.verifyRegion(ctx, token, euURL, gate)
+}
+
+func (v *Verifier) verifyRegion(
+	ctx context.Context,
+	token, apiURL string,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
+	if gate != nil {
+		if rejection := gate(); rejection != nil {
+			return *rejection
+		}
+		ctx = httpx.WithRetryGate(ctx, httpx.RetryGate(gate))
+	}
+	return verifyDomains(ctx, v.httpClient, token, apiURL)
 }
 
 // verifyDomains performs the Mailgun GET /v3/domains check against apiURL.

@@ -508,7 +508,7 @@ GitHub Release published with `v1.9.0` tag.
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| Per-provider rate limiting, caching & backoff | Critical | Replace the single global token-bucket limiter with per-provider limits, response caching to avoid re-verifying identical secrets, and exponential backoff/retry on transient failures |
+| Provider policy, caching & transient backoff | Critical | Build on the current global plus per-detector token-bucket limiters and one bounded, safe `Retry-After` replay: add provider-specific policies, response caching to avoid re-verifying identical secrets, and broader safe transient backoff |
 | Canary-safe verification | High | Recognize well-known decoy/canary credential formats and skip live verification for them, so a scan never triggers an alert on someone else's planted token |
 | Active private-key verification | High | Where a safe check exists, derive the public key from a detected private key and confirm liveness/association; introduce a distinct "verified key material" status that does not overstate access |
 | Credential impact analysis | High | Opt-in: for a verified secret, enumerate its effective permissions and reachable resources, starting with the highest-value providers, so users understand blast radius — not just that a secret is live |
@@ -516,7 +516,7 @@ GitHub Release published with `v1.9.0` tag.
 
 ### Acceptance Criteria
 
-- [ ] Per-provider limits and response caching are verified under load; transient failures retry with backoff
+- [ ] Provider-specific policies and response caching are verified under load; eligible transient failures retry with bounded backoff
 - [ ] Known canary credential formats are never sent to a live endpoint
 - [ ] Private-key findings can reach a "verified key material" status without implying broader access
 - [ ] Impact analysis produces a permission/resource summary for at least the top-priority providers
@@ -645,7 +645,7 @@ Earlier reviews recorded behaviors that the documentation or public interface pr
 | Supabase service-role JWT not detected (only management PAT) | Phase 9 |
 | Unbounded in-memory result buffering | Phase 9 |
 | `--remediation-format brief\|full` flag not implemented | Phase 9 (minor) |
-| Per-provider rate limiting, verification caching, exponential backoff/retry | Phase 11 |
+| Provider-specific verification policy, caching, and broader bounded transient backoff | Phase 11 |
 | Slack file scanning (`--include-files` is a no-op) | Phase 12 |
 
 > **Minor item — `--remediation-format`:** today only a boolean `--remediation` flag exists; the `brief|full` variant referenced in the Phase 6 deliverables and the verification guide is unimplemented. Small UX task, folded into Phase 9.
@@ -838,7 +838,7 @@ Source packages (no formal standard, but visible gaps):
 | # | Gap | One-line description | Area affected | Owning phase |
 |---|-----|----------------------|---------------|--------------|
 | 1 | **Slack file scanning** | `--include-files` flag is accepted and documented but is a no-op; the `SlackSource` never fetches file content from the Slack Files API. | `internal/source/slack/slack.go`, `docs/guides/slack-scanning.md`, CHANGELOG v1.2.0 | Phase 12 |
-| 2 | **Per-provider rate limiting, verification caching, exponential backoff/retry** | The verifier engine has a single global token-bucket rate limiter; there is no per-provider limit, no response caching, and no retry with backoff. Phase 8 deliverables and the ROADMAP claim per-provider rate limiting is implemented. | `internal/verifier/engine.go`, Phase 8 deliverables table, v1.3.0 highlights | Phase 11 |
+| 2 | **Provider-specific verification policy, caching, and broader bounded transient backoff** | Historical snapshot: the engine formerly had only one global limiter and no retry. It now enforces global plus per-detector admission and one bounded safe `Retry-After` replay; response caching, provider-tuned policies, and wider eligible transient backoff remain planned. | `internal/verifier/engine.go`, Phase 8 deliverables table, v1.3.0 highlights | Phase 11 |
 | 3 | **`--remediation-format brief\|full` flag** | Only a boolean `--remediation` flag exists; the two-value `brief\|full` variant mentioned in Phase 6 deliverables and `docs/guides/secret-verification.md` is not implemented. | `cmd/scan_common.go`, Phase 6 deliverables table | Phase 9 (minor) |
 | 4 | **Engine-level entropy-threshold gating** | The `detection.entropy.threshold` config value is read and displayed in scan summaries, but the detection engine does not gate findings on it; only custom YAML rules apply their own per-rule entropy threshold. | `internal/engine/`, `internal/config/`, `docs/guides/configuration.md` | Phase 9 |
 | 5 | **Shopify trusted-store configuration** | Shopify access-token formats do not identify their issuing store. The verifier deliberately ignores finding-controlled domains and remains `StatusUnverified` until a validated, operator-controlled store origin is available. The read-only 2026-07 GraphQL verifier contract is prepared; Okta and Bitbucket companion context is already wired. | `internal/verifier/shopify/`, `internal/detector/shopify/`, and scan configuration | Phase 9 |

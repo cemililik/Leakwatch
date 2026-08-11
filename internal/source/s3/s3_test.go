@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -18,10 +19,13 @@ import (
 
 // mockS3Client is a minimal mock for the s3Client interface.
 type mockS3Client struct {
-	objects []types.Object
-	data    map[string]string
-	headErr error
-	listErr error
+	objects         []types.Object
+	data            map[string]string
+	headErr         error
+	listErr         error
+	headBlock       bool
+	headDeadline    time.Time
+	headHasDeadline bool
 }
 
 func (m *mockS3Client) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
@@ -51,7 +55,12 @@ func (m *mockS3Client) GetObject(_ context.Context, input *s3.GetObjectInput, _ 
 	}, nil
 }
 
-func (m *mockS3Client) HeadBucket(_ context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+func (m *mockS3Client) HeadBucket(ctx context.Context, _ *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+	m.headDeadline, m.headHasDeadline = ctx.Deadline()
+	if m.headBlock {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return &s3.HeadBucketOutput{}, m.headErr
 }
 
@@ -113,6 +122,31 @@ func TestS3Source_Validate_AccessibleBucket_ReturnsNil(t *testing.T) {
 	s := New("my-bucket")
 	s.client = &mockS3Client{}
 	assert.NoError(t, s.Validate(context.Background()))
+}
+
+func TestS3Source_Validate_AppliesDefaultDeadline(t *testing.T) {
+	mock := &mockS3Client{}
+	s := New("my-bucket")
+	s.client = mock
+	started := time.Now()
+
+	require.NoError(t, s.Validate(context.Background()))
+	require.True(t, mock.headHasDeadline)
+	assert.WithinDuration(t, started.Add(validateTimeout), mock.headDeadline, time.Second)
+}
+
+func TestS3Source_Validate_CallerDeadlineCancelsRequest(t *testing.T) {
+	mock := &mockS3Client{headBlock: true}
+	s := New("my-bucket")
+	s.client = mock
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	err := s.Validate(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), time.Second)
+	assert.WithinDuration(t, started.Add(20*time.Millisecond), mock.headDeadline, 50*time.Millisecond)
 }
 
 func TestS3Source_Chunks_SendsTextObjects(t *testing.T) {

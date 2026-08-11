@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
 	"github.com/stretchr/testify/assert"
@@ -17,8 +18,10 @@ import (
 
 // mockGCSClient implements the gcsClient interface for testing.
 type mockGCSClient struct {
-	buckets map[string]*mockBucketHandle
-	closed  bool
+	buckets    map[string]*mockBucketHandle
+	closed     bool
+	closeErr   error
+	closeCalls int
 }
 
 func (m *mockGCSClient) Bucket(name string) bucketHandle {
@@ -29,19 +32,31 @@ func (m *mockGCSClient) Bucket(name string) bucketHandle {
 }
 
 func (m *mockGCSClient) Close() error {
+	m.closeCalls++
+	if m.closeErr != nil {
+		return m.closeErr
+	}
 	m.closed = true
 	return nil
 }
 
 // mockBucketHandle implements the bucketHandle interface for testing.
 type mockBucketHandle struct {
-	name     string
-	notFound bool
-	objects  []*gcsstorage.ObjectAttrs
-	data     map[string]string
+	name             string
+	notFound         bool
+	objects          []*gcsstorage.ObjectAttrs
+	data             map[string]string
+	attrsBlock       bool
+	attrsDeadline    time.Time
+	attrsHasDeadline bool
 }
 
-func (b *mockBucketHandle) Attrs(_ context.Context) (*gcsstorage.BucketAttrs, error) {
+func (b *mockBucketHandle) Attrs(ctx context.Context) (*gcsstorage.BucketAttrs, error) {
+	b.attrsDeadline, b.attrsHasDeadline = ctx.Deadline()
+	if b.attrsBlock {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if b.notFound {
 		return nil, fmt.Errorf("bucket not found")
 	}
@@ -152,6 +167,33 @@ func TestGCSSource_Validate_AccessibleBucket_ReturnsNil(t *testing.T) {
 	assert.NoError(t, s.Validate(context.Background()))
 }
 
+func TestGCSSource_Validate_AppliesDefaultDeadline(t *testing.T) {
+	bucket := &mockBucketHandle{name: "my-bucket"}
+	mock := &mockGCSClient{buckets: map[string]*mockBucketHandle{"my-bucket": bucket}}
+	s := New("my-bucket")
+	s.client = mock
+	started := time.Now()
+
+	require.NoError(t, s.Validate(context.Background()))
+	require.True(t, bucket.attrsHasDeadline)
+	assert.WithinDuration(t, started.Add(validateTimeout), bucket.attrsDeadline, time.Second)
+}
+
+func TestGCSSource_Validate_CallerDeadlineCancelsRequest(t *testing.T) {
+	bucket := &mockBucketHandle{name: "my-bucket", attrsBlock: true}
+	mock := &mockGCSClient{buckets: map[string]*mockBucketHandle{"my-bucket": bucket}}
+	s := New("my-bucket")
+	s.client = mock
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	err := s.Validate(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), time.Second)
+	assert.WithinDuration(t, started.Add(20*time.Millisecond), bucket.attrsDeadline, 50*time.Millisecond)
+}
+
 func TestGCSSource_Validate_InaccessibleBucket_ReturnsError(t *testing.T) {
 	mock := &mockGCSClient{
 		buckets: map[string]*mockBucketHandle{},
@@ -161,6 +203,8 @@ func TestGCSSource_Validate_InaccessibleBucket_ReturnsError(t *testing.T) {
 	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "inaccessible")
+	require.NoError(t, s.Close())
+	assert.True(t, mock.closed, "a client created before validation failure must remain closeable")
 }
 
 func TestGCSSource_Chunks_SendsTextObjects(t *testing.T) {
@@ -455,6 +499,26 @@ func TestGCSSource_Chunks_ClosesClientOnCompletion(t *testing.T) {
 	}
 
 	assert.True(t, mock.closed, "gcs client must be closed once Chunks completes")
+	assert.Nil(t, s.client, "successful close must make later cleanup idempotent")
+}
+
+func TestGCSSource_Close_FailureRemainsRetryable(t *testing.T) {
+	closeErr := fmt.Errorf("synthetic close failure")
+	mock := &mockGCSClient{buckets: map[string]*mockBucketHandle{}, closeErr: closeErr}
+	s := New("my-bucket")
+	s.client = mock
+
+	err := s.Close()
+	require.ErrorIs(t, err, closeErr)
+	assert.Same(t, mock, s.client)
+	assert.Equal(t, 1, mock.closeCalls)
+
+	mock.closeErr = nil
+	require.NoError(t, s.Close())
+	assert.Nil(t, s.client)
+	assert.Equal(t, 2, mock.closeCalls)
+	require.NoError(t, s.Close())
+	assert.Equal(t, 2, mock.closeCalls, "an already-closed source must be a no-op")
 }
 
 func TestGCSSource_Chunks_WithPrefix_FiltersObjects(t *testing.T) {

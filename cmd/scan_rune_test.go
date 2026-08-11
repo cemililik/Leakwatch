@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -243,6 +244,25 @@ func TestRunScan_CancelledValidationReturnsInterruptedExit(t *testing.T) {
 	err := runScan(cmd, cfg, src, nil)
 	var interrupted *InterruptedExitError
 	require.ErrorAs(t, err, &interrupted)
+	assert.Equal(t, 3, exitCodeForError(err), "cancelled validation must reach the process exit-3 contract")
+}
+
+func TestExitCodeForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "clean", want: 0},
+		{name: "findings", err: fmt.Errorf("wrapped: %w", &FindingsExitError{Count: 2}), want: 1},
+		{name: "generic failure", err: errors.New("boom"), want: 2},
+		{name: "interrupted", err: fmt.Errorf("wrapped: %w", &InterruptedExitError{}), want: 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, exitCodeForError(tc.err))
+		})
+	}
 }
 
 func TestLoadScanConfig_InvalidMinSeverity_ReturnsError(t *testing.T) {
