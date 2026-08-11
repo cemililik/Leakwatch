@@ -312,9 +312,10 @@ The verification engine manages API calls carefully to avoid overwhelming provid
 The verification engine uses a worker pool pattern with a shared rate limiter:
 
 1. **Worker pool** -- A fixed number of goroutines (default 4) process verification jobs concurrently.
-2. **Token bucket rate limiter** -- Before each API call, the worker acquires a token from a `golang.org/x/time/rate` limiter. If the bucket is empty, the worker waits until a token becomes available.
+2. **Global + provider token buckets** -- Before each API call, the worker acquires admission from both the global ceiling and the finding's provider/detector bucket. A busy provider therefore cannot starve unrelated verification work, while total outbound traffic still remains bounded.
 3. **Per-finding timeout** -- Each finding's complete verification operation has one context timeout (default 10s), including bounded provider-region fallback. If the provider does not respond in time, the finding is marked `verify_error`.
 4. **Context cancellation** -- If the parent context is cancelled (e.g., the user presses Ctrl+C), all pending verifications are abandoned gracefully.
+5. **Bounded HTTP 429 recovery** -- Safe GET/HEAD probes may retry once when the provider supplies a valid `Retry-After` no greater than 2 seconds. The delay includes bounded jitter; the retry passes through both limiter buckets again and never exceeds the per-finding context deadline. POST and other potentially unsafe methods, missing/invalid headers, and longer requested waits are not retried; they remain `verify_error`.
 
 ### Configuration
 

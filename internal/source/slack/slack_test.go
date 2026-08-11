@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -34,6 +35,8 @@ type mockSlackClient struct {
 	channels   []slack.Channel
 	messages   map[string][]slack.Message
 	authErr    error
+	authWait   bool
+	authCtx    context.Context
 	listErr    error
 	historyErr error
 
@@ -66,7 +69,12 @@ type mockSlackClient struct {
 	lastHistoryOldest string
 }
 
-func (m *mockSlackClient) AuthTestContext(_ context.Context) (*slack.AuthTestResponse, error) {
+func (m *mockSlackClient) AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error) {
+	m.authCtx = ctx
+	if m.authWait {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if m.authErr != nil {
 		return nil, m.authErr
 	}
@@ -152,7 +160,7 @@ func TestSlackSource_Validate_ValidToken_ReturnsNoError(t *testing.T) {
 	s := New("xoxb-test-token")
 	s.client = &mockSlackClient{}
 
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	assert.NoError(t, err)
 }
 
@@ -162,7 +170,7 @@ func TestSlackSource_Validate_InvalidToken_ReturnsError(t *testing.T) {
 		authErr: fmt.Errorf("invalid_auth"),
 	}
 
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "slack auth test failed")
 	assert.Contains(t, err.Error(), "invalid_auth")
@@ -171,9 +179,47 @@ func TestSlackSource_Validate_InvalidToken_ReturnsError(t *testing.T) {
 func TestSlackSource_Validate_EmptyToken_ReturnsError(t *testing.T) {
 	s := New("")
 
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "slack token is required")
+}
+
+func TestSlackSource_Validate_IsBoundedWithoutCallerDeadline(t *testing.T) {
+	mock := &mockSlackClient{}
+	s := New("xoxb-test-token")
+	s.client = mock
+
+	started := time.Now()
+	require.NoError(t, s.Validate(context.Background()))
+	deadline, ok := mock.authCtx.Deadline()
+	require.True(t, ok, "AuthTest validation must always carry a deadline")
+	assert.Greater(t, deadline, started)
+	assert.LessOrEqual(t, deadline.Sub(started), validationTimeout+time.Second)
+}
+
+func TestSlackSource_Validate_HonorsCallerCancellationAndRedactsToken(t *testing.T) {
+	const token = "xoxb-synthetic-validation-canary"
+	mock := &mockSlackClient{authWait: true}
+	s := New(token)
+	s.client = mock
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := s.Validate(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), time.Second)
+	assert.NotContains(t, err.Error(), token)
+
+	// A provider/library error that echoes the raw token must also be flattened
+	// before it can reach CLI stderr.
+	mock = &mockSlackClient{authErr: fmt.Errorf("invalid token %s", token)}
+	s.client = mock
+	err = s.Validate(context.Background())
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, context.Canceled))
+	assert.NotContains(t, err.Error(), token)
 }
 
 func TestSlackSource_Chunks_SingleChannel_EmitsMessages(t *testing.T) {

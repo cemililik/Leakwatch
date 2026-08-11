@@ -15,8 +15,27 @@ import (
 
 	"github.com/HodeTech/leakwatch/internal/engine"
 	"github.com/HodeTech/leakwatch/internal/scanner"
+	"github.com/HodeTech/leakwatch/internal/source"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+type cancelDuringValidationSource struct {
+	cancel context.CancelFunc
+}
+
+func (*cancelDuringValidationSource) Type() string { return "validation-cancel" }
+func (*cancelDuringValidationSource) Err() error   { return nil }
+func (s *cancelDuringValidationSource) Validate(ctx context.Context) error {
+	s.cancel()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (*cancelDuringValidationSource) Chunks(context.Context) <-chan source.Chunk {
+	ch := make(chan source.Chunk)
+	close(ch)
+	return ch
+}
 
 // executeRoot runs the real root command with the given args, capturing cobra's
 // own output so it does not leak into the test log, and returns the RunE error.
@@ -207,6 +226,23 @@ func TestFinishScan_ExitCodeContract(t *testing.T) {
 		result := &engine.ScanResult{Findings: []finding.Finding{}}
 		require.NoError(t, finishScan(base, result, "fs", nil))
 	})
+}
+
+func TestRunScan_CancelledValidationReturnsInterruptedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	src := &cancelDuringValidationSource{cancel: cancel}
+	cfg := &scanner.Config{
+		Concurrency: 1,
+		NoVerify:    true,
+		Format:      "json",
+		OutputFile:  filepath.Join(t.TempDir(), "result.json"),
+	}
+
+	err := runScan(cmd, cfg, src, nil)
+	var interrupted *InterruptedExitError
+	require.ErrorAs(t, err, &interrupted)
 }
 
 func TestLoadScanConfig_InvalidMinSeverity_ReturnsError(t *testing.T) {

@@ -23,11 +23,8 @@ import (
 // defaultMaxFileSize is the maximum object size to scan (10 MB).
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
 
-// validateTimeout bounds the network calls made by Validate. The
-// source.Source interface's Validate() method takes no context.Context
-// parameter, so the caller's own cancellation cannot be threaded through
-// here; a bounded timeout at least prevents an unreachable/misconfigured
-// bucket from hanging Validate indefinitely.
+// validateTimeout bounds validation when the caller provides no earlier
+// deadline. An earlier caller deadline or cancellation always wins.
 const validateTimeout = 30 * time.Second
 
 // s3Client defines the subset of the S3 API used by S3Source.
@@ -100,12 +97,12 @@ func (s *S3Source) captureErr(err error) {
 
 // Validate checks that the S3 bucket is accessible.
 // It initializes the AWS client if not already set and performs a HeadBucket call.
-func (s *S3Source) Validate() error {
+func (s *S3Source) Validate(ctx context.Context) error {
 	if s.bucket == "" {
 		return fmt.Errorf("s3 bucket name is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
+	ctx, cancel := context.WithTimeout(ctx, validateTimeout)
 	defer cancel()
 
 	if err := s.ensureClient(ctx); err != nil {

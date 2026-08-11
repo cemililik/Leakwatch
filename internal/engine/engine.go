@@ -142,11 +142,16 @@ func isEntropyGated(d detector.Detector, raw detector.RawFinding) bool {
 
 // Scan scans the given source and returns results.
 func (e *Engine) Scan(ctx context.Context, src source.Source) (*ScanResult, error) {
-	if err := src.Validate(); err != nil {
+	start := time.Now()
+	if err := ctx.Err(); err != nil {
+		return interruptedResult(start), err
+	}
+	if err := src.Validate(ctx); err != nil {
+		if ctx.Err() != nil {
+			return interruptedResult(start), ctx.Err()
+		}
 		return nil, fmt.Errorf("source validation failed: %w", err)
 	}
-
-	start := time.Now()
 
 	slog.Info(
 		"scan started",
@@ -287,6 +292,14 @@ loop:
 	}
 
 	return result, nil
+}
+
+func interruptedResult(start time.Time) *ScanResult {
+	return &ScanResult{
+		Findings:    []finding.Finding{},
+		Duration:    time.Since(start),
+		Interrupted: true,
+	}
 }
 
 // verifyBatch verifies a bounded batch of collected pairs and returns the

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/verifier/internal/httpx"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +32,22 @@ type testVerifier struct {
 	// deterministically without timing real sleeps.
 	inFlight    atomic.Int64
 	maxInFlight atomic.Int64
+}
+
+type httpRetryTestVerifier struct {
+	detectorID string
+	client     *http.Client
+	url        string
+}
+
+func (v *httpRetryTestVerifier) Type() string { return v.detectorID }
+func (v *httpRetryTestVerifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
+	token := string(raw.Raw)
+	return httpx.VerifyToken(ctx, v.client, token, httpx.TokenSpec{
+		Name:          "engine-retry-test",
+		Request:       httpx.Request{URL: v.url, Header: map[string]string{"Authorization": "Bearer " + token}},
+		ActiveMessage: "active after bounded retry",
+	})
 }
 
 func (v *testVerifier) Type() string { return v.detectorID }
@@ -314,6 +333,52 @@ func TestWaitRateLimit_GlobalFailureRefundsUnusedProviderReservation(t *testing.
 	secondCtx, secondCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer secondCancel()
 	assert.Nil(t, engine.waitRateLimit(secondCtx, "refunded-provider"))
+}
+
+func TestVerifyAll_HTTP429RetryUsesGlobalAndProviderLimiters(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		globalRate   rate.Limit
+		providerRate rate.Limit
+	}{
+		{name: "provider limiter is enforced", globalRate: 1000, providerRate: 10},
+		{name: "global limiter is enforced", globalRate: 10, providerRate: 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				callsAt []time.Time
+			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				mu.Lock()
+				callsAt = append(callsAt, time.Now())
+				call := len(callsAt)
+				mu.Unlock()
+				if call == 1 {
+					w.Header().Set("Retry-After", "0")
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			const detectorID = "http-retry-provider"
+			v := &httpRetryTestVerifier{detectorID: detectorID, client: server.Client(), url: server.URL}
+			engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1000}, []Verifier{v})
+			engine.rateLimiter = rate.NewLimiter(tc.globalRate, 1)
+			engine.perDetector[detectorID] = rate.NewLimiter(tc.providerRate, 1)
+
+			results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(detectorID, "http****retry")})
+			require.Len(t, results, 1)
+			assert.Equal(t, finding.StatusVerifiedActive, results[0].Verification.Status)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, callsAt, 2)
+			assert.GreaterOrEqual(t, callsAt[1].Sub(callsAt[0]), 85*time.Millisecond,
+				"retry must pass the limiting bucket at its actual send point")
+		})
+	}
 }
 
 func TestVerifyAll_NoMatchingVerifier_LeavesUnverified(t *testing.T) {

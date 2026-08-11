@@ -22,9 +22,9 @@ type fakeSource struct {
 	data []byte
 }
 
-func (f *fakeSource) Type() string    { return "fake" }
-func (f *fakeSource) Validate() error { return nil }
-func (f *fakeSource) Err() error      { return nil }
+func (f *fakeSource) Type() string                   { return "fake" }
+func (f *fakeSource) Validate(context.Context) error { return nil }
+func (f *fakeSource) Err() error                     { return nil }
 
 func (f *fakeSource) Chunks(ctx context.Context) <-chan source.Chunk {
 	ch := make(chan source.Chunk)

@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +28,16 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed *atomic.Bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed.Store(true)
+	return nil
 }
 
 // jsonServer returns a test server that responds with the given status code and
@@ -275,8 +288,10 @@ func TestVerifyToken_RateLimited_429IsDistinguished(t *testing.T) {
 	defer server.Close()
 
 	res := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
-		Name:    "x",
-		Request: Request{URL: server.URL},
+		Name: "x",
+		// POST is deliberately not retried: the shared helper only retries safe
+		// GET/HEAD probes.
+		Request: Request{Method: http.MethodPost, URL: server.URL},
 	})
 	assert.Equal(t, finding.StatusVerifyError, res.Status)
 	assert.Contains(t, res.Message, "rate limited by provider")
@@ -284,6 +299,210 @@ func TestVerifyToken_RateLimited_429IsDistinguished(t *testing.T) {
 	// A rate-limit response must be actionable, not the generic unexpected-status
 	// message.
 	assert.NotContains(t, res.Message, "unexpected status code")
+}
+
+func TestVerifyToken_RateLimitedGETRetriesOnceAndSucceeds(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:          "x",
+		Request:       Request{URL: server.URL},
+		ActiveMessage: "active after retry",
+	})
+	assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, int64(2), calls.Load())
+	assert.Contains(t, logs.String(), "max_attempts=2")
+	assert.Contains(t, logs.String(), "max_total_wait=2s")
+	assert.NotContains(t, logs.String(), testToken)
+}
+
+func TestVerifyToken_RateLimitedGETHasStrictAttemptBound(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:    "x",
+		Request: Request{URL: server.URL},
+	})
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Contains(t, result.Message, "rate limited")
+	assert.Equal(t, int64(max429Attempts), calls.Load())
+}
+
+func TestVerifyToken_RateLimitedDoesNotRetryUnsafeOrUnscheduledRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		method     string
+		retryAfter string
+	}{
+		{name: "unsafe post", method: http.MethodPost, retryAfter: "0"},
+		{name: "missing Retry-After", method: http.MethodGet},
+		{name: "invalid Retry-After", method: http.MethodGet, retryAfter: "not-a-delay"},
+		{name: "wait exceeds bound", method: http.MethodGet, retryAfter: "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				if tc.retryAfter != "" {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			defer server.Close()
+
+			result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+				Name:    "x",
+				Request: Request{Method: tc.method, URL: server.URL},
+			})
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+			assert.Equal(t, int64(1), calls.Load())
+		})
+	}
+}
+
+func TestVerifyToken_RetryDeadlineAndAdmissionGate(t *testing.T) {
+	t.Run("deadline too short prevents wait and request", func(t *testing.T) {
+		var calls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer server.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		result := VerifyToken(ctx, server.Client(), testToken, TokenSpec{Name: "x", Request: Request{URL: server.URL}})
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+		assert.Equal(t, int64(1), calls.Load())
+		assert.Less(t, time.Since(started), 200*time.Millisecond)
+	})
+
+	t.Run("gate rejection prevents retry request", func(t *testing.T) {
+		var calls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer server.Close()
+
+		gateCalls := 0
+		ctx := WithRetryGate(context.Background(), func() *finding.VerificationResult {
+			gateCalls++
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+		})
+		result := VerifyToken(ctx, server.Client(), testToken, TokenSpec{Name: "x", Request: Request{URL: server.URL}})
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+		assert.Equal(t, "admission rejected", result.Message)
+		assert.Equal(t, 1, gateCalls)
+		assert.Equal(t, int64(1), calls.Load())
+	})
+}
+
+func TestAddRetryJitter_IsBoundedAndNeverShortensRetryAfter(t *testing.T) {
+	base := time.Second
+	assert.Equal(t, base, addRetryJitter(base, max429RetryWait, 0))
+	assert.Equal(t, 1100*time.Millisecond, addRetryJitter(base, max429RetryWait, 1))
+	assert.Equal(t, max429RetryWait, addRetryJitter(1950*time.Millisecond, max429RetryWait, 1))
+	for range 100 {
+		unit := retryJitterUnit()
+		assert.GreaterOrEqual(t, unit, float64(0))
+		assert.LessOrEqual(t, unit, float64(1))
+	}
+}
+
+func TestVerifyToken_RetryAndDecodePanicAlwaysCloseResponseBodies(t *testing.T) {
+	t.Run("retry closes the 429 response before the next request", func(t *testing.T) {
+		var (
+			calls       atomic.Int64
+			firstClosed atomic.Bool
+			lastClosed  atomic.Bool
+		)
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"Retry-After": []string{"0"}},
+					Body:       &closeTrackingBody{Reader: strings.NewReader("rate limited"), closed: &firstClosed},
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &closeTrackingBody{Reader: strings.NewReader("ok"), closed: &lastClosed},
+			}, nil
+		})}
+
+		result := VerifyToken(context.Background(), client, testToken, TokenSpec{
+			Name:          "x",
+			Request:       Request{URL: "https://provider.example.test/probe"},
+			ActiveMessage: "active",
+		})
+		assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+		assert.True(t, firstClosed.Load())
+		assert.True(t, lastClosed.Load())
+	})
+
+	t.Run("provider decode panic still closes final response", func(t *testing.T) {
+		var closed atomic.Bool
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &closeTrackingBody{Reader: strings.NewReader(`{}`), closed: &closed},
+			}, nil
+		})}
+		assert.Panics(t, func() {
+			VerifyToken(context.Background(), client, testToken, TokenSpec{
+				Name:    "x",
+				Request: Request{URL: "https://provider.example.test/probe"},
+				Decode: func(io.Reader) (map[string]string, string, error) {
+					panic("synthetic decoder panic")
+				},
+			})
+		})
+		assert.True(t, closed.Load())
+	})
+}
+
+func TestRetryAfterDelay_ParsesBoundedly(t *testing.T) {
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	delay, ok := retryAfterDelay("1", now)
+	require.True(t, ok)
+	assert.Equal(t, time.Second, delay)
+
+	delay, ok = retryAfterDelay(now.Add(time.Second).Format(http.TimeFormat), now)
+	require.True(t, ok)
+	assert.Equal(t, time.Second, delay)
+
+	delay, ok = retryAfterDelay("18446744073709551615", now)
+	require.True(t, ok)
+	assert.Greater(t, delay, max429RetryWait)
+
+	_, ok = retryAfterDelay("invalid", now)
+	assert.False(t, ok)
 }
 
 func TestRateLimited(t *testing.T) {

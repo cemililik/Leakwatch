@@ -3,7 +3,9 @@ package httpx
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
@@ -18,9 +21,32 @@ import (
 // userAgent is the User-Agent every verifier request carries.
 const userAgent = "leakwatch-verifier"
 
-// Request describes the single HTTP request a verifier sends to a provider.
+const (
+	max429Attempts  = 2
+	max429RetryWait = 2 * time.Second
+	maxJitterRatio  = 0.10
+)
+
+type retryGateKey struct{}
+
+// RetryGate is installed by the verification engine and admits one retry at
+// its actual send point through both the provider and global rate limiters.
+// Returning a non-nil result rejects the retry without sending it.
+type RetryGate func() *finding.VerificationResult
+
+// WithRetryGate returns a child context carrying the engine-owned admission
+// gate used only for an HTTP 429 retry. The initial request remains admitted by
+// the engine immediately before invoking the verifier.
+func WithRetryGate(ctx context.Context, gate RetryGate) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, retryGateKey{}, gate)
+}
+
+// Request describes the logical HTTP probe a verifier sends to a provider.
 // VerifyToken builds and performs it through the shared, security-hardened
-// client, so callers only declare what differs between providers.
+// client; a safe GET/HEAD probe may be replayed once after a bounded HTTP 429.
 type Request struct {
 	// Method defaults to GET when empty.
 	Method string
@@ -53,8 +79,8 @@ type DecodeFunc func(body io.Reader) (extra map[string]string, downgradeMessage 
 // credential is invalid.
 type InactiveDecodeFunc func(body io.Reader) error
 
-// TokenSpec describes a standard single-request token verification: the request
-// to send and how each response status maps to a VerificationResult.
+// TokenSpec describes a standard token verification probe: the request to send
+// and how each response status maps to a VerificationResult.
 //
 // The shared flow — User-Agent, no-redirect handling, bounded body, error
 // redaction, and the canonical "unexpected status code" / "failed to decode"
@@ -135,19 +161,59 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 		}
 	}
 
-	resp, errResult := spec.send(ctx, client, token)
-	if errResult != nil {
-		return *errResult
-	}
-	defer func() {
-		// Drain the remaining body (bounded by MaxBodyBytes so a misbehaving
-		// endpoint cannot exhaust memory) before closing, so the underlying
-		// connection can be returned to the shared client's keep-alive pool
-		// instead of being discarded.
-		_, _ = io.Copy(io.Discard, LimitReader(resp.Body))
-		_ = resp.Body.Close()
-	}()
+	for attempt := 1; attempt <= max429Attempts; attempt++ {
+		resp, errResult := spec.send(ctx, client, token)
+		if errResult != nil {
+			return *errResult
+		}
 
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < max429Attempts && spec.retrySafe() {
+			rawRetryAfter := resp.Header.Get("Retry-After")
+			delay, ok := retryAfterDelay(rawRetryAfter, time.Now())
+			closeResponse(resp)
+			if ok && delay <= max429RetryWait {
+				delay = addRetryJitter(delay, max429RetryWait, retryJitterUnit())
+				if retryFitsContext(ctx, delay) {
+					slog.DebugContext(ctx, spec.Name+" verifier: scheduling bounded HTTP 429 retry",
+						slog.Int("next_attempt", attempt+1),
+						slog.Int("max_attempts", max429Attempts),
+						slog.Duration("retry_wait", delay),
+						slog.Duration("max_total_wait", max429RetryWait),
+					)
+					if result := waitForRetry(ctx, spec.Name, delay); result != nil {
+						return *result
+					}
+					if gate, _ := ctx.Value(retryGateKey{}).(RetryGate); gate != nil {
+						if rejection := gate(); rejection != nil {
+							return *rejection
+						}
+					}
+					continue
+				}
+			}
+			slog.DebugContext(ctx, spec.Name+" verifier: bounded HTTP 429 retry skipped",
+				slog.Int("attempt", attempt),
+				slog.Int("max_attempts", max429Attempts),
+				slog.Duration("max_total_wait", max429RetryWait),
+			)
+			return RateLimited(ctx, spec.Name, rawRetryAfter)
+		}
+
+		return func() finding.VerificationResult {
+			// Decode callbacks are provider-specific code. Preserve response-body
+			// cleanup even if one panics and the outer verification engine recovers.
+			defer closeResponse(resp)
+			return spec.handleResponse(ctx, resp)
+		}()
+	}
+
+	return finding.VerificationResult{
+		Status:  finding.StatusVerifyError,
+		Message: "bounded verification attempts exhausted",
+	}
+}
+
+func (spec TokenSpec) handleResponse(ctx context.Context, resp *http.Response) finding.VerificationResult {
 	code := resp.StatusCode
 	switch {
 	case containsStatus(spec.activeStatuses(), code):
@@ -168,6 +234,100 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 	default:
 		return UnexpectedStatus(ctx, spec.Name, code)
 	}
+}
+
+func (spec TokenSpec) retrySafe() bool {
+	method := strings.ToUpper(strings.TrimSpace(spec.Request.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+func retryAfterDelay(raw string, now time.Time) (time.Duration, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		if seconds > uint64(max429RetryWait/time.Second) {
+			return max429RetryWait + time.Nanosecond, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := retryAt.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
+}
+
+func addRetryJitter(base, max time.Duration, unit float64) time.Duration {
+	if base <= 0 || max <= base {
+		return base
+	}
+	if unit < 0 {
+		unit = 0
+	}
+	if unit > 1 {
+		unit = 1
+	}
+	jitter := time.Duration(float64(base) * maxJitterRatio * unit)
+	if base+jitter > max {
+		return max
+	}
+	return base + jitter
+}
+
+func retryJitterUnit() float64 {
+	var random [8]byte
+	if _, err := cryptorand.Read(random[:]); err != nil {
+		// Jitter improves herd behavior but is not required for correctness. A
+		// secure-random failure therefore falls back to the provider's exact wait
+		// instead of introducing a weak pseudo-random source.
+		return 0
+	}
+	const precisionBits = 53
+	value := binary.LittleEndian.Uint64(random[:]) >> (64 - precisionBits)
+	return float64(value) / float64((uint64(1)<<precisionBits)-1)
+}
+
+func retryFitsContext(ctx context.Context, delay time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Now().Add(delay).Before(deadline)
+}
+
+func waitForRetry(ctx context.Context, name string, delay time.Duration) *finding.VerificationResult {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		slog.DebugContext(ctx, name+" verifier: HTTP 429 retry cancelled",
+			slog.String("reason", ctx.Err().Error()))
+		return &finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: "rate-limit retry cancelled: " + ctx.Err().Error(),
+		}
+	}
+}
+
+func closeResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	// Drain only a bounded amount before closing so keep-alive can be reused
+	// without trusting a provider-controlled response size.
+	_, _ = io.Copy(io.Discard, LimitReader(resp.Body))
+	_ = resp.Body.Close()
 }
 
 func isJSONContentType(header string) bool {

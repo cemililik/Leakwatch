@@ -11,6 +11,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/verifier/internal/httpx"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
@@ -269,13 +270,17 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 			e.boundedRequestGate(verifyCtx, pair.Raw.DetectorID, requestBudget),
 		)
 	} else {
-		// Single-request verifiers are admitted immediately before Verify. Their
-		// existing contract permits at most one provider request.
+		// Standard verifiers are admitted immediately before Verify. A safe
+		// shared-httpx GET/HEAD probe may make one bounded HTTP 429 retry; that
+		// retry receives a second limiter admission through the context gate.
 		if res := e.waitRateLimit(verifyCtx, pair.Raw.DetectorID); res != nil {
 			f.Verification = *res
 			return f
 		}
-		result = e.safeVerify(verifyCtx, v, pair.Raw)
+		retryCtx := httpx.WithRetryGate(verifyCtx, func() *finding.VerificationResult {
+			return e.waitRateLimit(verifyCtx, pair.Raw.DetectorID)
+		})
+		result = e.safeVerify(retryCtx, v, pair.Raw)
 	}
 	f.Verification = result
 

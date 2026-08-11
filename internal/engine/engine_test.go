@@ -27,8 +27,8 @@ type mockSource struct {
 	err error
 }
 
-func (m *mockSource) Type() string    { return "mock" }
-func (m *mockSource) Validate() error { return nil }
+func (m *mockSource) Type() string                   { return "mock" }
+func (m *mockSource) Validate(context.Context) error { return nil }
 func (m *mockSource) Chunks(_ context.Context) <-chan source.Chunk {
 	ch := make(chan source.Chunk, len(m.chunks))
 	for _, c := range m.chunks {

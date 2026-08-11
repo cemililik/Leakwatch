@@ -195,7 +195,9 @@ func configuredVerifiers(cfg *Config) ([]verifier.Verifier, error) {
 // non-nil on interruption (ctx cancelled) or a terminal source failure; in the
 // interruption case a partial, non-nil result is still returned so the caller can
 // render partial findings and choose a distinct interrupted exit code. Only a
-// pre-scan failure (e.g. source validation) yields a nil result.
+// a non-cancellation pre-scan failure yields a nil result. Cancellation during
+// source validation returns an interrupted, non-nil result so the CLI can map
+// it to exit code 3 instead of a generic failure.
 func Run(ctx context.Context, cfg *Config, src source.Source) (*engine.ScanResult, error) {
 	engCfg, err := BuildEngineConfig(cfg)
 	if err != nil {

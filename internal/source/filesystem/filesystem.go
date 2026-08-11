@@ -87,11 +87,14 @@ func (s *FilesystemSource) Type() string {
 // Validate checks that every scan root exists and is accessible. A root may be
 // either a directory or a regular file; only inaccessibility (e.g. a
 // non-existent path or a permission error) is rejected.
-func (s *FilesystemSource) Validate() error {
+func (s *FilesystemSource) Validate(ctx context.Context) error {
 	if len(s.roots) == 0 {
 		return fmt.Errorf("no scan paths provided")
 	}
 	for _, root := range s.roots {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := os.Stat(root); err != nil {
 			return fmt.Errorf("source path inaccessible %s: %w", root, err)
 		}

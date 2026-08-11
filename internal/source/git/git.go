@@ -87,12 +87,19 @@ func (s *GitSource) Type() string {
 // when --since-commit is set it verifies the given commit is an ancestor of the
 // walk's starting point; otherwise the diff-based walk would silently fall back
 // to scanning the entire history or an unintended branch.
-func (s *GitSource) Validate() error {
+
+func (s *GitSource) Validate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.isRemote() {
-		if err := s.cloneRemote(); err != nil {
+		if err := s.cloneRemote(ctx); err != nil {
 			return err
 		}
 	} else if err := s.openLocal(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -262,7 +269,7 @@ func (s *GitSource) openLocal() error {
 	return nil
 }
 
-func (s *GitSource) cloneRemote() error {
+func (s *GitSource) cloneRemote(ctx context.Context) error {
 	tmpDir, err := os.MkdirTemp("", "leakwatch-clone-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
@@ -284,7 +291,7 @@ func (s *GitSource) cloneRemote() error {
 
 	slog.Info("cloning remote repository", "url", s.displayTarget, "tmpDir", tmpDir)
 
-	repo, err := git.PlainClone(tmpDir, false, cloneOpts)
+	repo, err := git.PlainCloneContext(ctx, tmpDir, false, cloneOpts)
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		// go-git's HTTP transport and endpoint layers re-embed the raw

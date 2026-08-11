@@ -56,18 +56,18 @@ func TestFilesystemSource_New_CleansPath(t *testing.T) {
 	}
 }
 
-// Validate() calls os.Stat directly against s.root, so these tests genuinely
+// Validate(ctx) calls os.Stat directly against s.root, so these tests genuinely
 // need a real filesystem rather than an injectable fs.FS.
 
 func TestFilesystemSource_Validate_ValidDir(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestFilesystemSource_Validate_NonExistentDir(t *testing.T) {
 	s := New("/nonexistent/path")
-	assert.Error(t, s.Validate())
+	assert.Error(t, s.Validate(context.Background()))
 }
 
 func TestFilesystemSource_Validate_SingleFile(t *testing.T) {
@@ -78,7 +78,7 @@ func TestFilesystemSource_Validate_SingleFile(t *testing.T) {
 
 	// A single file is now a valid scan root: `scan fs <file>` must work.
 	s := New(f.Name())
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestFilesystemSource_Validate_MultipleRoots(t *testing.T) {
@@ -87,10 +87,10 @@ func TestFilesystemSource_Validate_MultipleRoots(t *testing.T) {
 	require.NoError(t, os.WriteFile(f, []byte("x"), 0o644))
 
 	s := NewMulti([]string{dir, f})
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 
 	bad := NewMulti([]string{dir, "/nonexistent/path"})
-	assert.Error(t, bad.Validate())
+	assert.Error(t, bad.Validate(context.Background()))
 }
 
 // shouldSkip is pure filtering logic over a path string and an fs.DirEntry;

@@ -122,7 +122,10 @@ func (s *ContainerSource) captureErr(err error) {
 }
 
 // Validate checks that the image reference is parseable and accessible.
-func (s *ContainerSource) Validate() error {
+func (s *ContainerSource) Validate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	_, err := name.ParseReference(s.imageRef)
 	if err != nil {
 		return fmt.Errorf("invalid image reference %q: %w", s.imageRef, err)

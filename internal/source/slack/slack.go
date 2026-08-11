@@ -27,6 +27,7 @@ const (
 	// scans from silently truncating on the first rate-limit response.
 	defaultRateLimit  = 1.0
 	defaultBufferSize = 100
+	validationTimeout = 10 * time.Second
 
 	// maxRateLimitRetries bounds how many consecutive HTTP 429 responses a
 	// single page fetch will absorb before giving up, preventing an
@@ -122,16 +123,26 @@ func (s *SlackSource) captureErr(err error) {
 	s.err = err
 }
 
-// Validate checks that the Slack token is valid by calling AuthTest.
-func (s *SlackSource) Validate() error {
+// Validate checks that the Slack token is valid by calling AuthTest. The
+// operation is bounded even when the caller supplies no deadline, while an
+// earlier caller deadline or cancellation always wins.
+func (s *SlackSource) Validate(ctx context.Context) error {
 	if s.token == "" {
 		return fmt.Errorf("slack token is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	s.ensureClient()
 
-	_, err := s.client.AuthTestContext(context.Background())
+	validateCtx, cancel := context.WithTimeout(ctx, validationTimeout)
+	defer cancel()
+	_, err := s.client.AuthTestContext(validateCtx)
 	if err != nil {
+		if s.token != "" && strings.Contains(err.Error(), s.token) {
+			err = errors.New(strings.ReplaceAll(err.Error(), s.token, "***"))
+		}
 		return fmt.Errorf("slack auth test failed: %w", err)
 	}
 

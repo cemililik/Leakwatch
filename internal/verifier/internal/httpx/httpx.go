@@ -29,9 +29,11 @@
 //     relying on the crypto/tls default, as defense-in-depth and
 //     self-documentation.
 //
-// This helper deliberately does NOT implement retry, backoff, or per-provider
-// rate limiting. Those concerns are handled (or deferred) elsewhere; keeping
-// this package focused on transport safety.
+// The shared token helper performs at most one Retry-After-aware HTTP 429 retry
+// for safe GET/HEAD probes. The wait is strictly bounded, context-aware, and
+// passes through an engine-owned retry admission gate when verification runs
+// through the engine. Unsafe methods and missing/invalid Retry-After responses
+// are never retried.
 package httpx
 
 import (

@@ -24,11 +24,8 @@ import (
 // defaultMaxFileSize is the maximum object size to scan (10 MB).
 const defaultMaxFileSize int64 = 10 * 1024 * 1024
 
-// validateTimeout bounds the network calls made by Validate. The
-// source.Source interface's Validate() method takes no context.Context
-// parameter, so the caller's own cancellation cannot be threaded through
-// here; a bounded timeout at least prevents an unreachable/misconfigured
-// bucket from hanging Validate indefinitely.
+// validateTimeout bounds validation when the caller provides no earlier
+// deadline. An earlier caller deadline or cancellation always wins.
 const validateTimeout = 30 * time.Second
 
 // gcsClient defines the subset of the GCS API used by GCSSource.
@@ -156,12 +153,12 @@ func (s *GCSSource) captureErr(err error) {
 
 // Validate checks that the GCS bucket is accessible.
 // It initializes the GCS client if not already set and checks bucket attributes.
-func (s *GCSSource) Validate() error {
+func (s *GCSSource) Validate(ctx context.Context) error {
 	if s.bucket == "" {
 		return fmt.Errorf("gcs bucket name is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
+	ctx, cancel := context.WithTimeout(ctx, validateTimeout)
 	defer cancel()
 
 	if err := s.ensureClient(ctx); err != nil {

@@ -104,7 +104,7 @@ func TestWithMaxFileSize_ValidValue_Applied(t *testing.T) {
 
 func TestS3Source_Validate_EmptyBucket_ReturnsError(t *testing.T) {
 	s := New("")
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bucket name is required")
 }
@@ -112,7 +112,7 @@ func TestS3Source_Validate_EmptyBucket_ReturnsError(t *testing.T) {
 func TestS3Source_Validate_AccessibleBucket_ReturnsNil(t *testing.T) {
 	s := New("my-bucket")
 	s.client = &mockS3Client{}
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestS3Source_Chunks_SendsTextObjects(t *testing.T) {

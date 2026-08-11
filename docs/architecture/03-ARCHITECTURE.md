@@ -61,7 +61,7 @@ classDiagram
         <<interface>>
         +Type() string
         +Chunks(ctx) chan Chunk
-        +Validate() error
+        +Validate(ctx context.Context) error
     }
 
     class Detector {
@@ -145,7 +145,7 @@ type Source interface {
     Chunks(ctx context.Context) <-chan Chunk
 
     // Validate checks that the source is accessible and valid.
-    Validate() error
+    Validate(ctx context.Context) error
 }
 
 // Chunk represents the smallest unit of data to be scanned.

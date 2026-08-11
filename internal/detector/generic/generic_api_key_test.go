@@ -356,9 +356,9 @@ type fixtureSource struct {
 	data []byte
 }
 
-func (s *fixtureSource) Type() string    { return "fixture" }
-func (s *fixtureSource) Validate() error { return nil }
-func (s *fixtureSource) Err() error      { return nil }
+func (s *fixtureSource) Type() string                   { return "fixture" }
+func (s *fixtureSource) Validate(context.Context) error { return nil }
+func (s *fixtureSource) Err() error                     { return nil }
 func (s *fixtureSource) Chunks(_ context.Context) <-chan source.Chunk {
 	chunks := make(chan source.Chunk, 1)
 	chunks <- source.Chunk{
