@@ -441,7 +441,7 @@ The product's core promise is **accurate, verified, low-noise secret findings**.
 | Task | Status | Priority | Description |
 |------|--------|----------|-------------|
 | Centralized false-positive filter | Planned | Critical | Shared module applied before verification: common placeholder values, a dictionary/word-list of dummy strings, and known non-secret patterns, so individual detectors no longer each re-implement ad-hoc skips |
-| Engine-level entropy gating | Delivered in `v1.7.0` | Critical | The configured `detection.entropy.threshold` gates heuristic findings engine-wide while structural detectors remain eligible |
+| Engine-level entropy gating | Delivered in `v1.7.0` | Critical | The configured `detection.entropy.threshold` gates opt-in heuristic findings while structural detectors remain eligible; [ADR-0010](decisions/ADR-0010-entropy-gating-policy.md) owns the policy |
 | Keyword pre-filters for high-noise detectors | Planned | High | Add Aho-Corasick pre-filter keywords / context anchors to detectors that still scan every chunk; validate them against the accuracy corpus |
 | Broaden OpenAI key coverage | Delivered in `v1.7.0` | High | Legacy and service-account variants ship alongside project keys, anchored on provider-specific structure |
 | GitHub fine-grained PAT support | Delivered in `v1.7.0` | High | Fine-grained personal access tokens (`github_pat_`) are detected |

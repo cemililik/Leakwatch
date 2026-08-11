@@ -103,6 +103,155 @@ func TestRenderMarkdown_TerminatedCalloutRendersNormally(t *testing.T) {
 	}
 }
 
+func TestValidateManualContract_FailsClosedOnMetadataAndSourceDrift(t *testing.T) {
+	validMeta := func() meta {
+		return meta{
+			Languages:       []string{"en", "tr"},
+			DefaultLanguage: "en",
+			Sections: []metaSection{{
+				ID:    "getting-started",
+				Icon:  "rocket",
+				Title: map[string]string{"en": "Getting Started", "tr": "Başlarken"},
+				Pages: []metaPage{{
+					ID:    "introduction",
+					Title: map[string]string{"en": "Introduction", "tr": "Tanıtım"},
+				}},
+			}},
+		}
+	}
+	writePage := func(t *testing.T, root, lang, relative string) {
+		t.Helper()
+		path := filepath.Join(root, lang, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# page\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	validSources := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		for _, lang := range []string{"en", "tr"} {
+			writePage(t, root, lang, "getting-started/introduction.md")
+		}
+		return root
+	}
+
+	t.Run("valid exact source set", func(t *testing.T) {
+		requireNoError(t, validateManualContract(validSources(t), validMeta(), true))
+	})
+
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, root string, m *meta)
+	}{
+		{
+			name: "English-only orphan",
+			mutate: func(t *testing.T, root string, _ *meta) {
+				writePage(t, root, "en", "getting-started/orphan.md")
+			},
+		},
+		{
+			name: "orphan in every language",
+			mutate: func(t *testing.T, root string, _ *meta) {
+				writePage(t, root, "en", "getting-started/orphan.md")
+				writePage(t, root, "tr", "getting-started/orphan.md")
+			},
+		},
+		{
+			name: "duplicate page ID",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.Sections[0].Pages = append(m.Sections[0].Pages, m.Sections[0].Pages[0])
+			},
+		},
+		{
+			name: "duplicate section ID",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.Sections = append(m.Sections, m.Sections[0])
+			},
+		},
+		{
+			name: "duplicate language ID",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.Languages = append(m.Languages, "en")
+			},
+		},
+		{
+			name: "missing translated title",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				delete(m.Sections[0].Pages[0].Title, "tr")
+			},
+		},
+		{
+			name: "undeclared translated title",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.Sections[0].Pages[0].Title["de"] = "Einführung"
+			},
+		},
+		{
+			name: "traversing page ID",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.Sections[0].Pages[0].ID = "../outside"
+			},
+		},
+		{
+			name: "missing declared source",
+			mutate: func(t *testing.T, root string, _ *meta) {
+				if err := os.Remove(filepath.Join(root, "tr", "getting-started", "introduction.md")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "invalid default language",
+			mutate: func(_ *testing.T, _ string, m *meta) {
+				m.DefaultLanguage = "de"
+			},
+		},
+		{
+			name: "undeclared language directory",
+			mutate: func(t *testing.T, root string, _ *meta) {
+				writePage(t, root, "de", "getting-started/introduction.md")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := validSources(t)
+			m := validMeta()
+			tc.mutate(t, root, &m)
+			if err := validateManualContract(root, m, true); err == nil {
+				t.Fatal("validateManualContract() error = nil, want fail-closed error")
+			}
+		})
+	}
+}
+
+func TestDecodeManualMeta_FailsClosed(t *testing.T) {
+	valid := "languages: [en]\ndefault_language: en\nsections:\n  - id: start\n    icon: rocket\n    title: {en: Start}\n    pages:\n      - id: intro\n        title: {en: Intro}\n"
+	if _, err := decodeManualMeta([]byte(valid)); err != nil {
+		t.Fatalf("decodeManualMeta(valid) error = %v", err)
+	}
+	for name, source := range map[string]string{
+		"unknown field":      strings.Replace(valid, "default_language:", "default_languag:", 1),
+		"multiple documents": valid + "---\nlanguages: [tr]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeManualMeta([]byte(source)); err == nil {
+				t.Fatal("decodeManualMeta() error = nil, want fail-closed error")
+			}
+		})
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestReadReleaseVersion(t *testing.T) {
 	root := t.TempDir()
 	metaDir := filepath.Join(root, "internal", "meta")

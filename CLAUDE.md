@@ -66,11 +66,12 @@ Architecture decisions are documented in ADR format under `docs/decisions/`. The
 | [ADR-0002](docs/decisions/ADR-0002-cli-frame.md) | Cobra + Viper | Nested commands, hierarchical configuration |
 | [ADR-0003](docs/decisions/ADR-0003-git-library.md) | go-git | Pure Go, no CGO, no external dependencies |
 | [ADR-0004](docs/decisions/ADR-0004-plugin-architecture.md) | Compile-time registration | init() + blank import, type-safe |
-| [ADR-0005](docs/decisions/ADR-0005-pattern-matching.md) | Aho-Corasick hybrid | AC pre-filter → regex validation → entropy |
+| [ADR-0005](docs/decisions/ADR-0005-pattern-matching.md) | Aho-Corasick hybrid | Superseded entropy clause; AC pre-filter → regex validation |
 | [ADR-0006](docs/decisions/ADR-0006-container-library.md) | go-containerregistry | Daemonless, layer-based analysis |
 | [ADR-0007](docs/decisions/ADR-0007-license.md) | MIT | Enterprise adoption, open-core compatibility |
 | [ADR-0008](docs/decisions/ADR-0008-concurrency-model.md) | Worker Pool | Fixed worker count, channel-based |
 | [ADR-0009](docs/decisions/ADR-0009-github-marketplace-action.md) | Marketplace Action | Root `action.yml`, prebuilt-binary composite, `@v1` |
+| [ADR-0010](docs/decisions/ADR-0010-entropy-gating-policy.md) | Entropy gating | Threshold gates opt-in heuristic findings only |
 
 ## Coding Standards
 

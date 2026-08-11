@@ -697,3 +697,4 @@ leakwatch scan fs . --log-level debug 2>&1 | head -5
 | Architecture design | [Architecture Document](../architecture/03-ARCHITECTURE.md) |
 | ADR: CLI framework (Cobra + Viper) | [ADR-0002](../decisions/ADR-0002-cli-frame.md) |
 | ADR: Pattern matching | [ADR-0005](../decisions/ADR-0005-pattern-matching.md) |
+| ADR: Entropy gating | [ADR-0010](../decisions/ADR-0010-entropy-gating-policy.md) |

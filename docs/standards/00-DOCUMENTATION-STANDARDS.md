@@ -82,8 +82,8 @@ flowchart LR
 ### 2.3 Release-Version Examples
 
 - An example advertised as current must use `internal/meta.ReleaseVersion` (or a floating supported pin such as `@v1` or `:latest`).
-- An intentionally historical example must be preceded by `<!-- leakwatch-version: historical -->` and explain why the older value matters.
-- CI scans Leakwatch-specific full-version pins in the README, user manuals, and guides. An unmarked stale pin fails the documentation contract test.
+- An intentionally historical example must be associated with `<!-- leakwatch-version: historical vX.Y.Z -->` in the same paragraph, table block, or fenced example and explain why that exact older value matters.
+- CI scans Leakwatch-specific full-version pins across current Markdown surfaces, including root policies, contributor material, architecture, ADRs, guides, user manuals, site documentation, editor documentation, and workflow documentation. Inherently historical inventories such as the changelog and roadmap are excluded. An unmarked stale pin fails the documentation contract test.
 
 ---
 
@@ -142,7 +142,7 @@ Related ADRs (if any).
 - File name: `ADR-NNNN-short-title.md` (lowercase, hyphen-separated)
 - Sequence number is 4 digits, zero-padded: `0001`, `0002`, ...
 - Each ADR is added to the `docs/decisions/README.md` index
-- Accepted ADRs are not modified — to override, write a new ADR and mark the old one as "Deprecated"
+- Accepted ADR decisions are not rewritten — to override one, write a new ADR and change only the old ADR's status/related-decision metadata to "Superseded"
 - ADRs are also added to the `CLAUDE.md` reference table
 
 ---

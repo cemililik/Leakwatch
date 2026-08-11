@@ -18,11 +18,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -34,18 +37,24 @@ import (
 
 // meta mirrors docs/user-manuals/_meta.yaml.
 type meta struct {
-	Languages       []string `yaml:"languages"`
-	DefaultLanguage string   `yaml:"default_language"`
-	Sections        []struct {
-		ID    string            `yaml:"id"`
-		Icon  string            `yaml:"icon"`
-		Title map[string]string `yaml:"title"`
-		Pages []struct {
-			ID    string            `yaml:"id"`
-			Title map[string]string `yaml:"title"`
-		} `yaml:"pages"`
-	} `yaml:"sections"`
+	Languages       []string      `yaml:"languages"`
+	DefaultLanguage string        `yaml:"default_language"`
+	Sections        []metaSection `yaml:"sections"`
 }
+
+type metaSection struct {
+	ID    string            `yaml:"id"`
+	Icon  string            `yaml:"icon"`
+	Title map[string]string `yaml:"title"`
+	Pages []metaPage        `yaml:"pages"`
+}
+
+type metaPage struct {
+	ID    string            `yaml:"id"`
+	Title map[string]string `yaml:"title"`
+}
+
+var manualIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // frontMatter is the YAML header of each Markdown page.
 type frontMatter struct {
@@ -100,12 +109,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("read meta: %w", err)
 	}
-	var m meta
-	if err := yaml.Unmarshal(metaBytes, &m); err != nil {
+	m, err := decodeManualMeta(metaBytes)
+	if err != nil {
 		return fmt.Errorf("parse meta: %w", err)
 	}
 	if len(m.Languages) == 0 {
 		return fmt.Errorf("no languages declared in _meta.yaml")
+	}
+	manualsDir := filepath.Join(root, "docs", "user-manuals")
+	if err := validateManualContract(manualsDir, m, *strict); err != nil {
+		return err
 	}
 
 	// Build every generated artifact outside the committed site tree. A parser,
@@ -136,7 +149,6 @@ func run() error {
 	}
 
 	md := newMarkdown()
-	manualsDir := filepath.Join(root, "docs", "user-manuals")
 	missing := 0
 
 	for _, lang := range m.Languages {
@@ -191,6 +203,146 @@ func run() error {
 		return err
 	}
 	fmt.Printf("site-build: published generated site and synced release footer %s (%d pages)\n", releaseVersion, footerCount)
+	return nil
+}
+
+func decodeManualMeta(source []byte) (meta, error) {
+	var m meta
+	decoder := yaml.NewDecoder(bytes.NewReader(source))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&m); err != nil {
+		return meta{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return meta{}, fmt.Errorf("multiple YAML documents are not allowed")
+		}
+		return meta{}, err
+	}
+	return m, nil
+}
+
+func validateManualContract(manualsDir string, m meta, strict bool) error {
+	languages := make(map[string]struct{}, len(m.Languages))
+	for _, lang := range m.Languages {
+		if !manualIDPattern.MatchString(lang) {
+			return fmt.Errorf("manual metadata contains invalid language ID %q", lang)
+		}
+		if _, duplicate := languages[lang]; duplicate {
+			return fmt.Errorf("manual metadata contains duplicate language %q", lang)
+		}
+		languages[lang] = struct{}{}
+	}
+	if _, ok := languages[m.DefaultLanguage]; !ok {
+		return fmt.Errorf("default language %q is not declared", m.DefaultLanguage)
+	}
+	if len(m.Sections) == 0 {
+		return fmt.Errorf("manual metadata declares no sections")
+	}
+
+	expected := make(map[string]struct{})
+	sectionIDs := make(map[string]struct{}, len(m.Sections))
+	for _, section := range m.Sections {
+		if !manualIDPattern.MatchString(section.ID) {
+			return fmt.Errorf("manual metadata contains invalid section ID %q", section.ID)
+		}
+		if _, duplicate := sectionIDs[section.ID]; duplicate {
+			return fmt.Errorf("manual metadata contains duplicate section ID %q", section.ID)
+		}
+		sectionIDs[section.ID] = struct{}{}
+		if strings.TrimSpace(section.Icon) == "" {
+			return fmt.Errorf("manual metadata section %q has no icon", section.ID)
+		}
+		if err := validateLocalizedTitles("section "+section.ID, section.Title, languages); err != nil {
+			return err
+		}
+		if len(section.Pages) == 0 {
+			return fmt.Errorf("manual metadata section %q declares no pages", section.ID)
+		}
+		pageIDs := make(map[string]struct{}, len(section.Pages))
+		for _, page := range section.Pages {
+			if !manualIDPattern.MatchString(page.ID) {
+				return fmt.Errorf("manual metadata section %q contains invalid page ID %q", section.ID, page.ID)
+			}
+			if _, duplicate := pageIDs[page.ID]; duplicate {
+				return fmt.Errorf("manual metadata section %q contains duplicate page ID %q", section.ID, page.ID)
+			}
+			pageIDs[page.ID] = struct{}{}
+			expected[filepath.ToSlash(filepath.Join(section.ID, page.ID+".md"))] = struct{}{}
+			if err := validateLocalizedTitles("page "+section.ID+"/"+page.ID, page.Title, languages); err != nil {
+				return err
+			}
+		}
+	}
+	if !strict {
+		return nil
+	}
+
+	entries, err := os.ReadDir(manualsDir)
+	if err != nil {
+		return fmt.Errorf("read manual source directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("manual source entry %q must not be a symlink", entry.Name())
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		if _, declared := languages[entry.Name()]; !declared {
+			return fmt.Errorf("manual source contains undeclared language directory %q", entry.Name())
+		}
+	}
+
+	for _, lang := range m.Languages {
+		langDir := filepath.Join(manualsDir, lang)
+		actual := make(map[string]struct{}, len(expected))
+		err := filepath.WalkDir(langDir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("manual source %s must not be a symlink", path)
+			}
+			if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+				return nil
+			}
+			rel, relErr := filepath.Rel(langDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			actual[filepath.ToSlash(rel)] = struct{}{}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("inspect %s manual sources: %w", lang, err)
+		}
+		for path := range expected {
+			if _, ok := actual[path]; !ok {
+				return fmt.Errorf("manual page %s is missing for language %s", path, lang)
+			}
+		}
+		for path := range actual {
+			if _, ok := expected[path]; !ok {
+				return fmt.Errorf("manual page %s for language %s is not declared in _meta.yaml", path, lang)
+			}
+		}
+	}
+	return nil
+}
+
+func validateLocalizedTitles(owner string, titles map[string]string, languages map[string]struct{}) error {
+	for lang := range languages {
+		if strings.TrimSpace(titles[lang]) == "" {
+			return fmt.Errorf("manual metadata %s has no %s title", owner, lang)
+		}
+	}
+	for lang := range titles {
+		if _, declared := languages[lang]; !declared {
+			return fmt.Errorf("manual metadata %s has a title for undeclared language %q", owner, lang)
+		}
+	}
 	return nil
 }
 
