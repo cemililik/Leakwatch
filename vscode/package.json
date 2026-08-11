@@ -119,7 +119,7 @@
     "test": "node --test \"out/test/**/*.test.js\""
   },
   "devDependencies": {
-    "@eslint/js": "^9.18.0",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
