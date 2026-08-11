@@ -44,9 +44,10 @@ Repository administrators must configure that environment before the first publi
 1. Add at least one required reviewer and enable **Prevent self-review**.
 2. Set deployment branches to **Protected branches only** and keep `main` protected.
 3. Store `VSCE_PAT` as an environment secret, never as a repository secret.
-4. Audit these settings after ownership or branch-protection changes.
+4. Create a short-lived fine-grained token named `VSCODE_ENV_AUDIT_TOKEN` as an environment secret. Restrict it to this repository and grant only **Environments: read** so the workflow can prove that the environment-scoped `VSCE_PAT` metadata exists.
+5. Audit these settings and rotate both tokens after ownership or branch-protection changes.
 
-The publish job queries GitHub's environment API and fails before loading the VSIX or PAT unless the required-reviewer, self-review, and protected-branch policies are present. The environment approval itself remains an external GitHub control; this runbook and the executable audit make that dependency explicit rather than assuming an environment name is sufficient.
+The publish job queries GitHub's environment and environment-secret metadata APIs. It fails before loading the VSIX or Marketplace PAT unless the required-reviewer, self-review, and protected-branch policies are present and `VSCE_PAT` actually exists in the protected environment. `VSCODE_ENV_AUDIT_TOKEN` is read-only and is never sent to the Marketplace; `VSCE_PAT` is never placed in process arguments. The environment approval itself remains an external GitHub control; this runbook and the executable audit make that dependency explicit rather than assuming an environment name is sufficient.
 
 ### 2.3 Build from Source
 

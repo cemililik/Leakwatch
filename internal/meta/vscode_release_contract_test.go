@@ -3,7 +3,6 @@ package meta
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,12 +22,18 @@ func TestVSCodeMarketplaceWorkflow_FailsClosedOnRepositoryPolicy(t *testing.T) {
 		"deployments: read",
 		"prevent_self_review == true",
 		"deployment_branch_policy.protected_branches == true",
+		"VSCODE_ENV_AUDIT_TOKEN",
+		"${{ secrets.VSCODE_ENV_AUDIT_TOKEN }}",
+		"@<(printf 'Authorization: Bearer %s\\n' \"${GH_ENVIRONMENT_AUDIT_TOKEN:?}\")",
+		"environments/vscode-marketplace/secrets/VSCE_PAT",
+		".name == \"VSCE_PAT\"",
+		"${{ secrets.VSCE_PAT }}",
+		"${VSCE_PAT:?missing environment-scoped VSCE_PAT}",
 		"npx --no-install vsce publish --packagePath",
 		"if [[ ${#packages[@]} -ne 1 ]]",
 	} {
 		assert.Contains(t, workflow, contract)
 	}
 	assert.NotContains(t, workflow, "--pat")
-	assert.NotContains(t, workflow, "$VSCE_PAT")
-	assert.Equal(t, 2, strings.Count(workflow, "VSCE_PAT"), "PAT may appear only as the environment key and environment-secret reference")
+	assert.NotContains(t, workflow, "Authorization: Bearer ${", "tokens must not be exposed in process arguments")
 }

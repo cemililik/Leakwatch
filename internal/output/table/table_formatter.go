@@ -35,7 +35,9 @@ type Formatter struct {
 
 // Format writes findings as a formatted table to the given writer.
 // Columns: SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
-// When ShowRaw is true, a trailing RAW column is appended.
+// When ShowRaw is true, a trailing RAW column is appended. Its value is a
+// reversible Go-quoted string so arbitrary secret bytes cannot inject terminal
+// controls and can still be recovered exactly with strconv.Unquote.
 // A summary line is appended at the bottom.
 //
 // DetectorID, FilePath, and Redacted are attacker-influenced (a malicious
@@ -78,7 +80,7 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 			{text: output.SanitizeForDisplay(remediation)},
 		}
 		if f.ShowRaw {
-			cells = append(cells, tableCell{text: output.SanitizeForDisplay(fd.Raw)})
+			cells = append(cells, tableCell{text: quoteRawForTable(fd.Raw)})
 		}
 		rows = append(rows, tableRow{cells: cells})
 	}
@@ -97,6 +99,10 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 	}
 
 	return nil
+}
+
+func quoteRawForTable(raw string) string {
+	return strconv.Quote(raw)
 }
 
 const columnPadding = 2

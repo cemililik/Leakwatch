@@ -3,9 +3,11 @@ package table
 import (
 	"bytes"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/mattn/go-runewidth"
@@ -137,6 +139,27 @@ func TestFormatter_Format_ShowRawTrue_AddsRawColumn(t *testing.T) {
 	assert.Contains(t, output, "RAW", "header must include a RAW column when ShowRaw=true")
 	assert.Contains(t, output, "sk_live_supersecretvalue",
 		"ShowRaw=true must include the raw secret value in table output")
+}
+
+func TestFormatter_Format_ShowRawTrue_UsesReversibleTerminalSafeEncoding(t *testing.T) {
+	raw := "abc\ndef\tghi\x1b\x00\\suffix\u0301\u202e" + string([]byte{0xff})
+	encoded := quoteRawForTable(raw)
+
+	recovered, err := strconv.Unquote(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, []byte(raw), []byte(recovered), "quoted RAW value must round-trip byte-for-byte")
+	assert.True(t, utf8.ValidString(encoded), "table display must remain valid UTF-8")
+	for _, unsafe := range []string{"\n", "\t", "\x1b", "\x00", "\u202e"} {
+		assert.NotContains(t, encoded, unsafe, "encoded RAW must not contain literal terminal controls")
+	}
+
+	f := &Formatter{ShowRaw: true}
+	var buf bytes.Buffer
+	require.NoError(t, f.Format(&buf, []finding.Finding{{
+		DetectorID: "generic-secret",
+		Raw:        raw,
+	}}))
+	assert.Contains(t, buf.String(), encoded)
 }
 
 func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {

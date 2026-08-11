@@ -16,13 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Best-effort GitHub scope/expiration and GitLab PAT standard or GitLab 19.2+ granular scope/expiration metadata
   after authoritative active verification.
 - A reviewable VSIX artifact, 256×256 Marketplace icon, main-only manual VS Code
-  publication workflow with an executable environment-policy audit, and a
-  scheduled provider-contract freshness/link gate.
+  publication workflow with executable environment-policy and environment-secret
+  provenance audits, and a scheduled provider-contract freshness/link gate.
 
 ### Changed
 
 - Finding JSON now distinguishes calculated zero entropy from absent entropy and
-  omits an unset detection timestamp; terminal tables use Unicode display width.
+  omits an unset detection timestamp; terminal tables use Unicode display width,
+  visibly escape bidi controls, and render `--show-raw` as a reversible quoted
+  value instead of passing terminal controls through or dropping secret bytes.
 - Detector/verifier registries fail closed on invalid or duplicate registration,
   matcher results are explicitly stable, and obsolete global custom-rule APIs
   were removed.

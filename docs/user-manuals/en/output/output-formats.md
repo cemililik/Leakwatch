@@ -122,9 +122,9 @@ The `table` format writes a human-readable terminal-cell-aligned table, includin
 SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
 ```
 
-The `LINE` column shows `-` when no line number is available (for example a Slack or container-image finding). The `REMEDIATION` column is always present and shows `-` unless `--remediation` is set. When `--show-raw` is also set, a trailing `RAW` column is appended. A summary line is printed at the bottom of the table (e.g. `Found 3 secrets (1 critical, 2 high).`).
+The `LINE` column shows `-` when no line number is available (for example a Slack or container-image finding). The `REMEDIATION` column is always present and shows `-` unless `--remediation` is set. When `--show-raw` is also set, a trailing `RAW` column is appended. In table output only, this value is a reversible Go-quoted string: quotes and escapes such as `\\n`, `\\t`, and `\\x1b` keep terminal control bytes inert while `strconv.Unquote` can recover the exact original bytes. JSON and CSV raw values retain their existing machine-readable representation. A summary line is printed at the bottom of the table (e.g. `Found 3 secrets (1 critical, 2 high).`).
 
-Attacker-influenced fields (detector ID, file path, redacted value) are stripped of control characters and ANSI escape sequences before being written to the terminal, so a maliciously crafted file name or custom-rule match cannot inject escape sequences into your terminal session.
+Attacker-influenced fields (detector ID, file path, redacted value) are stripped of control characters and ANSI escape sequences before being written to the terminal. Unicode bidi controls are rendered as visible `\\uXXXX` code points, preventing visual reordering without hiding their presence. Ordinary internationalized text, including CJK, combining marks, and emoji ZWJ sequences, is preserved.
 
 **ANSI color** is applied to the `SEVERITY` column automatically, but only when all four conditions are met:
 

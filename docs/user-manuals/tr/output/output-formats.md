@@ -122,9 +122,9 @@ e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws
 SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
 ```
 
-`LINE` sütunu, satır numarası mevcut olmadığında (örneğin bir Slack veya konteyner imajı bulgusu için) `-` gösterir. `REMEDIATION` sütunu her zaman bulunur ve `--remediation` ayarlanmadıkça `-` gösterir. `--show-raw` ayarlandığında da, sona bir `RAW` sütunu eklenir. Tablonun altına bir özet satırı yazdırılır (örn. `Found 3 secrets (1 critical, 2 high).`).
+`LINE` sütunu, satır numarası mevcut olmadığında (örneğin bir Slack veya konteyner imajı bulgusu için) `-` gösterir. `REMEDIATION` sütunu her zaman bulunur ve `--remediation` ayarlanmadıkça `-` gösterir. `--show-raw` ayarlandığında da, sona bir `RAW` sütunu eklenir. Yalnızca tablo çıktısında bu değer geri çevrilebilir, Go-tırnaklı bir dize olarak gösterilir: `\\n`, `\\t` ve `\\x1b` gibi kaçışlar terminal kontrol baytlarını etkisiz tutarken `strconv.Unquote` özgün baytları eksiksiz geri yükleyebilir. JSON ve CSV ham değerleri mevcut makine-okunur gösterimlerini korur. Tablonun altına bir özet satırı yazdırılır (örn. `Found 3 secrets (1 critical, 2 high).`).
 
-Saldırgan tarafından etkilenebilecek alanlar (dedektör ID'si, dosya yolu, maskelenmiş değer), terminale yazılmadan önce kontrol karakterlerinden ve ANSI kaçış dizilerinden arındırılır; böylece kötü amaçlı biçimlendirilmiş bir dosya adı veya özel kural eşleşmesi terminal oturumunuza kaçış dizisi enjekte edemez.
+Saldırgan tarafından etkilenebilecek alanlar (dedektör ID'si, dosya yolu, maskelenmiş değer), terminale yazılmadan önce kontrol karakterlerinden ve ANSI kaçış dizilerinden arındırılır. Unicode çift yönlü metin (bidi) kontrol karakterleri görünür `\\uXXXX` kod noktaları olarak yazılır; böylece varlıkları gizlenmeden görsel sıralama saldırıları önlenir. CJK, birleşen işaretler ve emoji ZWJ dizileri dahil olağan uluslararası metin korunur.
 
 **ANSI rengi**, `SEVERITY` sütununa otomatik olarak uygulanır, ancak yalnızca dört koşulun tamamı sağlandığında:
 
