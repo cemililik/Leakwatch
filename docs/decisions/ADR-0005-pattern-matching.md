@@ -1,6 +1,6 @@
 # ADR-0005: Pattern Matching Strategy — Aho-Corasick Hybrid
 
-- **Status:** Superseded by [ADR-0010](ADR-0010-entropy-gating-policy.md)
+- **Status:** Amended by [ADR-0010](ADR-0010-entropy-gating-policy.md)
 - **Date:** 2026-03-24
 - **Decision Makers:** Project team
 
@@ -65,4 +65,4 @@ Secret scanning requires matching thousands of different patterns (regex) agains
 ## Related Decisions
 
 - [ADR-0001: Programming Language](ADR-0001-programming-language.md) — Go's regex weakness triggering this decision
-- [ADR-0010: Entropy Gating Policy](ADR-0010-entropy-gating-policy.md) — supersedes the tertiary entropy policy
+- [ADR-0010: Entropy Gating Policy](ADR-0010-entropy-gating-policy.md) — amends the tertiary entropy policy; the Aho-Corasick and regex decisions remain active

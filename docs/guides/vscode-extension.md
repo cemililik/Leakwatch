@@ -98,7 +98,7 @@ All settings are under the `leakwatch.*` namespace. Open **Settings** (`Ctrl+,`)
 
 **`leakwatch.minSeverity`** -- Controls the noise level. Setting this to `high` hides medium and low findings, which is useful in large projects where generic API key detections may be noisy.
 
-**`leakwatch.customRulesPath`** -- Points to a YAML file containing custom detection rules. See [Custom Rules Integration](#8-custom-rules-integration) below.
+**`leakwatch.customRulesPath`** -- Points to a YAML file containing custom detection rules. See [Custom Rules Integration](#9-custom-rules-integration) below.
 
 ---
 

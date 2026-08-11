@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -20,7 +21,10 @@ const (
 	releaseFooterText      = ` · concept: redacted`
 )
 
-var stableReleasePattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+var (
+	stableReleasePattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	replaceSiteFile      = os.Rename
+)
 
 // readReleaseVersion reads the canonical stable version without importing the
 // parent Go module (tools/site-build intentionally has its own module). Keeping
@@ -90,7 +94,7 @@ func syncSiteReleaseVersion(root, version string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := applySiteReleaseUpdates(updates); err != nil {
+	if err := applySiteReleaseUpdates(filepath.Join(root, "site"), updates); err != nil {
 		return 0, err
 	}
 	return pageCount, nil
@@ -139,13 +143,153 @@ func collectSiteReleaseUpdates(root, version string) ([]sitePageUpdate, int, err
 	return updates, len(pages), nil
 }
 
-func applySiteReleaseUpdates(updates []sitePageUpdate) error {
+type preparedSiteUpdate struct {
+	update          sitePageUpdate
+	tempPath        string
+	originalContent []byte
+	originalMode    os.FileMode
+	existed         bool
+}
+
+// applySiteReleaseUpdates publishes a set of generated/footer files as one
+// recoverable transaction. Every replacement is fully written and fsynced to
+// a sibling temporary file before the first target changes. If a later atomic
+// replace fails, earlier replacements are restored in reverse order; rollback
+// failures are joined into the returned error instead of being hidden.
+func applySiteReleaseUpdates(siteDir string, updates []sitePageUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	if err := validateDirectoryTree(siteDir, siteDir); err != nil {
+		return fmt.Errorf("inspect site transaction root: %w", err)
+	}
+
+	seenTargets := make(map[string]struct{}, len(updates))
+	normalized := make([]sitePageUpdate, len(updates))
+	for index, update := range updates {
+		update.path = filepath.Clean(update.path)
+		rel, err := filepath.Rel(siteDir, update.path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("site transaction target %s escapes %s", update.path, siteDir)
+		}
+		if _, duplicate := seenTargets[update.path]; duplicate {
+			return fmt.Errorf("site transaction contains duplicate target %s", update.path)
+		}
+		seenTargets[update.path] = struct{}{}
+		normalized[index] = update
+	}
+	updates = normalized
+
+	var createdDirs []string
 	for _, update := range updates {
-		if err := writeFileAtomic(update.path, update.content, update.mode); err != nil {
-			return fmt.Errorf("write %s: %w", filepath.Base(update.path), err)
+		created, err := ensureDirectoryTreeTracked(siteDir, filepath.Dir(update.path))
+		if err != nil {
+			cleanupCreatedDirectories(createdDirs)
+			return fmt.Errorf("prepare target directory for %s: %w", update.path, err)
+		}
+		createdDirs = append(createdDirs, created...)
+	}
+
+	prepared := make([]preparedSiteUpdate, 0, len(updates))
+	cleanupTemps := func() {
+		for _, item := range prepared {
+			if item.tempPath != "" {
+				_ = os.Remove(item.tempPath)
+			}
 		}
 	}
+	for _, update := range updates {
+		item := preparedSiteUpdate{update: update}
+		info, err := os.Lstat(update.path)
+		switch {
+		case err == nil:
+			if !info.Mode().IsRegular() {
+				cleanupTemps()
+				cleanupCreatedDirectories(createdDirs)
+				return fmt.Errorf("site transaction target %s must be a regular file", update.path)
+			}
+			item.originalContent, err = os.ReadFile(update.path)
+			if err != nil {
+				cleanupTemps()
+				cleanupCreatedDirectories(createdDirs)
+				return fmt.Errorf("snapshot site target %s: %w", update.path, err)
+			}
+			item.originalMode = info.Mode().Perm()
+			item.existed = true
+		case os.IsNotExist(err):
+		case err != nil:
+			cleanupTemps()
+			cleanupCreatedDirectories(createdDirs)
+			return fmt.Errorf("inspect site target %s: %w", update.path, err)
+		}
+
+		item.tempPath, err = prepareSiblingFile(update.path, update.content, update.mode)
+		if err != nil {
+			cleanupTemps()
+			cleanupCreatedDirectories(createdDirs)
+			return fmt.Errorf("stage site target %s: %w", update.path, err)
+		}
+		prepared = append(prepared, item)
+	}
+
+	for index := range prepared {
+		item := &prepared[index]
+		if err := replaceSiteFile(item.tempPath, item.update.path); err != nil {
+			publishErr := fmt.Errorf("publish site target %s: %w", item.update.path, err)
+			rollbackErr := rollbackSiteUpdates(prepared[:index])
+			cleanupTemps()
+			cleanupCreatedDirectories(createdDirs)
+			return errors.Join(publishErr, rollbackErr)
+		}
+		item.tempPath = ""
+	}
 	return nil
+}
+
+func prepareSiblingFile(target string, content []byte, mode os.FileMode) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	failed := true
+	defer func() {
+		_ = tmp.Close()
+		if failed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	failed = false
+	return tmpPath, nil
+}
+
+func rollbackSiteUpdates(committed []preparedSiteUpdate) error {
+	var rollbackErrors []error
+	for index := len(committed) - 1; index >= 0; index-- {
+		item := committed[index]
+		if item.existed {
+			if err := writeFileAtomic(item.update.path, item.originalContent, item.originalMode); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", item.update.path, err))
+			}
+			continue
+		}
+		if err := os.Remove(item.update.path); err != nil && !os.IsNotExist(err) {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove new target %s: %w", item.update.path, err))
+		}
+	}
+	return errors.Join(rollbackErrors...)
 }
 
 func replaceReleaseFooter(content []byte, version string) ([]byte, error) {
@@ -212,26 +356,30 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 // JavaScript. All parsing/rendering/detector work therefore completes outside
 // the committed site tree, and a late validation error leaves it untouched.
 func commitStagedSite(root, stageRoot, version string) (int, error) {
-	updates, pageCount, err := collectSiteReleaseUpdates(root, version)
+	footerUpdates, pageCount, err := collectSiteReleaseUpdates(root, version)
 	if err != nil {
 		return 0, err
 	}
-	if err := publishStagedSite(root, stageRoot); err != nil {
+	generatedUpdates, err := collectStagedSiteUpdates(root, stageRoot)
+	if err != nil {
 		return 0, err
 	}
-	if err := applySiteReleaseUpdates(updates); err != nil {
+	updates := append(generatedUpdates, footerUpdates...)
+	if err := applySiteReleaseUpdates(filepath.Join(root, "site"), updates); err != nil {
 		return 0, err
 	}
 	return pageCount, nil
 }
 
 func publishStagedSite(root, stageRoot string) error {
-	type publishItem struct {
-		target  string
-		content []byte
-		mode    os.FileMode
+	updates, err := collectStagedSiteUpdates(root, stageRoot)
+	if err != nil {
+		return err
 	}
+	return applySiteReleaseUpdates(filepath.Join(root, "site"), updates)
+}
 
+func collectStagedSiteUpdates(root, stageRoot string) ([]sitePageUpdate, error) {
 	var stagedFiles []string
 	err := filepath.WalkDir(stageRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -247,22 +395,22 @@ func publishStagedSite(root, stageRoot string) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("inspect staged site: %w", err)
+		return nil, fmt.Errorf("inspect staged site: %w", err)
 	}
 	if len(stagedFiles) == 0 {
-		return fmt.Errorf("staged site contains no generated files")
+		return nil, fmt.Errorf("staged site contains no generated files")
 	}
 
 	siteDir := filepath.Join(root, "site")
-	items := make([]publishItem, 0, len(stagedFiles))
+	updates := make([]sitePageUpdate, 0, len(stagedFiles))
 	for _, stagedPath := range stagedFiles {
 		rel, err := filepath.Rel(stageRoot, stagedPath)
 		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("resolve staged site path %s", stagedPath)
+			return nil, fmt.Errorf("resolve staged site path %s", stagedPath)
 		}
 		target := filepath.Join(siteDir, rel)
 		if err := validateDirectoryTree(siteDir, filepath.Dir(target)); err != nil {
-			return fmt.Errorf("inspect generated site directory for %s: %w", target, err)
+			return nil, fmt.Errorf("inspect generated site directory for %s: %w", target, err)
 		}
 
 		mode := os.FileMode(0o644)
@@ -270,30 +418,19 @@ func publishStagedSite(root, stageRoot string) error {
 		switch {
 		case err == nil:
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("generated site target %s must be a regular file", target)
+				return nil, fmt.Errorf("generated site target %s must be a regular file", target)
 			}
 			mode = info.Mode().Perm()
 		case !os.IsNotExist(err):
-			return fmt.Errorf("inspect generated site target %s: %w", target, err)
+			return nil, fmt.Errorf("inspect generated site target %s: %w", target, err)
 		}
 		content, err := os.ReadFile(stagedPath)
 		if err != nil {
-			return fmt.Errorf("read staged site file %s: %w", stagedPath, err)
+			return nil, fmt.Errorf("read staged site file %s: %w", stagedPath, err)
 		}
-		items = append(items, publishItem{target: target, content: content, mode: mode})
+		updates = append(updates, sitePageUpdate{path: target, content: content, mode: mode})
 	}
-
-	// All staged inputs, target paths, file types, and parent chains are checked
-	// before the first committed file is replaced.
-	for _, item := range items {
-		if err := ensureDirectoryTree(siteDir, filepath.Dir(item.target)); err != nil {
-			return fmt.Errorf("create generated site directory for %s: %w", item.target, err)
-		}
-		if err := writeFileAtomic(item.target, item.content, item.mode); err != nil {
-			return fmt.Errorf("publish generated site file %s: %w", item.target, err)
-		}
-	}
-	return nil
+	return updates, nil
 }
 
 func validateDirectoryTree(base, target string) error {
@@ -328,30 +465,42 @@ func validateDirectoryTree(base, target string) error {
 	return nil
 }
 
-func ensureDirectoryTree(base, target string) error {
+func ensureDirectoryTreeTracked(base, target string) ([]string, error) {
 	if err := validateDirectoryTree(base, target); err != nil {
-		return err
+		return nil, err
 	}
 	rel, err := filepath.Rel(base, target)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	current := base
 	if rel == "." {
-		return nil
+		return nil, nil
 	}
+	var created []string
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
-		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
-			return err
+		if err := os.Mkdir(current, 0o755); err == nil {
+			created = append(created, current)
+		} else if !os.IsExist(err) {
+			cleanupCreatedDirectories(created)
+			return nil, err
 		}
 		info, err := os.Lstat(current)
 		if err != nil {
-			return err
+			cleanupCreatedDirectories(created)
+			return nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("%s must be a real directory", current)
+			cleanupCreatedDirectories(created)
+			return nil, fmt.Errorf("%s must be a real directory", current)
 		}
 	}
-	return nil
+	return created, nil
+}
+
+func cleanupCreatedDirectories(paths []string) {
+	for index := len(paths) - 1; index >= 0; index-- {
+		_ = os.Remove(paths[index])
+	}
 }

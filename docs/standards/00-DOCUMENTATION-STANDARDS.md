@@ -142,7 +142,7 @@ Related ADRs (if any).
 - File name: `ADR-NNNN-short-title.md` (lowercase, hyphen-separated)
 - Sequence number is 4 digits, zero-padded: `0001`, `0002`, ...
 - Each ADR is added to the `docs/decisions/README.md` index
-- Accepted ADR decisions are not rewritten — to override one, write a new ADR and change only the old ADR's status/related-decision metadata to "Superseded"
+- Accepted ADR decisions are not rewritten — record a partial change in a new ADR and mark the old ADR "Amended"; replace an entire decision only with a new ADR that marks the old one "Superseded"
 - ADRs are also added to the `CLAUDE.md` reference table
 
 ---

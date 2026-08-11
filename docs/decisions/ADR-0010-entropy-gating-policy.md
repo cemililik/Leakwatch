@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-11
 - **Decision Makers:** Project team
-- **Supersedes:** The tertiary entropy policy in [ADR-0005](ADR-0005-pattern-matching.md)
+- **Amends:** The tertiary entropy policy in [ADR-0005](ADR-0005-pattern-matching.md)
 
 ## Context
 
@@ -56,5 +56,5 @@ Rejected. Optional detector interfaces keep the policy local, testable, and exte
 
 ## Related Decisions
 
-- [ADR-0005: Pattern Matching Strategy](ADR-0005-pattern-matching.md) — Aho-Corasick and regex pipeline; entropy clause superseded here
+- [ADR-0005: Pattern Matching Strategy](ADR-0005-pattern-matching.md) — Aho-Corasick and regex pipeline remain active; entropy clause amended here
 - [ADR-0008: Concurrency Model](ADR-0008-concurrency-model.md) — worker execution model in which the gate runs

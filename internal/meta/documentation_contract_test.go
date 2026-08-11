@@ -11,25 +11,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
+const releaseVersionTokenPattern = `v[0-9]+\.[0-9]+\.[0-9]+(?:[-_][0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?`
+
 var (
-	fullVersionPattern         = regexp.MustCompile(`\bv[0-9]+\.[0-9]+\.[0-9]+\b`)
+	releaseVersionToken        = regexp.MustCompile(`\b(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`)
+	releaseVersionTokenExact   = regexp.MustCompile(`^` + releaseVersionTokenPattern + `$`)
 	directLeakwatchPinPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)github\.com/hodetech/leakwatch@(v[0-9]+\.[0-9]+\.[0-9]+)`),
-		regexp.MustCompile(`(?i)ghcr\.io/hodetech/leakwatch:(v[0-9]+\.[0-9]+\.[0-9]+)`),
-		regexp.MustCompile(`(?i)LEAKWATCH_VERSION[[:space:]]*[:=][[:space:]]*['\"]?(v[0-9]+\.[0-9]+\.[0-9]+)`),
-		regexp.MustCompile(`(?i)leakwatch[[:space:]]+(v[0-9]+\.[0-9]+\.[0-9]+)`),
-		regexp.MustCompile(`(?i)leakwatch[[:space:]]+(?:version|sürümü).*?(v[0-9]+\.[0-9]+\.[0-9]+)`),
+		regexp.MustCompile(`(?i)github\.com/hodetech/leakwatch@(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
+		regexp.MustCompile(`(?i)(?:^|[^0-9A-Za-z/])hodetech/leakwatch@(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
+		regexp.MustCompile(`(?i)ghcr\.io/hodetech/leakwatch:(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
+		regexp.MustCompile(`(?i)LEAKWATCH_VERSION[[:space:]]*[:=][[:space:]]*['\"]?(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
+		regexp.MustCompile(`(?i)leakwatch[[:space:]]+(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
+		regexp.MustCompile(`(?i)leakwatch[[:space:]]+(?:version|sürümü).*?(` + releaseVersionTokenPattern + `)(?:[^0-9A-Za-z._-]|$)`),
 	}
-	contextualVersionAssignment = regexp.MustCompile(`(?im)(?:^|[[:space:]])(?:rev|version)[[:space:]]*[:=][[:space:]]*['\"]?(v[0-9]+\.[0-9]+\.[0-9]+)`)
-	leakwatchBlockContext       = regexp.MustCompile(`(?i)(?:github\.com/hodetech/leakwatch|ghcr\.io/hodetech/leakwatch|hodetech/leakwatch@|\bleakwatch\b)`)
-	historicalVersionMarker     = regexp.MustCompile(`(?i)<!--[[:space:]]*leakwatch-version:[[:space:]]*historical[[:space:]]+(v[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*-->`)
+	historicalVersionMarker = regexp.MustCompile(`(?i)<!--[[:space:]]*leakwatch-version:[[:space:]]*historical[[:space:]]+(` + releaseVersionTokenPattern + `)[[:space:]]*-->`)
 )
 
 type documentationBlock struct {
-	startLine int
-	text      string
+	startLine          int
+	text               string
+	leakwatchImageTags bool
 }
 
 type versionPin struct {
@@ -84,11 +88,16 @@ func TestLeakwatchReleasePins_ContextAndHistoricalMarkerMatrix(t *testing.T) {
 		wantLines  []int
 		wantExempt bool
 	}{
-		{name: "environment equals", contents: "LEAKWATCH_VERSION=v1.6.0", wantPins: []string{"v1.6.0"}, wantLines: []int{1}},
+		{name: "environment equals", contents: "LEAKWATCH_VERSION = v1.6.0", wantPins: []string{"v1.6.0"}, wantLines: []int{1}},
 		{name: "environment YAML", contents: "LEAKWATCH_VERSION: 'v1.6.0'", wantPins: []string{"v1.6.0"}, wantLines: []int{1}},
-		{name: "Leakwatch action input", contents: "```yaml\nuses: HodeTech/Leakwatch@v1\nwith:\n  version = v1.6.0\n```", wantPins: []string{"v1.6.0"}, wantLines: []int{4}},
+		{name: "Leakwatch action input", contents: "```yaml\n- uses: HodeTech/Leakwatch@v1\n  with:\n    version: v1.6.0\n- uses: actions/setup-node@v4\n  with:\n    version: v22.3.0\n```", wantPins: []string{"v1.6.0"}, wantLines: []int{4}},
+		{name: "exact Leakwatch action pin", contents: "```yaml\n- uses: HodeTech/Leakwatch@v1.6.0\n```", wantPins: []string{"v1.6.0"}, wantLines: []int{2}},
 		{name: "Leakwatch pre-commit rev", contents: "```yaml\n- repo: https://github.com/HodeTech/Leakwatch\n  rev: v1.6.0\n```", wantPins: []string{"v1.6.0"}, wantLines: []int{3}},
+		{name: "unrelated rev in same YAML", contents: "```yaml\n- repo: https://github.com/HodeTech/Leakwatch\n  rev: v1.7.0\n- repo: https://example.com/tool\n  rev: v9.8.7\n```", wantPins: []string{"v1.7.0"}, wantLines: []int{3}},
 		{name: "unrelated version assignment", contents: "```yaml\nname: unrelated\nversion: v2.3.0\n```"},
+		{name: "suffix cannot hide behind current stable prefix", contents: "LEAKWATCH_VERSION=v1.7.0-typo", wantPins: []string{"v1.7.0-typo"}, wantLines: []int{1}},
+		{name: "contextual image tag table", contents: "```text\nghcr.io/hodetech/leakwatch\n```\n\nAvailable tags:\n\n| Tag | Description |\n|---|---|\n| `:v1.6.0` | stale |", wantPins: []string{"v1.6.0"}, wantLines: []int{9}},
+		{name: "bare tag for unrelated image is ignored", contents: "Available tags:\n\n| Tag | Description |\n|---|---|\n| `:v9.8.7` | unrelated |"},
 		{name: "exact historical marker", contents: "<!-- leakwatch-version: historical v1.6.0 -->\n\n```bash\nleakwatch v1.6.0\n```", wantPins: []string{"v1.6.0"}, wantLines: []int{4}, wantExempt: true},
 		{name: "marker cannot exempt different pin", contents: "<!-- leakwatch-version: historical v1.5.0 -->\n\nleakwatch v1.6.0", wantPins: []string{"v1.6.0"}, wantLines: []int{3}},
 		{name: "marker cannot exempt later block", contents: "<!-- leakwatch-version: historical v1.6.0 -->\n\nleakwatch v1.6.0\n\nUnrelated paragraph.\n\nleakwatch v1.6.0", wantPins: []string{"v1.6.0", "v1.6.0"}, wantLines: []int{3, 7}},
@@ -120,7 +129,7 @@ func TestEntropyPolicyDocs_MatchEngineContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	oldADR, err := os.ReadFile(filepath.Join(root, "docs", "decisions", "ADR-0005-pattern-matching.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(oldADR), "**Status:** Superseded by [ADR-0010]")
+	assert.Contains(t, string(oldADR), "**Status:** Amended by [ADR-0010]")
 
 	currentADR, err := os.ReadFile(filepath.Join(root, "docs", "decisions", "ADR-0010-entropy-gating-policy.md"))
 	require.NoError(t, err)
@@ -251,10 +260,28 @@ func markdownContractBlocks(contents string) []documentationBlock {
 		blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix + strings.Join(lines[index:end], "\n")})
 		index = end
 	}
+	markLeakwatchImageTagTables(blocks)
 	return blocks
 }
 
-func leakwatchReleasePins(path string, block documentationBlock) []versionPin {
+func markLeakwatchImageTagTables(blocks []documentationBlock) {
+	pendingTagTable := false
+	for index := range blocks {
+		trimmed := strings.TrimSpace(blocks[index].text)
+		if strings.HasPrefix(trimmed, "#") {
+			pendingTagTable = false
+		}
+		if strings.Contains(strings.ToLower(blocks[index].text), "ghcr.io/hodetech/leakwatch") {
+			pendingTagTable = true
+		}
+		if pendingTagTable && strings.HasPrefix(trimmed, "|") && strings.Contains(blocks[index].text, "`:v") {
+			blocks[index].leakwatchImageTags = true
+			pendingTagTable = false
+		}
+	}
+}
+
+func leakwatchReleasePins(_ string, block documentationBlock) []versionPin {
 	byVersionAndLine := make(map[versionPin]struct{})
 	collect := func(pattern *regexp.Regexp) {
 		for _, match := range pattern.FindAllStringSubmatchIndex(block.text, -1) {
@@ -269,15 +296,17 @@ func leakwatchReleasePins(path string, block documentationBlock) []versionPin {
 	for _, pattern := range directLeakwatchPinPatterns {
 		collect(pattern)
 	}
-	if leakwatchBlockContext.MatchString(block.text) {
-		collect(contextualVersionAssignment)
+	for _, pin := range leakwatchYAMLPins(block) {
+		byVersionAndLine[pin] = struct{}{}
 	}
 
-	base := filepath.ToSlash(path)
-	if strings.HasSuffix(base, "/ci-cd/docker-usage.md") && strings.Contains(block.text, "`:v") {
-		for _, location := range fullVersionPattern.FindAllStringIndex(block.text, -1) {
-			version := block.text[location[0]:location[1]]
-			line := block.startLine + strings.Count(block.text[:location[0]], "\n")
+	if block.leakwatchImageTags {
+		for _, location := range releaseVersionToken.FindAllStringSubmatchIndex(block.text, -1) {
+			if len(location) < 4 || location[2] < 0 {
+				continue
+			}
+			version := block.text[location[2]:location[3]]
+			line := block.startLine + strings.Count(block.text[:location[2]], "\n")
 			byVersionAndLine[versionPin{line: line, version: version}] = struct{}{}
 		}
 	}
@@ -293,6 +322,92 @@ func leakwatchReleasePins(path string, block documentationBlock) []versionPin {
 		return pins[i].line < pins[j].line
 	})
 	return pins
+}
+
+func leakwatchYAMLPins(block documentationBlock) []versionPin {
+	source, lineOffset := yamlSourceFromBlock(block.text)
+	if strings.TrimSpace(source) == "" {
+		return nil
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(source), &document); err != nil {
+		return nil
+	}
+	var pins []versionPin
+	var walk func(*yaml.Node)
+	walk = func(node *yaml.Node) {
+		if node.Kind == yaml.MappingNode {
+			values := yamlMappingValues(node)
+			if repo := values["repo"]; repo != nil && isLeakwatchRepository(repo.Value) {
+				if rev := values["rev"]; rev != nil {
+					if version := releaseVersionTokenExact.FindString(rev.Value); version != "" {
+						pins = append(pins, versionPin{
+							line:    block.startLine + lineOffset + rev.Line - 1,
+							version: version,
+						})
+					}
+				}
+			}
+			if uses := values["uses"]; uses != nil && isLeakwatchAction(uses.Value) {
+				if with := values["with"]; with != nil && with.Kind == yaml.MappingNode {
+					if versionNode := yamlMappingValues(with)["version"]; versionNode != nil {
+						if version := releaseVersionTokenExact.FindString(versionNode.Value); version != "" {
+							pins = append(pins, versionPin{
+								line:    block.startLine + lineOffset + versionNode.Line - 1,
+								version: version,
+							})
+						}
+					}
+				}
+			}
+		}
+		for _, child := range node.Content {
+			walk(child)
+		}
+	}
+	walk(&document)
+	return pins
+}
+
+func yamlSourceFromBlock(block string) (string, int) {
+	lines := strings.Split(block, "\n")
+	for index, line := range lines {
+		trimmed := strings.ToLower(strings.TrimSpace(line))
+		if !strings.HasPrefix(trimmed, "```yaml") && !strings.HasPrefix(trimmed, "```yml") &&
+			!strings.HasPrefix(trimmed, "~~~yaml") && !strings.HasPrefix(trimmed, "~~~yml") {
+			continue
+		}
+		fence := strings.TrimSpace(line)[:3]
+		for end := index + 1; end < len(lines); end++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[end]), fence) {
+				return strings.Join(lines[index+1:end], "\n"), index + 1
+			}
+		}
+		return "", 0
+	}
+	return block, 0
+}
+
+func yamlMappingValues(mapping *yaml.Node) map[string]*yaml.Node {
+	values := make(map[string]*yaml.Node, len(mapping.Content)/2)
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		key := mapping.Content[index]
+		if key.Kind == yaml.ScalarNode {
+			values[strings.ToLower(strings.TrimSpace(key.Value))] = mapping.Content[index+1]
+		}
+	}
+	return values
+}
+
+func isLeakwatchRepository(value string) bool {
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".git")
+	return normalized == "https://github.com/hodetech/leakwatch" || normalized == "github.com/hodetech/leakwatch"
+}
+
+func isLeakwatchAction(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(normalized, "hodetech/leakwatch@") ||
+		strings.HasPrefix(normalized, "github.com/hodetech/leakwatch@")
 }
 
 func blockMarksHistoricalVersion(block, version string) bool {
