@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v1.8.0] - 2026-08-11
+
 ### Added
 
 - A default-on `structured-config-secret` detector for JSON, YAML, TOML, INI,

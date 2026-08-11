@@ -16,7 +16,7 @@ ghcr.io/hodetech/leakwatch
 | Tag | Description |
 |-----|-------------|
 | `:latest` | Most recent release |
-| `:v1.7.0` | Exact current-release pin |
+| `:v1.8.0` | Exact current-release pin |
 | `:v1.7` | Current minor-version pin (tracks patch releases) |
 
 The image is based on Alpine, runs as the non-root user `leakwatch`, uses `/scan` as the working directory, and has `leakwatch` as its entrypoint.

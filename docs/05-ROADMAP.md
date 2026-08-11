@@ -25,14 +25,22 @@
 | Phase 8.4 — False Positive Reduction | Completed | `v1.5.0` | 2026-04-09 |
 | Phase 8.5 — GitHub Marketplace Action & Distribution | Completed | `v1.6.0` | 2026-05-25 |
 | Review Remediation Release | Released | `v1.7.0` | 2026-07-20 |
-| Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.8.0` | — |
+| Phase 9 — Detection Accuracy & FP Reduction | Completed | `v1.8.0` | 2026-08-11 |
 | Phase 10 — Detector Library Expansion | Planned | `v1.9.0` | — |
 | Phase 11 — Verification Depth & Credential Impact | Planned | `v1.10.0` | — |
 | Phase 12 — Source Expansion (Confluence/Jira, org-scale) | Planned | `v1.11.0` | — |
 | Phase 13 — Secrets Inventory | Planned | `v1.12.0` | — |
 | Phase 14 — Honeytokens | Planned | `v1.13.0` | — |
 
-> **Prioritization note (v7.0):** the planned sequence is re-ordered so the work that most strengthens the core promise — accurate, verified, low-noise findings — comes first. Detection accuracy and false-positive reduction (Phase 9), broader coverage of high-blast-radius credential types (Phase 10), and deeper verification with credential-impact insight (Phase 11) precede new scan sources (Phase 12) and the inventory/honeytoken platform features (Phases 13–14). Rationale is detailed in [Planned Work — Prioritization](#planned-work--prioritization).
+> **Prioritization note (v7.0):** the planned sequence is re-ordered so the work that most strengthens the core promise — accurate, verified, low-noise findings — comes first. Detection accuracy and false-positive reduction (Phase 9, completed in `v1.8.0`), broader coverage of high-blast-radius credential types (Phase 10), and deeper verification with credential-impact insight (Phase 11) precede new scan sources (Phase 12) and the inventory/honeytoken platform features (Phases 13–14). Rationale is detailed in [Planned Work — Prioritization](#planned-work--prioritization).
+
+### v1.8.0 Highlights
+
+- **Detection accuracy** — structured configuration and generic API-key detection now cover realistic SDK, shell, YAML, JSON, TOML, INI, dotenv, and XML shapes while rejecting source-code, prose, locale, placeholder, and package-version lookalikes
+- **Verification reliability** — inactive credentials require strict provider-authentication evidence and JSON response contracts; trusted origins, regional fallbacks, rate admission, cancellation, panic containment, and metadata enrichment fail conservatively
+- **Source resilience** — Slack pagination, attachment failures, rate-limit waits, Git cancellation/cleanup, and GCS client ownership now surface partial failures without silent clean scans or lifecycle races
+- **Truthful product surface** — capability counts, verifier context requirements, CLI flags, EN/TR manuals, generated site content, release metadata, and CI drift guards share machine-checked sources of truth
+- **Security and quality gates** — mutation-sensitive HTTP/SSRF/rate-limit/display-width tests, full race coverage, provider-contract audits, protected VSIX publication, and release-time registry checks defend the published artifact
 
 ### v1.7.0 Highlights
 
@@ -118,7 +126,7 @@ See [ADR-0011](decisions/ADR-0011-product-trust-boundaries.md) for the trust bou
 
 ## Roadmap Overview
 
-Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–8 (through `v1.6.0`) and the `v1.7.0` review-remediation release are complete. Phases 9–14 remain the planned forward path beginning with `v1.8.0`, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
+Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–9 (through `v1.8.0`) are complete. Phases 10–14 remain the planned forward path beginning with `v1.9.0`, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
 
 ```mermaid
 gantt
@@ -158,11 +166,11 @@ gantt
         UX, Security, FP reduction      :done, f8, after f6, 6w
         Marketplace Action & distrib.   :done, f85, after f8, 3w
 
-    section Completed v1.7.0
+    section Completed v1.7.0-v1.8.0
         Full-project review remediation :done, f87, after f85, 4w
+        Detection accuracy & FP         :done, p9, after f87, 5w
 
-    section Planned v1.8.0+
-        Detection accuracy & FP         :p9, after f87, 5w
+    section Planned v1.9.0+
         Detector library expansion      :p10, after p9, 6w
         Verification depth & impact     :p11, after p10, 6w
         Source expansion                :p12, after p11, 6w
@@ -793,7 +801,7 @@ Source packages (no formal standard, but visible gaps):
 | `v1.5.0` | Phase 8.4 | False positive reduction, ADO.NET support | 2026-04-09 |
 | `v1.6.0` | Phase 8.5 | GitHub Marketplace Action, `github` output format, config wiring | 2026-05-25 |
 | `v1.7.0` | Review Remediation | Full-project review remediation, correctness, security, and CI hardening | 2026-07-20 |
-| `v1.8.0` | Phase 9 | Detection accuracy & false-positive reduction | — |
+| `v1.8.0` | Phase 9 | Detection accuracy & false-positive reduction | 2026-08-11 |
 | `v1.9.0` | Phase 10 | Detector library expansion | — |
 | `v1.10.0` | Phase 11 | Verification depth & credential impact | — |
 | `v1.11.0` | Phase 12 | Source expansion (Confluence/Jira, org-scale) | — |
