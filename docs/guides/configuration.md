@@ -1,10 +1,12 @@
 # Leakwatch - Configuration Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental configuration deep dive. The [configuration user manual](../user-manuals/en/configuration/config-file.md) is authoritative for current keys, defaults, and precedence.
 
 ## 1. Overview
 
@@ -80,13 +82,10 @@ detection:
 
     # Shannon entropy threshold (float64, 0.0–8.0). Default: 4.0
     #
-    # NOTE — this value is currently display-only for built-in detectors.
-    # The engine computes and attaches entropy scores to findings for context,
-    # but does NOT gate or filter built-in detector findings on this threshold.
-    # Engine-level gating is planned — see the ROADMAP
-    # "Documented-but-Unimplemented Gaps" §4 (Engine-level entropy-threshold gating).
-    #
-    # Per-rule entropy thresholds in `custom-rules:` DO filter custom-rule matches.
+    # The engine computes and attaches entropy scores to every finding. The
+    # threshold gates only built-in heuristic detectors that explicitly opt in
+    # (currently `generic-api-key`); structural provider detectors are never
+    # suppressed by this setting. Custom rules apply their own per-rule entropy.
     threshold: 4.0
 
 # ── Verification Settings ─────────────────────────────────────────
@@ -187,7 +186,7 @@ custom-rules:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable entropy analysis |
-| `threshold` | float64 | `4.0` | Entropy threshold (0.0–8.0). Display-only for built-in detectors; filters custom-rule matches only |
+| `threshold` | float64 | `4.0` | Entropy threshold (0.0–8.0). Gates opt-in heuristic detectors (currently `generic-api-key`); structural detectors are unaffected |
 
 **What is entropy?** Shannon entropy measures the degree of randomness in a text. Secrets typically have high entropy (4.0+) because they consist of random characters. Normal code has lower entropy.
 

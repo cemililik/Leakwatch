@@ -24,7 +24,7 @@
 | Phase 8.3 — Scan Summary + Security | Completed | `v1.4.0` | 2026-04-08 |
 | Phase 8.4 — False Positive Reduction | Completed | `v1.5.0` | 2026-04-09 |
 | Phase 8.5 — GitHub Marketplace Action & Distribution | Completed | `v1.6.0` | 2026-05-25 |
-| Review Remediation Release | Released | `v1.7.0` | 2026-07-19 |
+| Review Remediation Release | Released | `v1.7.0` | 2026-07-20 |
 | Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.8.0` | — |
 | Phase 10 — Detector Library Expansion | Planned | `v1.9.0` | — |
 | Phase 11 — Verification Depth & Credential Impact | Planned | `v1.10.0` | — |
@@ -777,7 +777,7 @@ Source packages (no formal standard, but visible gaps):
 | `v1.4.0` | Phase 8.3 | Scan summary, `init` command, colored table, security patches | 2026-04-08 |
 | `v1.5.0` | Phase 8.4 | False positive reduction, ADO.NET support | 2026-04-09 |
 | `v1.6.0` | Phase 8.5 | GitHub Marketplace Action, `github` output format, config wiring | 2026-05-25 |
-| `v1.7.0` | Review Remediation | Full-project review remediation, correctness, security, and CI hardening | 2026-07-19 |
+| `v1.7.0` | Review Remediation | Full-project review remediation, correctness, security, and CI hardening | 2026-07-20 |
 | `v1.8.0` | Phase 9 | Detection accuracy & false-positive reduction | — |
 | `v1.9.0` | Phase 10 | Detector library expansion | — |
 | `v1.10.0` | Phase 11 | Verification depth & credential impact | — |

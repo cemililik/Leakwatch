@@ -1,10 +1,12 @@
 # Leakwatch - Slack Workspace Scanning Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental Slack operations deep dive. The [Slack user manual](../user-manuals/en/scanning/slack.md) is authoritative for current flags and supported content.
 
 ## Table of Contents
 

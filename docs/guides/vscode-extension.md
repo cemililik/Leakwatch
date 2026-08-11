@@ -1,10 +1,12 @@
 # Leakwatch - VS Code Extension Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental extension deep dive. The [user manual](../user-manuals/en/getting-started/introduction.md) is authoritative for Leakwatch CLI behavior; this guide owns only extension-specific workflows.
 
 ## 1. Overview
 

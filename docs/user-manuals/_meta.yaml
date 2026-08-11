@@ -1,12 +1,15 @@
 # Leakwatch user-manual navigation metadata.
 #
 # This file is the single source of truth for the documentation structure.
+# English pages are authoritative for current product behavior. Turkish pages
+# are reviewed translations and MUST preserve the same page set and semantics.
 # The site-build tool (tools/site-build) reads it to:
 #   1. discover which Markdown pages to compile, and in what order, and
 #   2. generate the navigation tree rendered by the website sidebar.
 #
 # Markdown source lives at:  docs/user-manuals/<lang>/<section-id>/<page-id>.md
 # Every page listed below MUST exist for every language in `languages`.
+# site/js/manuals/*.js is generated from these sources; never edit it by hand.
 
 languages: [en, tr]
 default_language: en

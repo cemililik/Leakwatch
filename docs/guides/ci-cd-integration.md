@@ -1,10 +1,12 @@
 # Leakwatch - CI/CD Integration Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental CI/CD deep dive. The [CI/CD user manual](../user-manuals/en/ci-cd/github-action.md) is authoritative for current inputs, defaults, and exit behavior.
 
 ## Table of Contents
 
@@ -75,7 +77,7 @@ Leakwatch provides a ready-to-use GitHub Action (root `action.yml`, published on
 | `working-directory` | `.` | Directory to run the scan from |
 | `sarif-upload` | `false` | Upload SARIF results to GitHub Code Scanning. Requires `format: sarif` and `permissions: security-events: write` |
 | `fail-on-findings` | `true` | Fail the workflow step when Leakwatch reports findings (exit code 1). When `false`, a `::warning::` annotation is emitted instead so the scan does not block the pipeline. Hard errors (exit code >= 2) always fail the step regardless of this setting |
-| `version` | `latest` | Leakwatch version to install: `latest` or a release tag such as `v1.6.0` |
+| `version` | `latest` | Leakwatch version to install: `latest` or the current release tag, `v1.7.0` |
 | `release-repo` | `HodeTech/Leakwatch` | GitHub repository (`owner/name`) to download the release binary from. Override only for forks or self-hosted mirrors |
 
 **Outputs:**
@@ -285,7 +287,7 @@ permissions:
   pull-requests: read
 
 env:
-  LEAKWATCH_VERSION: 'v1.6.0'
+  LEAKWATCH_VERSION: 'v1.7.0'
 
 jobs:
   # On PRs, scan only the changed files
@@ -586,7 +588,7 @@ Create a `.pre-commit-config.yaml` file in your project root:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/HodeTech/Leakwatch
-    rev: v1.6.0
+    rev: v1.7.0
     hooks:
       - id: leakwatch
 ```

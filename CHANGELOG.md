@@ -11,7 +11,7 @@ _Nothing yet._
 
 ---
 
-## [v1.7.0] - 2026-07-19
+## [v1.7.0] - 2026-07-20
 
 > A comprehensive, multi-dimensional review of the entire project (code, tests, docs, CI/CD, VS Code extension, and website) was completed and its findings remediated across the changes below.
 

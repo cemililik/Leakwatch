@@ -72,15 +72,20 @@ POST without JavaScript. It includes a honeypot field and never asks for secrets
 
 ## Editing the documentation
 
-Manual pages are authored as Markdown under
+Current product behavior is authored in the English Markdown manual under
 [`../docs/user-manuals/`](../docs/user-manuals/):
 
 ```
 docs/user-manuals/
 ├── _meta.yaml                       navigation: sections, page order, titles
-├── en/<section>/<page>.md           English source
-└── tr/<section>/<page>.md           Turkish source
+├── en/<section>/<page>.md           authoritative English source
+└── tr/<section>/<page>.md           reviewed Turkish translation
 ```
+
+Update the English page first, then its Turkish counterpart in the same change.
+Files under `js/manuals/` are generated publication artifacts and must never be
+edited by hand. Supplemental long-form guides under `docs/guides/` may add
+operational depth, but they defer product contracts to the user manual.
 
 Each page has YAML front matter (`title`, `description`), GFM Markdown, fenced
 code blocks, optional `:::tip` / `:::note` / `:::warn` / `:::danger` callouts,

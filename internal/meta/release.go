@@ -7,5 +7,5 @@ const (
 	ReleaseVersion = "v1.7.0"
 
 	// ReleaseDate is the publication date of ReleaseVersion (ISO 8601).
-	ReleaseDate = "2026-07-19"
+	ReleaseDate = "2026-07-20"
 )

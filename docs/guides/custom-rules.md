@@ -1,10 +1,12 @@
 # Leakwatch - Custom Rules Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental rule-authoring deep dive. The [custom-rules user manual](../user-manuals/en/detectors/custom-rules.md) is authoritative for the supported schema and runtime behavior.
 
 ## Table of Contents
 

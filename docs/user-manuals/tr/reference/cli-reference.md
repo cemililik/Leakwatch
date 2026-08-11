@@ -25,7 +25,7 @@ leakwatch version
 ```
 
 ```text
-leakwatch v1.5.0 (commit: a3f9c12, built: 2026-05-10T08:22:00Z)
+leakwatch v1.7.0 (commit: 1a2b3c4, built: 2026-07-20T19:44:14Z)
 ```
 
 ## `leakwatch init`

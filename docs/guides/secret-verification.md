@@ -1,10 +1,12 @@
 # Leakwatch - Secret Verification Guide
 
-> **Document Version:** 1.2
-> **Date:** 2026-08-10
+> **Document Version:** 1.3
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental verifier-contract deep dive. The [verification user manual](../user-manuals/en/verification/how-verification-works.md) and its generated capability table are authoritative for current user-facing behavior.
 
 ## 1. What is Secret Verification?
 

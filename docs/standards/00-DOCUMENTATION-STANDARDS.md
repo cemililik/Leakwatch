@@ -1,14 +1,14 @@
 # Leakwatch - Documentation Standards
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 2.0
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
 
 ## 1. General Principles
 
-1. **Language:** All documents must be written in English. Technical terms (interface, pipeline, chunk, etc.) remain in English.
+1. **Language:** English is the authoritative source language. The Turkish user manual is a reviewed translation that must preserve the English page set and product semantics. Code comments, logs, errors, architecture documents, standards, ADRs, and supplemental guides remain English.
 2. **Format:** All documents are written in GitHub-Flavored Markdown (GFM) format.
 3. **Encoding:** UTF-8, line endings LF (`\n`).
 4. **Line length:** No mandatory line length limit in Markdown files; use natural paragraph flow.
@@ -33,14 +33,19 @@ docs/
 │   ├── 01-CODE-REVIEW-STANDARDS.md
 │   ├── 02-RELEASE-STANDARDS.md
 │   └── 04-DEVELOPMENT-STANDARDS.md
-├── 05-ROADMAP.md       # Roadmap (under root docs/)
-└── guides/             # Usage guides
-    ├── getting-started.md
-    ├── configuration.md
-    ├── ci-cd-integration.md
-    ├── custom-rules.md
-    ├── container-scanning.md
-    └── cloud-scanning.md
+├── user-manuals/       # Canonical product behavior (EN source + TR translation)
+│   ├── _meta.yaml      # Canonical page/language navigation contract
+│   ├── en/             # Authoritative user-facing source
+│   └── tr/             # Reviewed translation; same page set as EN
+├── guides/             # Supplemental operational and implementation deep dives
+│   ├── README.md        # Scope and canonical-source boundary
+│   └── *.md             # Supplemental deep dives
+└── 05-ROADMAP.md       # Roadmap (under root docs/)
+
+site/js/manuals/        # Generated publication output; never edited by hand
+├── _index.js           # Navigation bundle from _meta.yaml
+├── en.js               # Compiled English manual
+└── tr.js               # Compiled Turkish manual
 ```
 
 ### 2.1 Directory Responsibilities
@@ -50,8 +55,35 @@ docs/
 | `architecture/` | Architecture decisions, technical design, competitive analysis | Developer, architect |
 | `decisions/` | ADR — context and rationale of architecture decisions | Developer, architect |
 | `standards/` | Coding, testing, documentation, CI/CD standards | Developer, contributor |
-| `guides/` | Installation, usage, integration guides | End user |
+| `user-manuals/en/` | Current CLI, configuration, detector, verifier, output, and integration behavior | End user; authoritative |
+| `user-manuals/tr/` | Turkish translation of the English manual with identical navigation/page coverage | End user; translated |
+| `guides/` | Supplemental deep dives, operational rationale, and implementation detail; must defer current product contracts to the user manual | Advanced user, operator, contributor |
 | Root `docs/` | Roadmap, general documents | Everyone |
+
+### 2.2 Canonical and Generated Boundaries
+
+The documentation publication chain is intentionally one-way:
+
+```mermaid
+flowchart LR
+    EN["docs/user-manuals/en\nAuthoritative behavior"] --> TR["docs/user-manuals/tr\nReviewed translation"]
+    META["docs/user-manuals/_meta.yaml\nNavigation contract"] --> BUILD["tools/site-build"]
+    EN --> BUILD
+    TR --> BUILD
+    BUILD --> SITE["site/js/manuals/*.js\nGenerated; do not edit"]
+```
+
+- Product behavior changes start in code and executable contracts, then update the English user manual.
+- The matching Turkish page is updated in the same change. `_meta.yaml` requires identical page coverage for every declared language.
+- `tools/site-build` compiles both languages into `site/js/manuals/*.js`. Generated bundles must never be edited by hand and CI rejects generated drift.
+- Supplemental guides may explain advanced workflows or rationale, but they must link to the user manual for current flags, defaults, statuses, counts, and support claims. If the two disagree, the user manual and executable contract win.
+- Architecture documents describe implementation. They do not redefine user-facing CLI or configuration contracts.
+
+### 2.3 Release-Version Examples
+
+- An example advertised as current must use `internal/meta.ReleaseVersion` (or a floating supported pin such as `@v1` or `:latest`).
+- An intentionally historical example must be preceded by `<!-- leakwatch-version: historical -->` and explain why the older value matters.
+- CI scans Leakwatch-specific full-version pins in the README, user manuals, and guides. An unmarked stale pin fails the documentation contract test.
 
 ---
 
@@ -283,3 +315,7 @@ The following checklist must be completed before opening a document PR:
 - [ ] Tables do not exceed 6 columns
 - [ ] Spelling has been checked
 - [ ] Mermaid diagrams render correctly on GitHub (preview)
+- [ ] English behavior changes have matching Turkish updates
+- [ ] Generated site bundles were rebuilt and have no unexplained diff
+- [ ] Leakwatch-specific release pins are current or explicitly historical
+- [ ] Relative Markdown links resolve to tracked files

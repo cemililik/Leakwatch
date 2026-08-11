@@ -124,6 +124,11 @@ Full standards: [docs/standards/04-DEVELOPMENT-STANDARDS.md](docs/standards/04-D
 Types: feat, fix, docs, test, refactor, perf, ci, chore
 ```
 
+Before every commit, review the documentation surfaces affected by the change
+(including README, changelog, roadmap, guides, user manuals, and generated site
+artifacts). A commit must not knowingly leave product behavior, counts, versions,
+or capability claims stale.
+
 **Examples:**
 ```
 feat(detector): add AWS Secret Access Key detector

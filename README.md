@@ -118,7 +118,7 @@ Add secret scanning to any workflow in one line — published on the [GitHub Mar
 
 Exit codes (used for CI gating): **`0`** no findings · **`1`** findings reported · **`2`** error · **`3`** interrupted (Ctrl-C/SIGTERM).
 
-Full inputs and recipes: **[CI/CD Integration guide](docs/guides/ci-cd-integration.md)**.
+Full inputs and recipes: **[CI/CD manual](docs/user-manuals/en/ci-cd/github-action.md)**.
 
 ## Is it still live?
 
@@ -152,7 +152,7 @@ Leakwatch registers verifier implementations for **54 of 65 detectors (83.1%)**,
 
 ## Detectors
 
-**65 built-in detectors** across these categories, plus your own [YAML custom rules](docs/guides/custom-rules.md):
+**65 built-in detectors** across these categories, plus your own [YAML custom rules](docs/user-manuals/en/detectors/custom-rules.md):
 
 | Category | Examples |
 |----------|----------|
@@ -272,7 +272,7 @@ output:
   show-raw: false
 ```
 
-Use `.leakwatchignore` and `# leakwatch:ignore` markers to suppress known false positives. Details: **[Configuration guide](docs/guides/configuration.md)**.
+Use `.leakwatchignore` and `# leakwatch:ignore` markers to suppress known false positives. Details: **[Ignoring findings](docs/user-manuals/en/configuration/ignoring-findings.md)**.
 
 ## Security
 
@@ -311,19 +311,15 @@ Deep dive: [Architecture](docs/architecture/03-ARCHITECTURE.md) · [ADRs](docs/d
 
 ## Documentation
 
-Full bilingual (EN/TR) manuals are at **[hodetech.github.io/Leakwatch](https://hodetech.github.io/Leakwatch/)**. Quick links:
+The bilingual site is at **[hodetech.github.io/Leakwatch](https://hodetech.github.io/Leakwatch/)**. The English user manual is the authoritative product-behavior source; Turkish is its reviewed translation, and the site bundles are generated from both.
 
-[Getting Started](docs/guides/getting-started.md) ·
-[Configuration](docs/guides/configuration.md) ·
-[CI/CD](docs/guides/ci-cd-integration.md) ·
-[Custom Rules](docs/guides/custom-rules.md) ·
-[Container Scanning](docs/guides/container-scanning.md) ·
-[Cloud Scanning](docs/guides/cloud-scanning.md) ·
-[Git Scanning](docs/guides/git-scanning.md) ·
-[Slack Scanning](docs/guides/slack-scanning.md) ·
-[Verification](docs/guides/secret-verification.md) ·
-[Docker](docs/guides/docker-usage.md) ·
-[VS Code Extension](docs/guides/vscode-extension.md) ·
+[Introduction](docs/user-manuals/en/getting-started/introduction.md) ·
+[Installation](docs/user-manuals/en/getting-started/installation.md) ·
+[Configuration](docs/user-manuals/en/configuration/config-file.md) ·
+[CLI Reference](docs/user-manuals/en/reference/cli-reference.md) ·
+[Verification](docs/user-manuals/en/verification/how-verification-works.md) ·
+[Detector Catalog](docs/user-manuals/en/detectors/detector-catalog.md) ·
+[Supplemental Guides](docs/guides/README.md) ·
 [Roadmap](docs/05-ROADMAP.md)
 
 ## Contributing

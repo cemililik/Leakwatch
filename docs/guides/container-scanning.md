@@ -1,10 +1,12 @@
 # Leakwatch - Container Image Scanning Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental container-scanning deep dive. The [container-images user manual](../user-manuals/en/scanning/container-images.md) is authoritative for current commands and source behavior.
 
 ## Table of Contents
 

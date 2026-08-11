@@ -1,10 +1,12 @@
 # Leakwatch - Git Repository Scanning Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental Git-scanning deep dive. The [Git-history user manual](../user-manuals/en/scanning/git-history.md) is authoritative for current target and history semantics.
 
 ## 1. Overview
 

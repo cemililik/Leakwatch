@@ -1,10 +1,12 @@
 # Leakwatch - Docker Usage Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental Docker operations deep dive. The [Docker user manual](../user-manuals/en/ci-cd/docker-usage.md) is authoritative for current image usage and examples.
 
 ## 1. Quick Start
 
