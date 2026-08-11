@@ -44,7 +44,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all -- site)"
       # docker/setup-qemu-action@v3.2.0
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
       # docker/setup-buildx-action@v3.7.1
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349
