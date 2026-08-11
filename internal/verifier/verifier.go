@@ -29,10 +29,11 @@ type Verifier interface {
 // request when admission fails.
 type RequestGate func() *finding.VerificationResult
 
-// RequestGatedVerifier is implemented by verifiers that may issue more than
-// one provider request for a finding (for example a bounded regional fallback).
-// The engine uses the declared maximum to fail closed on runaway attempts while
-// pacing each request at its actual send point.
+// RequestGatedVerifier is implemented by verifiers that need explicit request
+// admission because they use an SDK/hand-rolled client or may issue more than
+// one provider request (for example a bounded regional fallback). The engine
+// uses the declared maximum to fail closed on runaway attempts while pacing
+// each request at its actual send point.
 type RequestGatedVerifier interface {
 	Verifier
 

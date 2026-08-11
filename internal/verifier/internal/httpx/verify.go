@@ -28,15 +28,31 @@ const (
 )
 
 type retryGateKey struct{}
+type requestGateKey struct{}
+
+// RequestGate is installed by the verification engine for standard httpx
+// verifiers. It admits each actual send through both provider and global rate
+// limiters. Returning a non-nil result rejects the request before client.Do.
+type RequestGate func() *finding.VerificationResult
+
+// WithRequestGate returns a child context carrying the engine-owned admission
+// gate used immediately before every HTTP attempt, including a bounded retry.
+func WithRequestGate(ctx context.Context, gate RequestGate) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestGateKey{}, gate)
+}
 
 // RetryGate is installed by the verification engine and admits one retry at
 // its actual send point through both the provider and global rate limiters.
 // Returning a non-nil result rejects the retry without sending it.
 type RetryGate func() *finding.VerificationResult
 
-// WithRetryGate returns a child context carrying the engine-owned admission
-// gate used only for an HTTP 429 retry. The initial request remains admitted by
-// the engine immediately before invoking the verifier.
+// WithRetryGate returns a child context carrying an engine-owned admission gate
+// used only for an HTTP 429 retry. It supports manually gated multi-request
+// verifiers whose initial/fallback sends call their verifier.RequestGate
+// directly; standard httpx verifiers use WithRequestGate instead.
 func WithRetryGate(ctx context.Context, gate RetryGate) context.Context {
 	if gate == nil {
 		return ctx
@@ -374,6 +390,11 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client, token strin
 
 	if client == nil {
 		client = Client()
+	}
+	if gate, _ := ctx.Value(requestGateKey{}).(RequestGate); gate != nil {
+		if rejection := gate(); rejection != nil {
+			return nil, rejection
+		}
 	}
 
 	resp, err := client.Do(req)

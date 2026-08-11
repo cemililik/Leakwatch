@@ -24,6 +24,21 @@ type cancelDuringValidationSource struct {
 	cancel context.CancelFunc
 }
 
+type emptyTestSource struct{}
+
+func (*emptyTestSource) Type() string                   { return "empty-test" }
+func (*emptyTestSource) Err() error                     { return nil }
+func (*emptyTestSource) Validate(context.Context) error { return nil }
+func (*emptyTestSource) Chunks(context.Context) <-chan source.Chunk {
+	ch := make(chan source.Chunk)
+	close(ch)
+	return ch
+}
+
+type failingCloser struct{ err error }
+
+func (c *failingCloser) Close() error { return c.err }
+
 func (*cancelDuringValidationSource) Type() string { return "validation-cancel" }
 func (*cancelDuringValidationSource) Err() error   { return nil }
 func (s *cancelDuringValidationSource) Validate(ctx context.Context) error {
@@ -245,6 +260,22 @@ func TestRunScan_CancelledValidationReturnsInterruptedExit(t *testing.T) {
 	var interrupted *InterruptedExitError
 	require.ErrorAs(t, err, &interrupted)
 	assert.Equal(t, 3, exitCodeForError(err), "cancelled validation must reach the process exit-3 contract")
+}
+
+func TestRunScan_CleanupFailureCannotReturnSuccess(t *testing.T) {
+	cleanupErr := errors.New("synthetic cleanup failure")
+	cfg := &scanner.Config{
+		Concurrency: 1,
+		NoVerify:    true,
+		Format:      "json",
+		OutputFile:  filepath.Join(t.TempDir(), "result.json"),
+	}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	err := runScan(cmd, cfg, &emptyTestSource{}, &failingCloser{err: cleanupErr})
+	require.ErrorIs(t, err, cleanupErr)
+	assert.Equal(t, 2, exitCodeForError(err))
 }
 
 func TestExitCodeForError(t *testing.T) {

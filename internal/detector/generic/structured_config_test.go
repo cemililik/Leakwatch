@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -433,6 +434,32 @@ func TestStructuredConfigDetector_XMLSyntaxEdges(t *testing.T) {
 		}
 		for _, input := range inputs {
 			assert.Empty(t, det.Scan(t.Context(), input))
+		}
+	})
+
+	t.Run("deep indented XML remains safe through detector dispatch", func(t *testing.T) {
+		for _, depth := range []int{16, maxStructuredDepth - 1} {
+			t.Run(fmt.Sprintf("depth-%d", depth), func(t *testing.T) {
+				var input strings.Builder
+				for i := range depth {
+					fmt.Fprintf(&input, "<level%d>\n", i)
+				}
+				input.WriteString("<Password>fixture-secret-9mN2pQ7r</Password>\n")
+				for i := depth - 1; i >= 0; i-- {
+					fmt.Fprintf(&input, "</level%d>\n", i)
+				}
+				data := []byte(input.String())
+
+				var findings []detector.RawFinding
+				assert.NotPanics(t, func() {
+					findings = det.Scan(t.Context(), data)
+				})
+				require.Len(t, findings, 1)
+				assert.Equal(t, "fixture-secret-9mN2pQ7r", string(findings[0].Raw))
+				wantStart := bytes.Index(data, findings[0].Raw)
+				assert.Equal(t, wantStart, findings[0].ByteStart)
+				assert.Equal(t, wantStart+len(findings[0].Raw), findings[0].ByteEnd)
+			})
 		}
 	})
 

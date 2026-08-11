@@ -381,6 +381,59 @@ func TestVerifyToken_RateLimitedDoesNotRetryUnsafeOrUnscheduledRequests(t *testi
 }
 
 func TestVerifyToken_RetryDeadlineAndAdmissionGate(t *testing.T) {
+	t.Run("request gate admits every actual send", func(t *testing.T) {
+		var calls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if calls.Add(1) == 1 {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		gateCalls := 0
+		ctx := WithRequestGate(context.Background(), func() *finding.VerificationResult {
+			gateCalls++
+			return nil
+		})
+		result := VerifyToken(ctx, server.Client(), testToken, TokenSpec{Name: "x", Request: Request{URL: server.URL}})
+		assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+		assert.Equal(t, int64(2), calls.Load())
+		assert.Equal(t, 2, gateCalls)
+	})
+
+	t.Run("request gate rejection prevents initial transport", func(t *testing.T) {
+		var calls atomic.Int64
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return nil, errors.New("transport must not run")
+		})}
+		ctx := WithRequestGate(context.Background(), func() *finding.VerificationResult {
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+		})
+
+		result := VerifyToken(ctx, client, testToken, TokenSpec{
+			Name:    "x",
+			Request: Request{URL: "https://provider.example.test/probe"},
+		})
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+		assert.Equal(t, "admission rejected", result.Message)
+		assert.Zero(t, calls.Load())
+	})
+
+	t.Run("empty token consumes no request admission", func(t *testing.T) {
+		gateCalls := 0
+		ctx := WithRequestGate(context.Background(), func() *finding.VerificationResult {
+			gateCalls++
+			return nil
+		})
+		result := VerifyToken(ctx, nil, "", TokenSpec{Name: "x", Request: Request{URL: "https://provider.example.test"}})
+		assert.Equal(t, finding.StatusUnverified, result.Status)
+		assert.Zero(t, gateCalls)
+	})
+
 	t.Run("deadline too short prevents wait and request", func(t *testing.T) {
 		var calls atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

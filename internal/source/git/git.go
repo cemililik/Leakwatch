@@ -93,8 +93,12 @@ func (s *GitSource) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s.isRemote() {
-		if err := s.cloneRemote(ctx); err != nil {
+	remote, cloneTarget, err := classifyGitTarget(s.target)
+	if err != nil {
+		return fmt.Errorf("invalid git target %s: %w", s.displayTarget, err)
+	}
+	if remote {
+		if err := s.cloneRemote(ctx, cloneTarget); err != nil {
 			return err
 		}
 	} else if err := s.openLocal(); err != nil {
@@ -297,24 +301,65 @@ func (s *GitSource) Close() error {
 }
 
 func (s *GitSource) isRemote() bool {
-	return strings.HasPrefix(s.target, "http://") ||
-		strings.HasPrefix(s.target, "https://") ||
-		strings.HasPrefix(s.target, "git@") ||
-		strings.HasPrefix(s.target, "ssh://")
+	remote, _, err := classifyGitTarget(s.target)
+	return err == nil && remote
+}
+
+// classifyGitTarget distinguishes the supported network transports from local
+// paths without relying on case-sensitive string prefixes. URI schemes are
+// case-insensitive under RFC 3986; unsupported schemes fail closed instead of
+// being reinterpreted as local filesystem paths. Windows drive-letter paths
+// remain local even when this code is cross-compiled on another platform.
+func classifyGitTarget(target string) (remote bool, normalized string, err error) {
+	if strings.HasPrefix(target, "git@") {
+		return true, target, nil
+	}
+	if len(target) >= 3 && target[1] == ':' &&
+		((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) &&
+		(target[2] == '/' || target[2] == '\\') {
+		return false, target, nil
+	}
+
+	// A colon is legal in a local Unix filename. Treat a target as a URI only
+	// when it uses the explicit scheme:// form; SCP syntax was handled above.
+	if !strings.Contains(target, "://") {
+		return false, target, nil
+	}
+	parsed, parseErr := url.Parse(target)
+	if parseErr != nil {
+		return false, "", fmt.Errorf("malformed target")
+	}
+	if parsed.Scheme == "" {
+		return false, target, nil
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ssh":
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		return true, parsed.String(), nil
+	default:
+		return false, "", fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
+	}
 }
 
 func (s *GitSource) openLocal() error {
+	info, err := os.Stat(s.target)
+	if err != nil {
+		return fmt.Errorf("failed to inspect git target %s: %w", s.displayTarget, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("git target %s is not a directory", s.displayTarget)
+	}
 	// DetectDotGit walks up parent directories to find the repository root,
 	// matching real git tooling when pointed at a subdirectory of a repo.
 	repo, err := git.PlainOpenWithOptions(s.target, &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
-		return fmt.Errorf("failed to open git repository %s: %w", s.target, err)
+		return fmt.Errorf("failed to open git repository %s: %w", s.displayTarget, err)
 	}
 	s.repo = repo
 	return nil
 }
 
-func (s *GitSource) cloneRemote(ctx context.Context) error {
+func (s *GitSource) cloneRemote(ctx context.Context, cloneTarget string) error {
 	tmpDir, err := os.MkdirTemp("", "leakwatch-clone-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
@@ -324,7 +369,7 @@ func (s *GitSource) cloneRemote(ctx context.Context) error {
 	s.tmpDir = tmpDir
 
 	cloneOpts := &git.CloneOptions{
-		URL:      s.target,
+		URL:      cloneTarget,
 		Progress: nil,
 	}
 

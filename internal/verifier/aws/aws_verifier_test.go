@@ -36,9 +36,11 @@ func TestVerify_RealDetectorOutput_ReachesSTSContract(t *testing.T) {
 type mockSTSClient struct {
 	output *sts.GetCallerIdentityOutput
 	err    error
+	calls  int
 }
 
 func (m *mockSTSClient) GetCallerIdentity(_ context.Context, _ *sts.GetCallerIdentityInput, _ ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
+	m.calls++
 	return m.output, m.err
 }
 
@@ -56,6 +58,47 @@ func TestVerify_NoSecretKey_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "secret access key not found", result.Message)
+}
+
+func TestVerifyWithRequestGate_AdmitsOnlyActualSTSCall(t *testing.T) {
+	t.Run("missing companion key consumes no admission", func(t *testing.T) {
+		gateCalls := 0
+		result := (&Verifier{}).VerifyWithRequestGate(context.Background(), detector.RawFinding{
+			Raw: []byte("AKIAIOSFODNN7EXAMPLE"),
+		}, func() *finding.VerificationResult {
+			gateCalls++
+			return nil
+		})
+		assert.Equal(t, finding.StatusUnverified, result.Status)
+		assert.Zero(t, gateCalls)
+	})
+
+	t.Run("complete pair gets one admission", func(t *testing.T) {
+		mock := &mockSTSClient{output: &sts.GetCallerIdentityOutput{}}
+		v := &Verifier{client: mock}
+		gateCalls := 0
+		result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+			Raw: []byte("AKIAIOSFODNN7EXAMPLE"), RawV2: []byte("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		}, func() *finding.VerificationResult {
+			gateCalls++
+			return nil
+		})
+		assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+		assert.Equal(t, 1, gateCalls)
+		assert.Equal(t, 1, mock.calls)
+	})
+
+	t.Run("rejection prevents SDK call", func(t *testing.T) {
+		mock := &mockSTSClient{output: &sts.GetCallerIdentityOutput{}}
+		v := &Verifier{client: mock}
+		result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+			Raw: []byte("AKIAIOSFODNN7EXAMPLE"), RawV2: []byte("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		}, func() *finding.VerificationResult {
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+		})
+		assert.Equal(t, "admission rejected", result.Message)
+		assert.Zero(t, mock.calls)
+	})
 }
 
 func TestVerify_Type_ReturnsCorrectID(t *testing.T) {

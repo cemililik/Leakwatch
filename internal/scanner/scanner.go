@@ -11,6 +11,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -254,6 +255,7 @@ func ScanRepos(ctx context.Context, cfg *Config, repoURLs []string, srcOpts []gi
 		result, scanErr := eng.Scan(ctx, src)
 		if closeErr := src.Close(); closeErr != nil {
 			slog.Warn("failed to clean up repo", "url", displayURL, "error", closeErr)
+			scanErr = errors.Join(scanErr, fmt.Errorf("failed to clean up repo %s: %w", displayURL, closeErr))
 		}
 		if result != nil {
 			slog.Info("repository scan completed", "url", displayURL, "findings", len(result.Findings), "files", result.ScannedChunks)
@@ -280,7 +282,7 @@ func ScanRepos(ctx context.Context, cfg *Config, repoURLs []string, srcOpts []gi
 
 	var aggErr error
 	if len(scanErrors) > 0 {
-		aggErr = fmt.Errorf("%d repository scans failed", len(scanErrors))
+		aggErr = fmt.Errorf("%d repository scans failed: %w", len(scanErrors), errors.Join(scanErrors...))
 	}
 	return combined, aggErr
 }
@@ -324,10 +326,10 @@ func scanReposParallel(
 
 			mu.Lock()
 			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+			}
 			if result == nil {
-				if err != nil {
-					errs = append(errs, err)
-				}
 				return
 			}
 			findings = append(findings, result.Findings...)

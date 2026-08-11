@@ -31,9 +31,10 @@
 //
 // The shared token helper performs at most one Retry-After-aware HTTP 429 retry
 // for safe GET/HEAD probes. The wait is strictly bounded, context-aware, and
-// passes through an engine-owned retry admission gate when verification runs
-// through the engine. Unsafe methods and missing/invalid Retry-After responses
-// are never retried.
+// passes through an engine-owned admission gate immediately before every actual
+// send when verification runs through the engine. Format-only, empty-input, and
+// missing-context paths consume no limiter capacity. Unsafe methods and
+// missing/invalid Retry-After responses are never retried.
 package httpx
 
 import (

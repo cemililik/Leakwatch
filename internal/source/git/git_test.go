@@ -456,7 +456,9 @@ func TestGitSource_IsRemote(t *testing.T) {
 		expected bool
 	}{
 		{"https://github.com/org/repo.git", true},
+		{"HTTPS://github.com/org/repo.git", true},
 		{"http://github.com/org/repo.git", true},
+		{"SSH://git@github.com/org/repo.git", true},
 		{"git@github.com:org/repo.git", true},
 		{"ssh://git@github.com/org/repo.git", true},
 		{"/local/path/to/repo", false},
@@ -469,6 +471,53 @@ func TestGitSource_IsRemote(t *testing.T) {
 			assert.Equal(t, tt.expected, s.isRemote())
 		})
 	}
+}
+
+func TestClassifyGitTarget_RejectsUnsupportedScheme(t *testing.T) {
+	remote, normalized, err := classifyGitTarget("ftp://user:wave9-canary@example.test/repo.git")
+	require.Error(t, err)
+	assert.False(t, remote)
+	assert.Empty(t, normalized)
+	assert.NotContains(t, err.Error(), "wave9-canary")
+}
+
+func TestClassifyGitTarget_LocalPathContainingColonRemainsLocal(t *testing.T) {
+	remote, normalized, err := classifyGitTarget("repo:with-colon")
+	require.NoError(t, err)
+	assert.False(t, remote)
+	assert.Equal(t, "repo:with-colon", normalized)
+}
+
+func TestGitSource_Validate_NonexistentRelativeTargetDoesNotOpenParentRepo(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"README.md": "parent repo"})
+	t.Chdir(dir)
+
+	s := New("definitely-not-existing-wave9")
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to inspect git target")
+	assert.Nil(t, s.repo, "a typo must never silently select and scan the parent repository")
+}
+
+func TestGitSource_Validate_LocalFileTargetIsRejected(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"README.md": "parent repo"})
+	s := New(filepath.Join(dir, "README.md"))
+
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+	assert.Nil(t, s.repo)
+}
+
+func TestGitSource_Validate_UppercaseHTTPSSchemeNeverLeaksUserinfo(t *testing.T) {
+	const canary = "wave9-canary-not-a-secret"
+	s := New("HTTPS://user:" + canary + "@127.0.0.1:1/repo.git")
+
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), canary)
+	assert.NotContains(t, err.Error(), "user:")
+	assert.Empty(t, s.tmpDir, "failed remote clone must clean its temporary directory")
 }
 
 func TestGitSource_Close_RemovesTmpDir(t *testing.T) {

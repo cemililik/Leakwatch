@@ -63,7 +63,7 @@ Doğrulama, tarama çalışan havuzundan yalıtılmış ayrı bir eşzamanlı ç
 | Ayar | Varsayılan | Yapılandırma anahtarı |
 |------|-----------|----------------------|
 | Çalışan sayısı | 4 | `verification.concurrency` |
-| Global hız sınırı | 10 istek/saniye | `verification.rate-limit` |
+| Global + dedektör başına istek tavanları | Her biri 10 istek/saniye | `verification.rate-limit` |
 | İstek başına zaman aşımı | 10 sn | `verification.timeout` |
 
 Her üç değer de `.leakwatch.yaml` içindeki `verification:` bloğu altında ayarlanabilir:
@@ -72,13 +72,15 @@ Her üç değer de `.leakwatch.yaml` içindeki `verification:` bloğu altında a
 verification:
   enabled: true
   concurrency: 4
-  rate-limit: 10.0   # global, saniye başına istek sayısı
+  rate-limit: 10.0   # global ve dedektör başına, saniye başına istek sayısı
   timeout: 10s
 ```
 
 :::tip
 Yüzlerce bulgu tetikleyen bir depoyu tarıyorsanız `rate-limit` değerini 5'e düşürmeyi veya `--only-verified` etkinleştirmeyi düşünün; bu, doğrulanmış-aktif kümesini küçük ve uygulanabilir tutar.
 :::
+
+Admission yalnızca gerçek bir sağlayıcı isteğinin hemen öncesinde yapılır. Yalnız-format ve eksik-bağlam sonuçları sınırlayıcı kapasitesi tüketmez. Dedektör başına kova o dedektörün kendi istek hızını, paylaşılan global kova ise toplam trafiği sınırlar; bu yapı sağlayıcılar arasında adil zamanlama garantisi vermez.
 
 ## Komut satırından doğrulamayı kontrol etme
 

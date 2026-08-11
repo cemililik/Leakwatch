@@ -283,12 +283,13 @@ func mergedExcludePaths(cmd *cobra.Command, cfg *scanner.Config) []string {
 // runScan wires a single-source scan: it installs SIGINT/SIGTERM handling,
 // delegates the scan pipeline to internal/scanner, renders the result, and maps
 // an interruption to a distinct non-zero exit. If cl is non-nil its Close is
-// called (best-effort) when the scan completes.
-func runScan(cmd *cobra.Command, cfg *scanner.Config, src source.Source, cl io.Closer) error {
+// called when the scan completes; cleanup failures are returned to the caller.
+func runScan(cmd *cobra.Command, cfg *scanner.Config, src source.Source, cl io.Closer) (retErr error) {
 	if cl != nil {
 		defer func() {
 			if err := cl.Close(); err != nil {
 				slog.Warn("failed to clean up source", "error", err)
+				retErr = errors.Join(retErr, fmt.Errorf("failed to clean up source: %w", err))
 			}
 		}()
 	}

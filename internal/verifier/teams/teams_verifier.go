@@ -36,6 +36,8 @@ type Verifier struct {
 	httpClient *http.Client
 }
 
+var _ verifier.RequestGatedVerifier = (*Verifier)(nil)
+
 func init() {
 	verifier.Register(&Verifier{})
 }
@@ -54,6 +56,26 @@ func (v *Verifier) Type() string {
 //   - 404 Not Found    -> inactive (webhook deleted or disabled)
 //   - anything else     -> unverified (cannot decide non-destructively)
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
+	return v.verify(ctx, raw, nil)
+}
+
+// VerificationRequestBudget declares the single non-destructive Teams probe.
+func (v *Verifier) VerificationRequestBudget() int { return 1 }
+
+// VerifyWithRequestGate admits the probe at its actual HTTP send point.
+func (v *Verifier) VerifyWithRequestGate(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
+	return v.verify(ctx, raw, gate)
+}
+
+func (v *Verifier) verify(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
 	webhookURL := string(raw.Raw)
 	if webhookURL == "" {
 		return finding.VerificationResult{
@@ -84,6 +106,11 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 	client := v.httpClient
 	if client == nil {
 		client = httpx.Client()
+	}
+	if gate != nil {
+		if rejection := gate(); rejection != nil {
+			return *rejection
+		}
 	}
 
 	resp, err := client.Do(req)

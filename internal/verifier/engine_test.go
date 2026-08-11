@@ -203,6 +203,26 @@ func TestVerifyAll_MatchingVerifier_UpdatesFinding(t *testing.T) {
 	assert.Equal(t, int64(1), v.callCount.Load())
 }
 
+func TestVerifyAll_NoRequestVerifierConsumesNoLimiterCapacity(t *testing.T) {
+	const detectorID = "format-only-provider"
+	v := &testVerifier{
+		detectorID: detectorID,
+		result: finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "format-only verification",
+		},
+	}
+	engine := NewEngine(Config{Enabled: true, Timeout: time.Second, Concurrency: 1, RateLimit: 1}, []Verifier{v})
+
+	results := engine.VerifyAll(context.Background(), []VerifyPair{makePair(detectorID, "format****only")})
+	require.Len(t, results, 1)
+	assert.Equal(t, finding.StatusUnverified, results[0].Verification.Status)
+	assert.Equal(t, int64(1), v.callCount.Load())
+	assert.True(t, engine.rateLimiter.Allow(), "a verifier that sends no request must not consume the global token")
+	_, created := engine.perDetector[detectorID]
+	assert.False(t, created, "a verifier that sends no request must not create or consume a provider bucket")
+}
+
 func TestVerifyAll_GatedVerifierDoesNotReserveUnusedFallbackToken(t *testing.T) {
 	base := &testVerifier{
 		detectorID: "regional-provider",

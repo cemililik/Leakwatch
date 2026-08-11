@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -179,6 +180,7 @@ func TestScanReposParallel_SharesSingleEngine(t *testing.T) {
 
 func TestScanReposParallel_AggregatesFindingsAndErrors(t *testing.T) {
 	eng := engine.New(engine.Config{Concurrency: 1})
+	partialErr := fmt.Errorf("partial")
 
 	scanOne := func(_ context.Context, _ *engine.Engine, url string) (*engine.ScanResult, error) {
 		switch url {
@@ -187,8 +189,8 @@ func TestScanReposParallel_AggregatesFindingsAndErrors(t *testing.T) {
 			return nil, fmt.Errorf("clone failed")
 		case "partial":
 			// Partial result WITH an error (e.g. interrupted mid-scan): findings
-			// are still aggregated, the error is not separately recorded.
-			return &engine.ScanResult{Findings: []finding.Finding{{ID: "p"}}, ScannedChunks: 1}, fmt.Errorf("partial")
+			// and its error must both be aggregated.
+			return &engine.ScanResult{Findings: []finding.Finding{{ID: "p"}}, ScannedChunks: 1}, partialErr
 		default:
 			return &engine.ScanResult{Findings: []finding.Finding{{ID: url}}, ScannedChunks: 2}, nil
 		}
@@ -197,7 +199,8 @@ func TestScanReposParallel_AggregatesFindingsAndErrors(t *testing.T) {
 	urls := []string{"ok1", "ok2", "fail", "partial"}
 	findings, chunks, errs := scanReposParallel(context.Background(), eng, urls, 2, scanOne)
 
-	assert.Len(t, errs, 1, "only the nil-result failure is recorded as an error")
+	assert.Len(t, errs, 2, "both fatal and partial-result failures must be recorded")
+	assert.ErrorIs(t, errors.Join(errs...), partialErr)
 	assert.Len(t, findings, 3, "ok1, ok2 and partial's findings are aggregated")
 	assert.Equal(t, 2+2+1, chunks)
 }

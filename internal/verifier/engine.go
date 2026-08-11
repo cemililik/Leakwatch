@@ -43,10 +43,10 @@ type Config struct {
 
 	// RateLimit is the maximum verification requests per second.
 	//
-	// The rate applies both as a per-detector budget (each distinct detector ID
-	// gets its own limiter of this rate) and as a global ceiling shared across
-	// all providers, so one high-volume detector type cannot starve the
-	// verification of unrelated findings in the same run.
+	// The same rate applies both as a per-detector ceiling (each distinct
+	// detector ID gets its own limiter) and as a global ceiling shared across all
+	// providers. The global bucket bounds aggregate traffic; it does not promise
+	// fair scheduling between providers.
 	RateLimit float64
 }
 
@@ -270,17 +270,14 @@ func (e *Engine) verifySingle(ctx context.Context, pair VerifyPair) finding.Find
 			e.boundedRequestGate(verifyCtx, pair.Raw.DetectorID, requestBudget),
 		)
 	} else {
-		// Standard verifiers are admitted immediately before Verify. A safe
-		// shared-httpx GET/HEAD probe may make one bounded HTTP 429 retry; that
-		// retry receives a second limiter admission through the context gate.
-		if res := e.waitRateLimit(verifyCtx, pair.Raw.DetectorID); res != nil {
-			f.Verification = *res
-			return f
-		}
-		retryCtx := httpx.WithRetryGate(verifyCtx, func() *finding.VerificationResult {
+		// Standard httpx verifiers receive an admission gate that runs at each
+		// actual client.Do send point. Format-only, empty-input, and missing-
+		// context paths therefore consume no limiter token, while a bounded 429
+		// replay receives a fresh admission automatically.
+		requestCtx := httpx.WithRequestGate(verifyCtx, func() *finding.VerificationResult {
 			return e.waitRateLimit(verifyCtx, pair.Raw.DetectorID)
 		})
-		result = e.safeVerify(retryCtx, v, pair.Raw)
+		result = e.safeVerify(requestCtx, v, pair.Raw)
 	}
 	f.Verification = result
 

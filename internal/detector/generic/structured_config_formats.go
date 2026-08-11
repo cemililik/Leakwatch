@@ -630,7 +630,7 @@ type xmlFrame struct {
 	contentStart int
 	textStart    int
 	textEnd      int
-	text         strings.Builder
+	text         []byte
 	hasChild     bool
 	validText    bool
 }
@@ -702,7 +702,7 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 				frame.textStart = start
 			}
 			frame.textEnd = end
-			frame.text.Write([]byte(value))
+			frame.text = append(frame.text, value...)
 		case xml.Comment, xml.Directive, xml.ProcInst:
 			if len(stack) > 0 {
 				stack[len(stack)-1].validText = false
@@ -716,7 +716,7 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 			if frame.hasChild || !frame.validText || frame.textStart < frame.contentStart {
 				continue
 			}
-			decoded := strings.TrimSpace(frame.text.String())
+			decoded := strings.TrimSpace(string(frame.text))
 			start, end := trimSpaceBounds(data, frame.textStart, frame.textEnd)
 			if start >= end || !isHighConfidenceSecretKey(frame.name) ||
 				!isContextSecretValue(frame.name, decoded) || len(findings) >= maxStructuredFindings {

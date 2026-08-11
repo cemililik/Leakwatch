@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -214,4 +215,32 @@ func TestVerify_EmptyURL_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty webhook URL", result.Message)
+}
+
+func TestVerifyWithRequestGate_AdmitsOnlyActualTeamsSend(t *testing.T) {
+	t.Run("empty URL consumes no admission", func(t *testing.T) {
+		gateCalls := 0
+		result := (&Verifier{}).VerifyWithRequestGate(context.Background(), detector.RawFinding{}, func() *finding.VerificationResult {
+			gateCalls++
+			return nil
+		})
+		assert.Equal(t, finding.StatusUnverified, result.Status)
+		assert.Zero(t, gateCalls)
+	})
+
+	t.Run("rejection prevents transport", func(t *testing.T) {
+		var calls atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		defer server.Close()
+		v := &Verifier{httpClient: server.Client()}
+
+		result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{Raw: []byte(server.URL)}, func() *finding.VerificationResult {
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+		})
+		assert.Equal(t, "admission rejected", result.Message)
+		assert.Zero(t, calls.Load())
+	})
 }
