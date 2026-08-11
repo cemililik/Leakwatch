@@ -27,8 +27,9 @@ var validInactiveContracts = map[InactiveStatusContract]struct{}{
 	InactiveProviderBodyRejection: {}, InactiveProviderSpecificRejection: {},
 	InactivePairedAuthRejection: {}, InactiveTrustedInstanceHTTP401: {},
 	InactiveTrustedIssuerHTTP401: {}, InactiveTrustedOriginHTTP401: {},
-	InactiveTrustedOriginRejection: {},
-	InactiveTrustedSiteRejection:   {}, InactiveTrustedStoreHTTP401: {},
+	InactiveTrustedOriginInvalid401: {},
+	InactiveTrustedOriginRejection:  {},
+	InactiveTrustedSiteRejection:    {}, InactiveTrustedStoreHTTP401: {},
 	InactiveTrustedStoreRejection:    {},
 	InactiveTypedAuthenticationError: {},
 }
@@ -135,6 +136,22 @@ func TestVerificationCapabilities_GitHubOAuthSubtypeContract(t *testing.T) {
 		return
 	}
 	t.Fatal("github-oauth-token capability missing")
+}
+
+func TestVerificationCapabilities_GitLabSubtypeAndInactiveContract(t *testing.T) {
+	for _, capability := range VerificationCapabilities() {
+		if capability.DetectorID != "gitlab-pat" {
+			continue
+		}
+		assert.Equal(t, []string{"glpat"}, capability.VerifiableSubtypes)
+		assert.Equal(t, []string{
+			"gldt", "glrt", "glrtr", "glcbt", "glptt", "glimt", "glagent",
+			"glwt", "glsoat", "glffct", "gloas", "glft",
+		}, capability.UnverifiableSubtypes)
+		assert.Equal(t, InactiveTrustedOriginInvalid401, capability.InactiveStatusContract)
+		return
+	}
+	t.Fatal("gitlab-pat capability missing")
 }
 
 func TestVerificationCapabilities_SnykInactiveContractIsTrustedOrigin401Only(t *testing.T) {

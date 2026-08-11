@@ -49,6 +49,7 @@ const (
 	InactiveTrustedInstanceHTTP401     InactiveStatusContract = "trusted_instance_http_401"
 	InactiveTrustedIssuerHTTP401       InactiveStatusContract = "trusted_issuer_http_401"
 	InactiveTrustedOriginHTTP401       InactiveStatusContract = "trusted_origin_http_401"
+	InactiveTrustedOriginInvalid401    InactiveStatusContract = "trusted_origin_standard_invalid_token_401"
 	InactiveTrustedOriginRejection     InactiveStatusContract = "trusted_origin_auth_rejection"
 	InactiveTrustedSiteRejection       InactiveStatusContract = "trusted_site_auth_rejection"
 	InactiveTrustedStoreHTTP401        InactiveStatusContract = "trusted_store_http_401"
@@ -103,7 +104,7 @@ var verificationCapabilities = []VerificationCapability{
 	{DetectorID: "generic-api-key", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "github-oauth-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, VerifiableSubtypes: []string{"gho", "ghu", "ghs"}, UnverifiableSubtypes: []string{"ghr"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "github-token", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitHub.com", "GHES"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_issuer_http_401", LastContractReviewedAt: "2026-08-11"},
-	{DetectorID: "gitlab-pat", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitLab.com", "Self-managed"}, VerifiableSubtypes: []string{"glpat"}, UnverifiableSubtypes: []string{"gldt", "glrt", "glcbt", "glptt", "gloas", "glft"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_http_401", LastContractReviewedAt: "2026-08-11"},
+	{DetectorID: "gitlab-pat", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_api_origin"}, ProviderRegions: []string{"GitLab.com", "Self-managed"}, VerifiableSubtypes: []string{"glpat"}, UnverifiableSubtypes: []string{"gldt", "glrt", "glrtr", "glcbt", "glptt", "glimt", "glagent", "glwt", "glsoat", "glffct", "gloas", "glft"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_origin_standard_invalid_token_401", LastContractReviewedAt: "2026-08-11"},
 	{DetectorID: "grafana-api-key", VerifierKind: VerifierRequiresContext, RequiredContextFields: []string{"trusted_instance_origin"}, EndpointClass: "operator_context_provider_api", InactiveStatusContract: "trusted_instance_http_401", LastContractReviewedAt: "2026-08-10"},
 	{DetectorID: "hashicorp-vault-token", VerifierKind: VerifierNone, EndpointClass: "none", InactiveStatusContract: "none"},
 	{DetectorID: "heroku-api-key", VerifierKind: VerifierLive, EndpointClass: "fixed_provider_api", InactiveStatusContract: "definitive_provider_auth_rejection"},

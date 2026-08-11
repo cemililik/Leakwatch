@@ -29,6 +29,21 @@ type OAuthVerifier struct {
 	httpClient *http.Client
 }
 
+// NewOAuthForTrustedInstance constructs a subtype-aware GitHub App/OAuth
+// verifier for an explicit GitHub.com or GHES API origin.
+func NewOAuthForTrustedInstance(instanceURL string) (*OAuthVerifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	return &OAuthVerifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*OAuthVerifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewOAuthForTrustedInstance(instanceURL)
+}
+
 func init() {
 	verifier.Register(&OAuthVerifier{})
 }

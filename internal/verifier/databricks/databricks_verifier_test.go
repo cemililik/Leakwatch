@@ -19,7 +19,7 @@ import (
 
 func TestVerify_RealDetectorOutput_UsesWorkspaceHost(t *testing.T) {
 	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
-	findings := testutil.ScanViaMatcher(&databricksdetector.Detector{}, fixture)
+	findings := testutil.ScanViaMatcher(&databricksdetector.Detector{}, fixture.Input)
 	require.Len(t, findings, 1)
 	wantOrigin := findings[0].ExtraData["host"]
 	require.NotEmpty(t, wantOrigin)

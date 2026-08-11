@@ -44,6 +44,7 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"401 Unauthorized"}`))
 	}))
@@ -64,6 +65,52 @@ func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "GitLab token is invalid or revoked", result.Message)
+}
+
+func TestVerify_DPoPChallengeDoesNotProveTokenInactive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_token","error_description":"DPoP proof required"}`))
+	}))
+	defer server.Close()
+
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(),
+		detector.RawFinding{DetectorID: detectorID, Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+	)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.NotContains(t, result.Message, "DPoP")
+}
+
+func TestVerify_ActiveResponseRequiresCompleteJSONIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "empty object", contentType: "application/json", body: `{}`},
+		{name: "null", contentType: "application/json", body: `null`},
+		{name: "missing username", contentType: "application/json", body: `{"id":1}`},
+		{name: "missing id", contentType: "application/json", body: `{"username":"johndoe"}`},
+		{name: "trailing json", contentType: "application/json", body: `{"id":1,"username":"johndoe"}{}`},
+		{name: "wrong content type", contentType: "text/html", body: `{"id":1,"username":"johndoe"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(),
+				detector.RawFinding{DetectorID: detectorID, Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {
@@ -112,7 +159,10 @@ func TestVerify_RepositoryHostNeverSelectsDestination(t *testing.T) {
 }
 
 func TestVerify_NonPATSubtypesRemainUnverified(t *testing.T) {
-	for _, prefix := range []string{"gldt-", "glrt-", "glcbt-", "glptt-", "gloas-", "glft-"} {
+	for _, prefix := range []string{
+		"gldt-", "glrt-", "glrtr-", "glcbt-", "glptt-", "glimt-", "glagent-",
+		"glwt-", "glsoat-", "glffct-", "gloas-", "glft-",
+	} {
 		result := (&Verifier{apiURL: "https://trusted.example"}).Verify(context.Background(), detector.RawFinding{
 			DetectorID: detectorID, Raw: []byte(prefix + "abcDEF1234567890xyzW"),
 		})

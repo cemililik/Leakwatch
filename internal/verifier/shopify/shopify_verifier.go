@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -31,6 +33,27 @@ const (
 type Verifier struct {
 	apiURL     string
 	httpClient *http.Client
+}
+
+// NewForTrustedInstance accepts only an operator-selected canonical
+// myshopify.com store origin. Custom domains and repository metadata are not
+// routing authority for Admin API credentials.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	if err != nil || u.Port() != "" || !strings.HasSuffix(u.Hostname(), ".myshopify.com") ||
+		strings.TrimSuffix(u.Hostname(), ".myshopify.com") == "" {
+		return nil, errors.New("invalid Shopify store origin: a concrete myshopify.com store is required")
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {

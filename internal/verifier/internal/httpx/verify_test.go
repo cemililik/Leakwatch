@@ -3,6 +3,7 @@ package httpx
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -188,6 +189,41 @@ func TestVerifyToken_Inactive_CustomStatus403(t *testing.T) {
 	assert.Equal(t, finding.StatusVerifiedInactive, res.Status)
 }
 
+func TestVerifyToken_InactiveRequiresDefinitiveBodyWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		decodeErr   error
+		want        finding.VerificationStatus
+	}{
+		{name: "definitive json", contentType: "application/json", body: `{"message":"revoked"}`, want: finding.StatusVerifiedInactive},
+		{name: "ambiguous json", contentType: "application/json", body: `{"error":"challenge"}`, decodeErr: errors.New("not definitive"), want: finding.StatusVerifyError},
+		{name: "wrong content type", contentType: "text/html", body: `{"message":"revoked"}`, want: finding.StatusVerifyError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			res := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+				Name:                   "x",
+				Request:                Request{URL: server.URL},
+				InactiveMessage:        "secret revoked",
+				RequireJSONContentType: true,
+				DecodeInactive: func(io.Reader) error {
+					return tc.decodeErr
+				},
+			})
+			assert.Equal(t, tc.want, res.Status)
+		})
+	}
+}
+
 func TestVerifyToken_CustomActiveStatus405(t *testing.T) {
 	server := jsonServer(t, http.StatusMethodNotAllowed, `{}`)
 	defer server.Close()
@@ -331,6 +367,28 @@ func TestVerifyToken_TransportError_AlwaysRedactsTokenArgument(t *testing.T) {
 	assert.NotContains(t, res.Message, testToken)
 	assert.Contains(t, res.Message, "[REDACTED]")
 	assert.NotContains(t, logs.String(), testToken)
+}
+
+func TestVerifyToken_TransportError_RedactsDerivedBasicAuthorization(t *testing.T) {
+	const user = "synthetic-user"
+	const password = "synthetic-password-1234"
+	encoded := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("proxy echoed Authorization: Basic %s", encoded)
+	})}
+
+	res := VerifyToken(context.Background(), client, password, TokenSpec{
+		Name: "x",
+		Request: Request{
+			URL:           "https://api.example.invalid",
+			BasicAuthUser: user,
+			BasicAuthPass: password,
+		},
+	})
+	require.Equal(t, finding.StatusVerifyError, res.Status)
+	assert.NotContains(t, res.Message, encoded)
+	assert.NotContains(t, res.Message, password)
+	assert.Contains(t, res.Message, "[REDACTED]")
 }
 
 func TestVerifyToken_BasicAuthAndHeaders(t *testing.T) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,8 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/scanner"
 	"github.com/HodeTech/leakwatch/internal/verifier"
+	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
 // newTestScanCmd builds a cobra command carrying the same common scan flags that
@@ -283,8 +287,139 @@ func TestLoadScanConfig_GrafanaInstanceRequiresExplicitFlag(t *testing.T) {
 		cfg.GrafanaInstanceURL = rawURL
 		_, err = scanner.BuildEngineConfig(cfg)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "configure Grafana verification")
+		assert.Contains(t, err.Error(), `configure trusted verification for "grafana-api-key"`)
 	}
+}
+
+func TestLoadScanConfig_TrustedVerifierOriginsRequireExplicitFlags(t *testing.T) {
+	clearScanEnv(t)
+	writeConfigFile(t, "verification:\n  verifier-origin:\n    gitlab-pat: https://repository-controlled.example\n")
+	t.Setenv("LEAKWATCH_VERIFICATION_VERIFIER_ORIGIN", "gitlab-pat=https://environment.example")
+
+	cmd := newTestScanCmd()
+	require.NoError(t, cmd.ParseFlags(nil))
+	cfg, err := loadScanConfig(cmd)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.TrustedVerifierOrigins,
+		"project config and environment must not choose credential destinations")
+
+	cmd = newTestScanCmd()
+	require.NoError(t, cmd.ParseFlags([]string{
+		"--verifier-origin", "gitlab-pat=https://gitlab.operator.example",
+		"--verifier-origin", "auth0-management-token=https://tenant.operator.example",
+	}))
+	cfg, err = loadScanConfig(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"gitlab-pat":             "https://gitlab.operator.example",
+		"auth0-management-token": "https://tenant.operator.example",
+	}, cfg.TrustedVerifierOrigins)
+}
+
+func TestLoadScanConfig_TrustedVerifierOriginSyntaxFailsClosed(t *testing.T) {
+	for _, args := range [][]string{
+		{"--verifier-origin", "missing-equals"},
+		{"--verifier-origin", "=https://operator.example"},
+		{"--verifier-origin", "gitlab-pat="},
+		{
+			"--verifier-origin", "gitlab-pat=https://one.example",
+			"--verifier-origin", "gitlab-pat=https://two.example",
+		},
+	} {
+		cmd := newTestScanCmd()
+		require.NoError(t, cmd.ParseFlags(args))
+		_, err := loadScanConfig(cmd)
+		require.Error(t, err, args)
+		assert.Contains(t, err.Error(), "--verifier-origin")
+	}
+}
+
+func TestBuildEngineConfig_ConfiguresEveryContextRequiredVerifierPerRun(t *testing.T) {
+	origins := map[string]string{
+		"auth0-management-token": "https://tenant.example",
+		"datadog-api-key":        "https://api.datadoghq.com",
+		"github-token":           "https://github.example",
+		"github-oauth-token":     "https://github.example",
+		"gitlab-pat":             "https://gitlab.example",
+		"grafana-api-key":        "https://grafana.example",
+		"shopify-access-token":   "https://store.myshopify.com",
+		"snyk-api-key":           "https://api.snyk.io",
+		"twilio-api-key":         "https://api.twilio.com",
+	}
+	originals := make(map[string]verifier.Verifier, len(origins))
+	for detectorID := range origins {
+		registered, ok := verifier.Get(detectorID)
+		require.True(t, ok, detectorID)
+		originals[detectorID] = registered
+	}
+
+	engineCfg, err := scanner.BuildEngineConfig(&scanner.Config{
+		Concurrency:            1,
+		TrustedVerifierOrigins: origins,
+	})
+	require.NoError(t, err)
+	configured := make(map[string]verifier.Verifier, len(engineCfg.Verifiers))
+	for _, candidate := range engineCfg.Verifiers {
+		configured[candidate.Type()] = candidate
+	}
+	for detectorID, original := range originals {
+		require.Contains(t, configured, detectorID)
+		assert.NotSame(t, original, configured[detectorID], detectorID)
+		stillRegistered, ok := verifier.Get(detectorID)
+		require.True(t, ok)
+		assert.Same(t, original, stillRegistered, detectorID)
+	}
+
+	// Drive every configured production verifier with the exact finding emitted
+	// by its registered detector. An already-cancelled context guarantees that
+	// this executable routing contract cannot put synthetic credentials on the
+	// network while proving the per-run configured path is reached.
+	detectors := make(map[string]detector.Detector, len(detectorsAtInit))
+	for _, det := range detectorsAtInit {
+		detectors[det.ID()] = det
+	}
+	fixtures := testutil.RegisteredDetectorFixtures()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for detectorID := range origins {
+		fixture, ok := fixtures[detectorID]
+		require.True(t, ok, detectorID)
+		rawFindings := testutil.ScanViaMatcher(detectors[detectorID], fixture.Input)
+		require.NotEmpty(t, rawFindings, detectorID)
+		result := configured[detectorID].Verify(ctx, rawFindings[0])
+		assert.Equal(t, finding.StatusVerifyError, result.Status,
+			"configured verifier must reach its cancelled provider request: %s (%s)", detectorID, result.Message)
+		assert.NotContains(t, result.Message, string(rawFindings[0].Raw))
+	}
+}
+
+func TestBuildEngineConfig_RejectsInvalidTrustedVerifierOrigins(t *testing.T) {
+	tests := []struct {
+		name    string
+		origins map[string]string
+	}{
+		{name: "unknown detector", origins: map[string]string{"missing": "https://operator.example"}},
+		{name: "non contextual verifier", origins: map[string]string{"aws-access-key-id": "https://operator.example"}},
+		{name: "invalid origin", origins: map[string]string{"gitlab-pat": "http://gitlab.example"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := scanner.BuildEngineConfig(&scanner.Config{
+				Concurrency:            1,
+				TrustedVerifierOrigins: tc.origins,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "configure trusted verification")
+		})
+	}
+
+	_, err := scanner.BuildEngineConfig(&scanner.Config{
+		Concurrency:            1,
+		GrafanaInstanceURL:     "https://grafana-one.example",
+		TrustedVerifierOrigins: map[string]string{"grafana-api-key": "https://grafana-two.example"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "conflicting Grafana origins")
 }
 
 func TestShouldEnableColor_DecisionTable(t *testing.T) {

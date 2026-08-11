@@ -5,6 +5,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -79,19 +80,58 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 			URL:    v.apiURL + "/api/v4/user",
 			Header: map[string]string{"PRIVATE-TOKEN": token},
 		},
-		ActiveMessage:   "GitLab token is active",
-		InactiveMessage: "GitLab token is invalid or revoked",
-		Decode:          decodeUser,
+		ActiveMessage:          "GitLab token is active",
+		InactiveMessage:        "GitLab token is invalid or revoked",
+		Decode:                 decodeUser,
+		DecodeInactive:         decodeUnauthorized,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
 }
 
 // decodeUser parses the GitLab API response for a valid token.
 func decodeUser(body io.Reader) (map[string]string, string, error) {
 	var user struct {
+		ID       int64  `json:"id"`
 		Username string `json:"username"`
 	}
-	if err := json.NewDecoder(body).Decode(&user); err != nil {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&user); err != nil {
 		return nil, "", err
 	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return nil, "", err
+	}
+	if user.ID <= 0 || strings.TrimSpace(user.Username) == "" {
+		return nil, "", fmt.Errorf("GitLab user response is missing required identity fields")
+	}
 	return map[string]string{"username": user.Username}, "", nil
+}
+
+func decodeUnauthorized(body io.Reader) error {
+	var response struct {
+		Message string `json:"message"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return err
+	}
+	if response.Message != "401 Unauthorized" {
+		return fmt.Errorf("GitLab response is not a standard invalid-token response")
+	}
+	return nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("response contains trailing JSON values")
+		}
+		return err
+	}
+	return nil
 }

@@ -170,3 +170,13 @@ func TestVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "trusted Snyk API origin is not configured", result.Message)
 }
+
+func TestNewForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://api.eu.snyk.io/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.eu.snyk.io", configured.apiURL)
+	for _, origin := range []string{"http://api.snyk.io", "https://127.0.0.1", "https://localhost", "https://api.snyk.io/rest"} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
+}

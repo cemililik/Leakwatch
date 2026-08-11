@@ -90,8 +90,14 @@ func TestDetector_Scan_RoutableTokenPrefixes(t *testing.T) {
 	}{
 		{name: "deploy token", prefix: "gldt-", redacted: "gldt-****xyzW"},
 		{name: "runner token", prefix: "glrt-", redacted: "glrt-****xyzW"},
+		{name: "runner authentication token", prefix: "glrtr-", redacted: "glrtr-****xyzW"},
 		{name: "ci build token", prefix: "glcbt-", redacted: "glcbt-****xyzW"},
 		{name: "pipeline trigger token", prefix: "glptt-", redacted: "glptt-****xyzW"},
+		{name: "incoming mail token", prefix: "glimt-", redacted: "glimt-****xyzW"},
+		{name: "agent token", prefix: "glagent-", redacted: "glagent-****xyzW"},
+		{name: "workhorse token", prefix: "glwt-", redacted: "glwt-****xyzW"},
+		{name: "service account token", prefix: "glsoat-", redacted: "glsoat-****xyzW"},
+		{name: "feature flags client token", prefix: "glffct-", redacted: "glffct-****xyzW"},
 		{name: "oauth app secret", prefix: "gloas-", redacted: "gloas-****xyzW"},
 		{name: "feed token", prefix: "glft-", redacted: "glft-****xyzW"},
 	}

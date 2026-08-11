@@ -28,6 +28,21 @@ type Verifier struct {
 	httpClient *http.Client
 }
 
+// NewForTrustedInstance constructs a GitHub PAT verifier for an origin chosen
+// explicitly by the operator (GitHub.com API or a GHES API origin).
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
+}
+
 func init() {
 	verifier.Register(&Verifier{})
 }

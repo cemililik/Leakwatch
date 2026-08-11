@@ -25,10 +25,12 @@ const (
 
 type lineAssignment struct {
 	key                  string
+	inlinePath           []string
 	value                string
 	valueStart, valueEnd int
 	indent               int
 	hasValue             bool
+	blockStyle           byte
 }
 
 type yamlSignal struct {
@@ -85,7 +87,21 @@ func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []by
 				continue
 			}
 		case formatTOML:
-			path = tomlPath
+			path = append(append([]string(nil), tomlPath...), assignment.inlinePath...)
+		}
+
+		if format == formatYAML && assignment.blockStyle != 0 {
+			value, start, end, nextOffset, scalarOK := parseYAMLBlockScalar(
+				ctx, data, nextLineOffset(lineEnd, len(data)), assignment.indent, assignment.blockStyle,
+			)
+			if !scalarOK {
+				offset = nextOffset
+				continue
+			}
+			assignment.value = value
+			assignment.valueStart = start
+			assignment.valueEnd = end
+			offset = nextOffset
 		}
 
 		if assignment.hasValue && isHighConfidenceSecretKey(assignment.key) &&
@@ -105,13 +121,18 @@ func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []by
 				ByteEnd:   assignment.valueEnd,
 			})
 		}
-		offset = nextLineOffset(lineEnd, len(data))
+		if assignment.blockStyle == 0 {
+			offset = nextLineOffset(lineEnd, len(data))
+		}
 	}
 	return findings
 }
 
 func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat, bool) {
-	yamlSignals := make([]yamlSignal, 0, 4)
+	yamlSignalCount := 0
+	yamlNested := false
+	yamlInvalid := false
+	pendingYAMLParentIndent := -1
 	hasYAMLDocumentMarker := false
 	dotenvAssignments := 0
 	dotenvInvalid := false
@@ -136,12 +157,25 @@ func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat,
 			continue
 		}
 		if signal, ok := yamlMappingSignal(data[offset:lineEnd]); ok {
-			yamlSignals = append(yamlSignals, signal)
+			yamlSignalCount++
+			if pendingYAMLParentIndent >= 0 {
+				if signal.indent > pendingYAMLParentIndent {
+					yamlNested = true
+				}
+				if signal.indent <= pendingYAMLParentIndent {
+					pendingYAMLParentIndent = -1
+				}
+			}
+			if !signal.hasValue {
+				pendingYAMLParentIndent = signal.indent
+			}
 			dotenvInvalid = true
 		} else if isDotenvAssignment(line) {
 			dotenvAssignments++
+			yamlInvalid = true
 		} else {
 			dotenvInvalid = true
+			yamlInvalid = true
 		}
 		if _, ok := parseLineAssignment(data[offset:lineEnd], offset, formatTOML); ok {
 			tomlAssignments++
@@ -150,17 +184,18 @@ func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat,
 		}
 		offset = nextLineOffset(lineEnd, len(data))
 	}
-	if (hasYAMLDocumentMarker && len(yamlSignals) > 0) || hasNestedYAMLSignals(yamlSignals) {
+	if (hasYAMLDocumentMarker && yamlSignalCount > 0) || yamlNested ||
+		(yamlSignalCount >= 2 && !yamlInvalid) {
 		return formatYAML, true
 	}
-	if dotenvAssignments > 0 && !dotenvInvalid && len(yamlSignals) == 0 {
+	if dotenvAssignments > 0 && !dotenvInvalid && yamlSignalCount == 0 {
 		return formatDotenv, true
 	}
 	// Without source-extension metadata a lone `password = "..."` line is
 	// indistinguishable from source code. Requiring a complete, multi-assignment
 	// document preserves support for sectionless TOML while keeping that common
 	// code shape out of the high-confidence detector.
-	if tomlAssignments >= 2 && !tomlInvalid && len(yamlSignals) == 0 {
+	if tomlAssignments >= 2 && !tomlInvalid && yamlSignalCount == 0 {
 		return formatTOML, true
 	}
 	return "", false
@@ -262,15 +297,32 @@ func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAs
 		return lineAssignment{}, false
 	}
 	keyBytes := bytes.TrimSpace(trimmed[:index])
-	if !isPlainConfigKey(keyBytes) {
+	keyPath := []string{string(keyBytes)}
+	if format == formatTOML {
+		var keyOK bool
+		keyPath, keyOK = parseTOMLDottedKey(keyBytes)
+		if !keyOK {
+			return lineAssignment{}, false
+		}
+	} else if !isPlainConfigKey(keyBytes) {
 		return lineAssignment{}, false
 	}
-	key := string(keyBytes)
+	key := keyPath[len(keyPath)-1]
+	inlinePath := keyPath[:len(keyPath)-1]
 	valueBase := base + indentBytes + index + 1
 	valueBytes := trimmed[index+1:]
 	trimmedValue := bytes.TrimSpace(valueBytes)
 	if len(trimmedValue) == 0 || (format == formatYAML && trimmedValue[0] == '#') {
-		return lineAssignment{key: key, indent: originalIndent}, true
+		return lineAssignment{key: key, inlinePath: inlinePath, indent: originalIndent}, true
+	}
+	if format == formatYAML && (trimmedValue[0] == '|' || trimmedValue[0] == '>') {
+		if !isYAMLBlockIndicator(trimmedValue) {
+			return lineAssignment{}, false
+		}
+		return lineAssignment{
+			key: key, inlinePath: inlinePath, indent: originalIndent,
+			hasValue: true, blockStyle: trimmedValue[0],
+		}, true
 	}
 	value, start, end, ok := parseLineScalar(valueBytes, valueBase, format)
 	if !ok {
@@ -278,6 +330,7 @@ func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAs
 	}
 	return lineAssignment{
 		key:        key,
+		inlinePath: inlinePath,
 		value:      value,
 		valueStart: start,
 		valueEnd:   end,
@@ -286,12 +339,141 @@ func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAs
 	}, true
 }
 
+func parseTOMLDottedKey(raw []byte) ([]string, bool) {
+	parts := bytes.Split(raw, []byte("."))
+	if len(parts) == 0 {
+		return nil, false
+	}
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = bytes.TrimSpace(part)
+		if len(part) == 0 {
+			return nil, false
+		}
+		if (part[0] == '\'' || part[0] == '"') && len(part) >= 2 && part[len(part)-1] == part[0] {
+			value, _, _, ok := parseLineScalar(part, 0, formatTOML)
+			if !ok || value == "" {
+				return nil, false
+			}
+			result = append(result, value)
+			continue
+		}
+		if !isPlainConfigKey(part) {
+			return nil, false
+		}
+		result = append(result, string(part))
+	}
+	return result, true
+}
+
+func isYAMLBlockIndicator(value []byte) bool {
+	value = bytes.TrimSpace(value)
+	if len(value) == 0 || (value[0] != '|' && value[0] != '>') {
+		return false
+	}
+	i := 1
+	for i < len(value) && (value[i] == '+' || value[i] == '-' || (value[i] >= '1' && value[i] <= '9')) {
+		i++
+	}
+	rest := bytes.TrimSpace(value[i:])
+	return len(rest) == 0 || rest[0] == '#'
+}
+
+func parseYAMLBlockScalar(
+	ctx context.Context,
+	data []byte,
+	offset int,
+	parentIndent int,
+	style byte,
+) (string, int, int, int, bool) {
+	type blockLine struct {
+		start, end  int
+		indentBytes int
+		blank       bool
+	}
+	lines := make([]blockLine, 0, 4)
+	contentIndentBytes := -1
+	for offset < len(data) {
+		lineEnd, complete := contextLineEnd(ctx, data, offset)
+		if !complete {
+			return "", 0, 0, len(data), false
+		}
+		line := data[offset:lineEnd]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		trimmed := bytes.TrimSpace(line)
+		indentBytes := len(line) - len(bytes.TrimLeft(line, " \t"))
+		if bytes.IndexByte(line[:indentBytes], '\t') >= 0 {
+			return "", 0, 0, offset, false
+		}
+		indent := visualIndent(line[:indentBytes])
+		if len(trimmed) > 0 && indent <= parentIndent {
+			break
+		}
+		if len(trimmed) > 0 {
+			if contentIndentBytes < 0 || indentBytes < contentIndentBytes {
+				contentIndentBytes = indentBytes
+			}
+		}
+		lines = append(lines, blockLine{
+			start: offset, end: offset + len(line), indentBytes: indentBytes, blank: len(trimmed) == 0,
+		})
+		offset = nextLineOffset(lineEnd, len(data))
+	}
+	if contentIndentBytes <= parentIndent || len(lines) == 0 {
+		return "", 0, 0, offset, false
+	}
+
+	first, last := -1, -1
+	var decoded strings.Builder
+	previousBlank := false
+	for _, line := range lines {
+		if line.blank {
+			if decoded.Len() > 0 {
+				decoded.WriteByte('\n')
+			}
+			previousBlank = true
+			continue
+		}
+		contentStart := line.start + contentIndentBytes
+		if contentStart > line.end {
+			return "", 0, 0, offset, false
+		}
+		if first < 0 {
+			first = contentStart
+		}
+		if decoded.Len() > 0 && !previousBlank {
+			if style == '|' {
+				decoded.WriteByte('\n')
+			} else {
+				decoded.WriteByte(' ')
+			}
+		}
+		decoded.Write(data[contentStart:line.end])
+		last = line.end
+		previousBlank = false
+	}
+	if first < 0 || last <= first || decoded.Len() > maxStructuredStringLen {
+		return "", 0, 0, offset, false
+	}
+	return decoded.String(), first, last, offset, true
+}
+
 func parseLineScalar(value []byte, base int, format lineConfigFormat) (string, int, int, bool) {
 	left := len(value) - len(bytes.TrimLeft(value, " \t"))
 	value = value[left:]
 	base += left
 	if len(value) == 0 || value[0] == '|' || value[0] == '>' || value[0] == '[' || value[0] == '{' {
 		return "", 0, 0, false
+	}
+	if format == formatYAML && value[0] == '&' {
+		anchorEnd := bytes.IndexAny(value, " \t")
+		if anchorEnd <= 1 {
+			return "", 0, 0, false
+		}
+		rest := value[anchorEnd:]
+		return parseLineScalar(rest, base+anchorEnd, format)
 	}
 	if value[0] == '\'' || value[0] == '"' {
 		quote := value[0]
@@ -511,6 +693,11 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 			frame := &stack[len(stack)-1]
 			start := tokenStart
 			end := int(decoder.InputOffset())
+			if bytes.HasPrefix(data[start:end], []byte("<![CDATA[")) &&
+				bytes.HasSuffix(data[start:end], []byte("]]>")) {
+				start += len("<![CDATA[")
+				end -= len("]]>")
+			}
 			if frame.textStart < 0 {
 				frame.textStart = start
 			}

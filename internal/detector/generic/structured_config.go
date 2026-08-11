@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/entropy"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
@@ -500,9 +501,29 @@ func joinJSONPath(path []string) string {
 		if i > 0 {
 			b.WriteByte('.')
 		}
-		b.WriteString(component)
+		b.WriteString(safeConfigPathComponent(component))
 	}
 	return b.String()
+}
+
+// safeConfigPathComponent keeps untrusted structural names useful as metadata
+// without allowing a secret-shaped dynamic key, control characters, or an
+// attacker-sized name to be copied into output and logs. Detection continues to
+// classify the original leaf key; this function affects display metadata only.
+func safeConfigPathComponent(component string) string {
+	const maxComponentBytes = 128
+	if component == "" || len(component) > maxComponentBytes || !utf8.ValidString(component) {
+		return "<dynamic-key>"
+	}
+	for _, r := range component {
+		if unicode.IsControl(r) || !unicode.IsGraphic(r) {
+			return "<dynamic-key>"
+		}
+	}
+	if len(component) >= 20 && entropy.Calculate([]byte(component)) >= minEntropy {
+		return "<dynamic-key>"
+	}
+	return component
 }
 
 func isHighConfidenceSecretKey(key string) bool {
@@ -588,6 +609,9 @@ func isExternalSecretReference(lower, original string) bool {
 		isDollarReference(original) || isAngleReference(original) {
 		return true
 	}
+	if isYAMLAliasReference(original) {
+		return true
+	}
 	if isFilesystemReference(lower) {
 		return true
 	}
@@ -602,6 +626,18 @@ func isExternalSecretReference(lower, original string) bool {
 		}
 	}
 	return false
+}
+
+func isYAMLAliasReference(value string) bool {
+	if len(value) < 2 || value[0] != '*' {
+		return false
+	}
+	for _, r := range value[1:] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func isFilesystemReference(lower string) bool {

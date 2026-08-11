@@ -19,7 +19,7 @@ import (
 
 func TestVerify_RealDetectorOutput_UsesPairedUsername(t *testing.T) {
 	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
-	findings := testutil.ScanViaMatcher(&bitbucketdetector.Detector{}, fixture)
+	findings := testutil.ScanViaMatcher(&bitbucketdetector.Detector{}, fixture.Input)
 	require.Len(t, findings, 1)
 	require.Equal(t, "fixture-user", findings[0].ExtraData["username"])
 

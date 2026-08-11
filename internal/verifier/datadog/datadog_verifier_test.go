@@ -168,3 +168,21 @@ func TestVerify_WithoutTrustedSite_MakesNoRequest(t *testing.T) {
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "trusted Datadog site is not configured", result.Message)
 }
+
+func TestNewForTrustedInstance_AcceptsOnlyOfficialDatadogSites(t *testing.T) {
+	for _, origin := range []string{
+		"https://api.datadoghq.com", "https://api.datadoghq.eu", "https://api.ap2.datadoghq.com",
+		"https://api.ddog-gov.com", "https://api.us2.ddog-gov.com",
+	} {
+		configured, err := NewForTrustedInstance(origin)
+		require.NoError(t, err, origin)
+		assert.Equal(t, origin, configured.apiURL)
+	}
+	for _, origin := range []string{
+		"https://datadoghq.com", "https://api.datadoghq.com.attacker.example",
+		"https://api.datadoghq.com:443", "http://api.datadoghq.com",
+	} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
+}

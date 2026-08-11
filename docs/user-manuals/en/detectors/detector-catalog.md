@@ -132,7 +132,7 @@ This page lists every built-in detector. For verification coverage details see [
 | ID | Detects | Severity |
 |----|---------|----------|
 | `generic-api-key` | Generic API Key | Medium |
-| `structured-config-secret` | Contextual secret value in JSON, YAML, TOML, XML, `.env`, or INI-style configuration | High |
+| `structured-config-secret` | Contextual secret value in JSON/JSONC, high-confidence YAML and TOML scalar assignments, XML elements/attributes, or `.env` configuration | High |
 | `jwt` | JSON Web Token | High |
 | `private-key` | Private Key (RSA, SSH, DSA, EC, PGP), including PKCS8 `PRIVATE KEY` and password-protected `ENCRYPTED PRIVATE KEY` armor | Critical |
 | `ftp-credentials` | FTP/SFTP Credentials | Critical |

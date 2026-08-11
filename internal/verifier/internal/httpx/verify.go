@@ -3,6 +3,7 @@ package httpx
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,6 +45,13 @@ type Request struct {
 //
 // The reader passed to a DecodeFunc is already bounded by LimitReader.
 type DecodeFunc func(body io.Reader) (extra map[string]string, downgradeMessage string, err error)
+
+// InactiveDecodeFunc validates that an inactive-status response is definitive
+// for the provider. A nil error permits verified-inactive; an error keeps the
+// outcome fail-conservative as StatusVerifyError. It is intended for providers
+// whose 401 class also includes challenges such as DPoP that do not prove a
+// credential is invalid.
+type InactiveDecodeFunc func(body io.Reader) error
 
 // TokenSpec describes a standard single-request token verification: the request
 // to send and how each response status maps to a VerificationResult.
@@ -89,6 +97,11 @@ type TokenSpec struct {
 	// extract ExtraData (and optionally downgrade the result). When nil, an
 	// active-status response yields a bare active result without reading the body.
 	Decode DecodeFunc
+
+	// DecodeInactive, when non-nil, must positively validate an inactive-status
+	// response body before the credential is classified as inactive. The body is
+	// read completely through the same strict size bound used for active bodies.
+	DecodeInactive InactiveDecodeFunc
 
 	// RequireCompleteBody reads the full active response through a strict
 	// MaxBodyBytes+1 bound before Decode runs. Responses over the bound are
@@ -146,11 +159,7 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 		}
 		return spec.handleActive(ctx, resp.Body)
 	case containsStatus(spec.inactiveStatuses(), code):
-		slog.DebugContext(ctx, spec.Name+" verifier: secret is inactive")
-		return finding.VerificationResult{
-			Status:  finding.StatusVerifiedInactive,
-			Message: spec.InactiveMessage,
-		}
+		return spec.handleInactive(ctx, resp)
 	case code == http.StatusTooManyRequests:
 		// A provider-side rate limit must be distinguishable from a genuine
 		// verification bug: report an actionable message rather than a generic
@@ -187,7 +196,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client, token strin
 
 	req, err := http.NewRequestWithContext(ctx, method, spec.Request.URL, body)
 	if err != nil {
-		safeErr := redactTransportError(err, token, spec.Redact)
+		safeErr := redactTransportError(err, spec.redactionSecrets(token)...)
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to create request", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -209,7 +218,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client, token strin
 
 	resp, err := client.Do(req)
 	if err != nil {
-		safeErr := redactTransportError(err, token, spec.Redact)
+		safeErr := redactTransportError(err, spec.redactionSecrets(token)...)
 		slog.ErrorContext(ctx, spec.Name+" verifier: request failed", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -228,6 +237,17 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client, token strin
 	}
 
 	return resp, nil
+}
+
+func (spec TokenSpec) redactionSecrets(token string) []string {
+	secrets := []string{token, spec.Redact}
+	if spec.Request.BasicAuthUser != "" || spec.Request.BasicAuthPass != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(
+			spec.Request.BasicAuthUser + ":" + spec.Request.BasicAuthPass,
+		))
+		secrets = append(secrets, spec.Request.BasicAuthUser, spec.Request.BasicAuthPass, encoded)
+	}
+	return secrets
 }
 
 func redactTransportError(err error, secrets ...string) string {
@@ -293,6 +313,43 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		Status:    finding.StatusVerifiedActive,
 		Message:   spec.ActiveMessage,
 		ExtraData: extra,
+	}
+}
+
+func (spec TokenSpec) handleInactive(ctx context.Context, resp *http.Response) finding.VerificationResult {
+	if spec.DecodeInactive != nil {
+		if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d inactive response Content-Type is not JSON", resp.StatusCode),
+			}
+		}
+		contents, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
+		if err != nil {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d but failed to read response body: %v", resp.StatusCode, err),
+			}
+		}
+		if int64(len(contents)) > MaxBodyBytes {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d but response body exceeds %d bytes", resp.StatusCode, MaxBodyBytes),
+			}
+		}
+		if err := spec.DecodeInactive(bytes.NewReader(contents)); err != nil {
+			slog.DebugContext(ctx, spec.Name+" verifier: inactive response was not definitive")
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d did not definitively prove the secret inactive", resp.StatusCode),
+			}
+		}
+	}
+
+	slog.DebugContext(ctx, spec.Name+" verifier: secret is inactive")
+	return finding.VerificationResult{
+		Status:  finding.StatusVerifiedInactive,
+		Message: spec.InactiveMessage,
 	}
 }
 

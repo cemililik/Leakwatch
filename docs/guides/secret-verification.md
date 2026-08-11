@@ -121,17 +121,19 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 
 These implementations are registered, but a bare detector finding cannot safely select the issuer or authenticate the verification request. Missing context produces `unverified` without a network request.
 
+Use the repeatable command-line-only form `--verifier-origin detector-id=https://host` to provide trusted origins. Project configuration and environment variables cannot set these targets. `--grafana-instance-url` remains a backward-compatible Grafana alias.
+
 | Detector | Detector ID | Required context and behavior |
 |----------|-------------|-------------------------------|
-| Auth0 Management Token | `auth0-management-token` | Operator-trusted Auth0 tenant/custom HTTPS origin; JWT claims from scanned content never select a request target. Without trusted origin the result is `unverified` and no request is made; only `401` on that origin is inactive |
+| Auth0 Management Token | `auth0-management-token` | Operator-trusted Auth0 tenant/custom HTTPS origin; configure with `--verifier-origin auth0-management-token=https://tenant`. JWT claims from scanned content never select a request target; only `401` on the trusted origin is inactive |
 | Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
-| Twilio API Key Secret | `twilio-api-key` | The detector treats the secret as opaque and reports an explicit API Key Secret assignment only when it pairs one-to-one with an explicitly assigned nearby `SK...` Key SID in the same logical block; bare SIDs are not findings. A trusted regional origin (US1/IE1/AU1) is still operator context, so production makes no request without it; `403` is permission-ambiguous and never inactive |
-| Shopify Access Token | `shopify-access-token` | Operator-trusted issuing store origin; finding-controlled domains are ignored. The prepared verifier uses the pinned 2026-07 Admin GraphQL shop identity query, but production makes no request until trusted-store configuration exists |
-| GitHub PAT | `github-token` | Trusted GitHub.com or GHES API origin; both issuers use `ghp_`/`github_pat_`, so the registered production verifier makes no request without explicit issuer trust |
+| Twilio API Key Secret | `twilio-api-key` | The detector treats the secret as opaque and reports it only with a one-to-one nearby `SK...` SID; bare SIDs are not findings. Configure the trusted US1/IE1/AU1 origin explicitly; `403` is permission-ambiguous and never inactive |
+| Shopify Access Token | `shopify-access-token` | Configure the operator-trusted `*.myshopify.com` store origin explicitly. Finding-controlled domains are ignored; the verifier uses the pinned 2026-07 Admin GraphQL shop identity query |
+| GitHub PAT | `github-token` | Configure a trusted GitHub.com or GHES API origin explicitly. Both issuers use `ghp_`/`github_pat_`; repository metadata never chooses the issuer |
 | GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; `gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and side-effectful `ghr_` refresh-token exchange is never attempted |
-| GitLab PAT | `gitlab-pat` | Operator-trusted GitLab.com or self-managed HTTPS origin; repository host text and finding metadata never select the target. Only `glpat_` can use the read-only `/api/v4/user` probe; other GitLab credential subtypes remain `unverified` |
-| Datadog API Key | `datadog-api-key` | Trusted Datadog site/API origin across US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED; the production verifier makes no request without it |
-| Snyk API Key | `snyk-api-key` | Trusted Snyk regional, government, or private API origin; only `401` is inactive, while permission/plan `403` remains `verify_error`; production makes no request without a trusted origin |
+| GitLab PAT | `gitlab-pat` | Configure an operator-trusted GitLab.com or self-managed HTTPS origin. Only `glpat-` uses `/api/v4/user`; other recognized subtypes remain `unverified`. Only GitLab's standard invalid-token JSON `401` is inactive; DPoP challenges are inconclusive |
+| Datadog API Key | `datadog-api-key` | Configure one of the exact official US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED API origins; arbitrary hosts are rejected |
+| Snyk API Key | `snyk-api-key` | Configure the trusted regional, government, or private API origin; only `401` is inactive, while permission/plan `403` remains `verify_error` |
 
 ### Format Validation (6 detectors)
 

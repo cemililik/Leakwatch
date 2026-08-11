@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -21,11 +22,40 @@ const detectorID = "datadog-api-key"
 // Datadog validation API. It NEVER logs or persists raw key values.
 type Verifier struct {
 	// apiURL is reserved for a validated, trusted Datadog site origin. The
-	// production registration leaves it empty until operator wiring exists;
-	// tests inject a local server.
+	// production registry value stays empty and each scan may install an
+	// independently configured copy; tests inject a local server.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
+}
+
+var trustedDatadogAPIHosts = map[string]struct{}{
+	"api.datadoghq.com": {}, "api.us3.datadoghq.com": {}, "api.us5.datadoghq.com": {},
+	"api.datadoghq.eu": {}, "api.ap1.datadoghq.com": {}, "api.ap2.datadoghq.com": {},
+	"api.datad0g.com": {}, "api.ddog-gov.com": {}, "api.us2.ddog-gov.com": {},
+}
+
+// NewForTrustedInstance accepts only canonical official Datadog API site
+// origins. Datadog keys are site-bound; arbitrary repository or custom hosts
+// are never valid routing authorities.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	if err != nil || u.Port() != "" {
+		return nil, fmt.Errorf("invalid Datadog API origin")
+	}
+	if _, ok := trustedDatadogAPIHosts[u.Hostname()]; !ok {
+		return nil, fmt.Errorf("invalid Datadog API origin: host is not an official Datadog site")
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {

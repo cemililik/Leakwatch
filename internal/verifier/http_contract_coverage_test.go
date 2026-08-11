@@ -2,6 +2,7 @@ package verifier_test
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -49,15 +50,12 @@ func TestHTTPVerifierPackages_UseSharedSafetySuite(t *testing.T) {
 
 func packageUsesHTTP(t *testing.T, directory string) bool {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(directory, "*.go"))
-	require.NoError(t, err)
+	paths := activeGoFiles(t, directory, false)
 	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
 		file := parseGoFile(t, path)
 		httpxAliases := importAliases(file, "github.com/HodeTech/leakwatch/internal/verifier/internal/httpx", "httpx")
 		httpAliases := importAliases(file, "net/http", "http")
+		importsHTTP := len(httpAliases) > 0
 		found := false
 		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
@@ -68,15 +66,22 @@ func packageUsesHTTP(t *testing.T, directory string) bool {
 			if !ok {
 				return true
 			}
-			receiver, ok := selector.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if httpxAliases[receiver.Name] && selector.Sel.Name == "VerifyToken" {
+			receiver, _ := selector.X.(*ast.Ident)
+			if receiver != nil && httpxAliases[receiver.Name] && selector.Sel.Name == "VerifyToken" {
 				found = true
 				return false
 			}
-			if httpAliases[receiver.Name] && (selector.Sel.Name == "NewRequestWithContext" || selector.Sel.Name == "NewRequest") {
+			if receiver != nil && httpAliases[receiver.Name] && (selector.Sel.Name == "NewRequestWithContext" || selector.Sel.Name == "NewRequest") {
+				found = true
+				return false
+			}
+			// Direct clients and transports may be stored behind a local field or
+			// interface, so their receiver is not the net/http import identifier.
+			// When the production file imports net/http, recognize the outbound
+			// method surface as network use as well.
+			if importsHTTP && (selector.Sel.Name == "Do" || selector.Sel.Name == "RoundTrip" ||
+				selector.Sel.Name == "Get" || selector.Sel.Name == "Post" || selector.Sel.Name == "PostForm" ||
+				selector.Sel.Name == "Head") {
 				found = true
 				return false
 			}
@@ -91,8 +96,7 @@ func packageUsesHTTP(t *testing.T, directory string) bool {
 
 func packageRunsVTestDirectly(t *testing.T, directory string) bool {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(directory, "*_test.go"))
-	require.NoError(t, err)
+	paths := activeGoFiles(t, directory, true)
 	for _, path := range paths {
 		file := parseGoFile(t, path)
 		aliases := importAliases(file, "github.com/HodeTech/leakwatch/internal/verifier/internal/vtest", "vtest")
@@ -124,6 +128,28 @@ func packageRunsVTestDirectly(t *testing.T, directory string) bool {
 		}
 	}
 	return false
+}
+
+func activeGoFiles(t *testing.T, directory string, tests bool) []string {
+	t.Helper()
+	pattern := "*.go"
+	if tests {
+		pattern = "*_test.go"
+	}
+	paths, err := filepath.Glob(filepath.Join(directory, pattern))
+	require.NoError(t, err)
+	active := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !tests && strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		matched, matchErr := build.Default.MatchFile(directory, filepath.Base(path))
+		require.NoError(t, matchErr, path)
+		if matched {
+			active = append(active, path)
+		}
+	}
+	return active
 }
 
 func importAliases(file *ast.File, importPath, defaultName string) map[string]bool {

@@ -68,6 +68,23 @@ func TestVerify_ProductionFindingWithoutTrustedOrigin_IsUnverified(t *testing.T)
 	assert.Equal(t, "trusted Twilio regional API origin is not configured", result.Message)
 }
 
+func TestNewForTrustedInstance_AcceptsOnlyTwilioAPIOrigins(t *testing.T) {
+	for _, origin := range []string{
+		"https://api.twilio.com", "https://api.ie1.twilio.com", "https://api.sydney.au1.twilio.com",
+	} {
+		configured, err := NewForTrustedInstance(origin)
+		require.NoError(t, err, origin)
+		assert.Equal(t, origin, configured.apiURL)
+	}
+	for _, origin := range []string{
+		"https://twilio.com", "https://events.twilio.com", "https://api.twilio.com.attacker.example",
+		"https://api.twilio.com:443", "http://api.twilio.com",
+	} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
+}
+
 func TestVerify_Only401IsInactive_403IsPermissionError(t *testing.T) {
 	tests := []struct {
 		name   string

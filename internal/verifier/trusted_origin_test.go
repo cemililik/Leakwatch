@@ -30,7 +30,9 @@ func TestNormalizeTrustedHTTPSOrigin(t *testing.T) {
 		"https://provider.example?next=x", "https://provider.example/#fragment",
 		"https://user:pass@provider.example", "https://*.provider.example",
 		"https://localhost", "https://api.localhost", "https://127.0.0.1",
-		"https://[::1]", "https://[fe80::1%25en0]",
+		"https://127.1", "https://0x7f000001", "https://0x7f.0x0.0x0.0x1",
+		"https://provider.example:0",
+		"https://provider.example:65536", "https://[::1]", "https://[fe80::1%25en0]",
 	} {
 		t.Run("reject_"+raw, func(t *testing.T) {
 			_, err := NormalizeTrustedHTTPSOrigin(raw)

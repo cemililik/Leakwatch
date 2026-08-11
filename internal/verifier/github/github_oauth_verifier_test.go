@@ -238,3 +238,13 @@ func TestOAuthVerify_MissingIdentityOrWrongContentType_ReturnsVerifyError(t *tes
 		})
 	}
 }
+
+func TestNewOAuthForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewOAuthForTrustedInstance("https://api.github.example/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.github.example", configured.apiURL)
+	for _, origin := range []string{"http://api.github.com", "https://127.0.0.1", "https://localhost", "https://github.example/path"} {
+		_, err := NewOAuthForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
+}

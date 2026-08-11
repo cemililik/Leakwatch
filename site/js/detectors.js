@@ -344,14 +344,20 @@ window.LW_DETECTORS = [
       "glpat-",
       "gldt-",
       "glrt-",
+      "glrtr-",
       "glcbt-",
       "glptt-",
+      "glimt-",
+      "glagent-",
+      "glwt-",
+      "glsoat-",
+      "glffct-",
       "gloas-",
       "glft-"
     ],
     "patterns": [
       {
-        "src": "(?:glpat|gldt|glrt|glcbt|glptt|gloas|glft)-[A-Za-z0-9_\\-]{20,}"
+        "src": "(?:glpat|gldt|glrt|glrtr|glcbt|glptt|glimt|glagent|glwt|glsoat|glffct|gloas|glft)-[A-Za-z0-9_\\-]{20,}"
       }
     ]
   },

@@ -9,7 +9,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -30,6 +32,28 @@ var (
 type Verifier struct {
 	apiURL     string
 	httpClient *http.Client
+}
+
+// NewForTrustedInstance accepts an operator-selected official Twilio regional
+// API origin. Region selection is never inferred from scanned content.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	hostname := u.Hostname()
+	if err != nil || u.Port() != "" ||
+		(hostname != "api.twilio.com" &&
+			(!strings.HasPrefix(hostname, "api.") || !strings.HasSuffix(hostname, ".twilio.com"))) {
+		return nil, errors.New("invalid Twilio API origin: an official twilio.com host is required")
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {

@@ -145,17 +145,32 @@ func TestAll_RegisteredDetectors_HaveMatcherParity(t *testing.T) {
 		fixture, ok := fixtures[id]
 		require.True(t, ok, "registered detector %q has no matcher-contract fixture", id)
 		t.Run(id, func(t *testing.T) {
-			direct := det.Scan(t.Context(), fixture)
+			direct := det.Scan(t.Context(), fixture.Input)
 			require.Len(t, direct, 1, "canonical fixture must exercise exactly one unambiguous finding")
 			assert.Equal(t, id, direct[0].DetectorID, "detector returned a finding owned by a different capability")
-			assert.NotEmpty(t, direct[0].Raw, "canonical finding must preserve the exact secret source bytes")
-			if direct[0].ByteStart != 0 || direct[0].ByteEnd != 0 {
+			assert.Equal(t, fixture.ExpectedRaw, direct[0].Raw, "detector widened or changed the canonical raw credential")
+			assert.Equal(t, fixture.ExpectedRawV2, direct[0].RawV2, "detector companion/raw-v2 contract drifted")
+			assert.Equal(t, fixture.ExpectedExtraData, direct[0].ExtraData, "detector context metadata contract drifted")
+			assert.NotEqual(t, string(direct[0].Raw), direct[0].Redacted, "redacted output must not equal the raw credential")
+			assert.NotContains(t, direct[0].Redacted, string(direct[0].Raw), "redacted output leaked the raw credential")
+			for key, value := range direct[0].ExtraData {
+				if !fixture.NonSecretRawExtraKeys[key] {
+					assert.NotContains(t, value, string(direct[0].Raw), "ExtraData[%q] leaked the raw credential", key)
+				}
+				if len(direct[0].RawV2) > 0 {
+					assert.NotContains(t, value, string(direct[0].RawV2), "ExtraData[%q] leaked RawV2", key)
+				}
+			}
+			if fixture.RequireExactSpan {
 				require.Greater(t, direct[0].ByteEnd, direct[0].ByteStart, "explicit source span must be non-empty")
-				assert.Equal(t, direct[0].Raw, fixture[direct[0].ByteStart:direct[0].ByteEnd],
+				assert.Equal(t, direct[0].Raw, fixture.Input[direct[0].ByteStart:direct[0].ByteEnd],
 					"explicit source span must select the exact raw finding bytes")
+			} else {
+				assert.Zero(t, direct[0].ByteStart, "span contract is explicitly absent for this detector")
+				assert.Zero(t, direct[0].ByteEnd, "span contract is explicitly absent for this detector")
 			}
 
-			viaMatcher := testutil.ScanViaMatcher(det, fixture)
+			viaMatcher := testutil.ScanViaMatcher(det, fixture.Input)
 			require.NotEmpty(t, viaMatcher,
 				"matcher gated out a fixture accepted by Scan; review Keywords and case/boundary variants")
 			assert.True(t, reflect.DeepEqual(direct, viaMatcher),

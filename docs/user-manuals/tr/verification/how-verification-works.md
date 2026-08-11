@@ -26,7 +26,7 @@ Sağlayıcı sözleşmeye uygun başarılı bir yanıt döndürürse bulgu `veri
 
 ### Güvenilir veya eşlik eden bağlam gerekli
 
-Kayıtlı dokuz implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Auth0, GitLab, Grafana, GitHub/GHES, Datadog ve Snyk güvenilir issuer/site/API origin'i gerektirir. Twilio bulgusu açıkça eşleşen API Key Secret ile gizli olmayan Key SID'yi artık içerir, ancak yine de güvenilir bölgesel origin gerekir. Shopify için operatörce güvenilen issuer mağaza origin'i zorunludur; bulgu metadata'sı bu hedefi seçemez. Bu bağlam olmadan Leakwatch repo URL'lerine veya doğrulanmamış token iddialarına güvenmek, issuer tahmin etmek ya da gerçek bir kimlik bilgisini yanlışlıkla inaktif göstermek yerine hiç istek göndermez ve `unverified` döndürür.
+Kayıtlı dokuz implementasyon çıplak dedektör bulgusundan güvenli canlı istek yapamaz. Auth0, GitLab, Grafana, GitHub/GHES, Datadog ve Snyk güvenilir issuer/site/API origin'i gerektirir. Twilio bulgusu açıkça eşleşen API Key Secret ile gizli olmayan Key SID'yi içerir, ancak yine de güvenilir bölgesel origin gerekir. Shopify için operatörce güvenilen mağaza origin'i zorunludur. Bu hedefleri yalnızca tekrarlanabilir `--verifier-origin detector-id=https://host` komut satırı bayrağıyla verin (`--grafana-instance-url` Grafana için korunmuştur). Proje yapılandırması, ortam değişkenleri, repo URL'leri ve token iddiaları doğrulama hedefi seçemez. Açık bağlam olmadan Leakwatch istek göndermez ve `unverified` döndürür.
 
 ### Yalnızca format doğrulaması
 

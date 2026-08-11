@@ -64,6 +64,19 @@ func TestVerify_WithoutTrustedStoreMakesNoRequest(t *testing.T) {
 	assert.Zero(t, requests, "finding-controlled store_domain must never select a request target")
 }
 
+func TestNewForTrustedInstance_AcceptsOnlyCanonicalShopifyStore(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://fixture-store.myshopify.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://fixture-store.myshopify.com", configured.apiURL)
+	for _, origin := range []string{
+		"https://myshopify.com", "https://fixture-store.myshopify.com.attacker.example",
+		"https://fixture-store.myshopify.com:443", "https://custom-store.example",
+	} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
+}
+
 func TestVerify_RealDetectorFindingMatchesRequiresContextCapability(t *testing.T) {
 	findings := (&shopifydetector.Detector{}).Scan(context.Background(), shopifyFinding().Raw)
 	require.Len(t, findings, 1)

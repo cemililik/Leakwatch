@@ -19,7 +19,7 @@ import (
 
 func TestVerify_RealDetectorOutput_UsesOktaDomain(t *testing.T) {
 	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
-	findings := testutil.ScanViaMatcher(&oktadetector.Detector{}, fixture)
+	findings := testutil.ScanViaMatcher(&oktadetector.Detector{}, fixture.Input)
 	require.Len(t, findings, 1)
 	wantDomain := findings[0].ExtraData["domain"]
 	require.NotEmpty(t, wantDomain)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -36,7 +37,16 @@ func NormalizeTrustedHTTPSOrigin(raw string) (string, error) {
 	if _, parseErr := netip.ParseAddr(hostname); parseErr == nil {
 		return "", fmt.Errorf("invalid trusted origin: IP-literal targets are not allowed")
 	}
+	if looksLikeNumericHost(hostname) {
+		return "", fmt.Errorf("invalid trusted origin: non-canonical numeric targets are not allowed")
+	}
 	port := u.Port()
+	if port != "" {
+		value, portErr := strconv.ParseUint(port, 10, 16)
+		if portErr != nil || value == 0 {
+			return "", fmt.Errorf("invalid trusted origin: port must be between 1 and 65535")
+		}
+	}
 	u.Host = hostname
 	if port != "" {
 		u.Host += ":" + port
@@ -45,4 +55,35 @@ func NormalizeTrustedHTTPSOrigin(raw string) (string, error) {
 	u.Path = ""
 	u.RawPath = ""
 	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func looksLikeNumericHost(hostname string) bool {
+	parts := strings.Split(hostname, ".")
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		digits := part
+		base := byte(10)
+		if strings.HasPrefix(part, "0x") {
+			digits = part[2:]
+			base = 16
+		}
+		if digits == "" {
+			return false
+		}
+		for _, r := range digits {
+			if r >= '0' && r <= '9' {
+				continue
+			}
+			if base == 16 && r >= 'a' && r <= 'f' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }

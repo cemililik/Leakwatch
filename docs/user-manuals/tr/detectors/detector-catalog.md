@@ -132,7 +132,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `generic-api-key` | Genel API Anahtarı | Medium |
-| `structured-config-secret` | JSON, YAML, TOML, XML, `.env` veya INI biçimli yapılandırmada bağlamsal sır değeri | High |
+| `structured-config-secret` | JSON/JSONC, yüksek güvenli YAML ve TOML skaler atamaları, XML öğe/öznitelikleri veya `.env` yapılandırmasında bağlamsal sır değeri | High |
 | `jwt` | JSON Web Token | High |
 | `private-key` | Özel Anahtar (RSA, SSH, DSA, EC, PGP); PKCS8 `PRIVATE KEY` ve parola korumalı `ENCRYPTED PRIVATE KEY` zarfı dahil | Critical |
 | `ftp-credentials` | FTP/SFTP Kimlik Bilgileri | Critical |

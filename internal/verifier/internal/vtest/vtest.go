@@ -102,10 +102,13 @@ func Run(t *testing.T, c Case) {
 		var calls atomic.Int32
 		const endpoint = "https://api.example.invalid"
 		testCase := c.withURL(endpoint)
-		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			calls.Add(1)
-			return nil, fmt.Errorf("synthetic transport failure echoed credentials %s %s",
-				string(testCase.Raw.Raw), string(testCase.Raw.RawV2))
+			echoed := []string{request.URL.String(), string(testCase.Raw.Raw), string(testCase.Raw.RawV2)}
+			for _, values := range request.Header {
+				echoed = append(echoed, values...)
+			}
+			return nil, fmt.Errorf("synthetic transport failure echoed request %q", echoed)
 		})}
 		v := c.New(endpoint, client)
 		result, logs := verifyWithCapturedLogs(t, func() finding.VerificationResult {

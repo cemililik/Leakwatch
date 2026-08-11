@@ -15,7 +15,7 @@ import (
 
 func TestVerify_RealDetectorOutput_ValidatesPairedConnection(t *testing.T) {
 	fixture := testutil.RegisteredDetectorFixtures()[detectorID]
-	findings := testutil.ScanViaMatcher(&snowflakedetector.Detector{}, fixture)
+	findings := testutil.ScanViaMatcher(&snowflakedetector.Detector{}, fixture.Input)
 	require.Len(t, findings, 1)
 	require.NotEmpty(t, findings[0].RawV2)
 	result := (&Verifier{}).Verify(t.Context(), findings[0])

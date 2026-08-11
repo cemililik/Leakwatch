@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,6 +64,12 @@ type Config struct {
 	// never from repository config or detector ExtraData. It is therefore a
 	// trusted operator choice rather than scan-controlled input.
 	GrafanaInstanceURL string
+	// TrustedVerifierOrigins maps a context-required detector ID to an HTTPS
+	// origin explicitly supplied by the operator on this invocation. The cmd
+	// layer never resolves this map from project configuration or environment
+	// variables, preventing scanned repositories from choosing credential
+	// destinations.
+	TrustedVerifierOrigins map[string]string
 
 	// CustomRules are user-defined YAML custom rules from the `custom-rules:`
 	// config block. BuildEngineConfig compiles them into detectors threaded
@@ -149,17 +156,33 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 
 func configuredVerifiers(cfg *Config) ([]verifier.Verifier, error) {
 	verifiers := verifier.All()
-	if cfg.GrafanaInstanceURL == "" {
+	origins := make(map[string]string, len(cfg.TrustedVerifierOrigins)+1)
+	for detectorID, origin := range cfg.TrustedVerifierOrigins {
+		origins[detectorID] = origin
+	}
+	if cfg.GrafanaInstanceURL != "" {
+		if origin, exists := origins["grafana-api-key"]; exists && origin != cfg.GrafanaInstanceURL {
+			return nil, fmt.Errorf("configure trusted verification: conflicting Grafana origins were supplied")
+		}
+		origins["grafana-api-key"] = cfg.GrafanaInstanceURL
+	}
+	if len(origins) == 0 {
 		return verifiers, nil
 	}
 
-	configured, err := verifier.ConfigureTrustedInstance(
-		verifiers,
-		"grafana-api-key",
-		cfg.GrafanaInstanceURL,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("configure Grafana verification: %w", err)
+	ids := make([]string, 0, len(origins))
+	for detectorID := range origins {
+		ids = append(ids, detectorID)
+	}
+	sort.Strings(ids)
+
+	configured := verifiers
+	for _, detectorID := range ids {
+		var err error
+		configured, err = verifier.ConfigureTrustedInstance(configured, detectorID, origins[detectorID])
+		if err != nil {
+			return nil, fmt.Errorf("configure trusted verification for %q: %w", detectorID, err)
+		}
 	}
 	return configured, nil
 }

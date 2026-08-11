@@ -42,6 +42,7 @@ const defaultMaxFileSize = 10 * 1024 * 1024
 const (
 	flagShowRaw            = "show-raw"
 	flagGrafanaInstanceURL = "grafana-instance-url"
+	flagVerifierOrigin     = "verifier-origin"
 )
 
 // scanFlagBindings maps Viper config keys to the scan flag that overrides them.
@@ -148,14 +149,15 @@ func addExcludePathFlag(flags *pflag.FlagSet) {
 	flags.StringSlice("exclude", nil, "path patterns to exclude")
 }
 
-// addVerifyFlags adds --no-verify, --only-verified, --min-severity and
-// --remediation flags.
+// addVerifyFlags adds the shared verification, severity, remediation, and
+// command-line-only trusted-origin flags.
 func addVerifyFlags(flags *pflag.FlagSet) {
 	flags.Bool("no-verify", false, "disable secret verification")
 	flags.Bool("only-verified", false, "only show verified active findings")
 	flags.String("min-severity", "low", "minimum severity to report (low, medium, high, critical)")
 	flags.Bool("remediation", false, "include remediation guidance in output")
 	flags.String(flagGrafanaInstanceURL, "", "trusted Grafana instance origin for token verification (HTTPS; command-line only)")
+	flags.StringArray(flagVerifierOrigin, nil, "trusted verifier origin as detector-id=https://host (repeatable; command-line only)")
 }
 
 // loadScanConfig loads and validates configuration for the active command using
@@ -163,8 +165,8 @@ func addVerifyFlags(flags *pflag.FlagSet) {
 // guarantees that flags such as --concurrency, --max-file-size, and --format
 // honor flag > env > config-file > default precedence without picking up another
 // scan command's flag defaults (SYS-07a/b). Flags that are not config-keyed
-// (--no-verify, --only-verified, --min-severity, --remediation, --exclude) are
-// read directly from the command.
+// (--no-verify, --only-verified, --min-severity, --remediation, --exclude, and
+// trusted verifier origins) are read directly from the command.
 func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
 	v, err := newScanViper(cmd)
 	if err != nil {
@@ -195,28 +197,54 @@ func loadScanConfig(cmd *cobra.Command) (*scanner.Config, error) {
 	if cmd.Flags().Changed(flagShowRaw) {
 		showRaw = flagBool(cmd, flagShowRaw)
 	}
+	trustedOrigins, err := trustedVerifierOriginsFromFlags(cmd)
+	if err != nil {
+		return nil, err
+	}
 
 	return &scanner.Config{
-		Concurrency:        cfg.Scan.Concurrency,
-		MaxFileSize:        cfg.Scan.MaxFileSize,
-		ExcludePaths:       cfg.Filter.ExcludePaths,
-		ExcludeDetectors:   mergedExcludeDetectors(cmd, cfg),
-		EnableEntropy:      cfg.Detection.Entropy.Enabled,
-		EntropyThreshold:   cfg.Detection.Entropy.Threshold,
-		ShowRaw:            showRaw,
-		OutputFile:         cfg.Output.File,
-		Format:             cfg.Output.Format,
-		NoVerify:           flagBool(cmd, "no-verify"),
-		OnlyVerified:       flagBool(cmd, "only-verified"),
-		MinSeverity:        minSev,
-		EnableRemediation:  flagBool(cmd, "remediation"),
-		VerifyEnabled:      cfg.Verification.Enabled,
-		VerifyTimeout:      cfg.Verification.Timeout,
-		VerifyConcurrency:  cfg.Verification.Concurrency,
-		VerifyRateLimit:    cfg.Verification.RateLimit,
-		GrafanaInstanceURL: flagString(cmd, flagGrafanaInstanceURL),
-		CustomRules:        cfg.CustomRules,
+		Concurrency:            cfg.Scan.Concurrency,
+		MaxFileSize:            cfg.Scan.MaxFileSize,
+		ExcludePaths:           cfg.Filter.ExcludePaths,
+		ExcludeDetectors:       mergedExcludeDetectors(cmd, cfg),
+		EnableEntropy:          cfg.Detection.Entropy.Enabled,
+		EntropyThreshold:       cfg.Detection.Entropy.Threshold,
+		ShowRaw:                showRaw,
+		OutputFile:             cfg.Output.File,
+		Format:                 cfg.Output.Format,
+		NoVerify:               flagBool(cmd, "no-verify"),
+		OnlyVerified:           flagBool(cmd, "only-verified"),
+		MinSeverity:            minSev,
+		EnableRemediation:      flagBool(cmd, "remediation"),
+		VerifyEnabled:          cfg.Verification.Enabled,
+		VerifyTimeout:          cfg.Verification.Timeout,
+		VerifyConcurrency:      cfg.Verification.Concurrency,
+		VerifyRateLimit:        cfg.Verification.RateLimit,
+		GrafanaInstanceURL:     flagString(cmd, flagGrafanaInstanceURL),
+		TrustedVerifierOrigins: trustedOrigins,
+		CustomRules:            cfg.CustomRules,
 	}, nil
+}
+
+func trustedVerifierOriginsFromFlags(cmd *cobra.Command) (map[string]string, error) {
+	values := flagStringArray(cmd, flagVerifierOrigin)
+	if len(values) == 0 {
+		return nil, nil
+	}
+	origins := make(map[string]string, len(values))
+	for _, value := range values {
+		detectorID, origin, ok := strings.Cut(value, "=")
+		detectorID = strings.TrimSpace(detectorID)
+		origin = strings.TrimSpace(origin)
+		if !ok || detectorID == "" || origin == "" {
+			return nil, fmt.Errorf("invalid --%s value %q: expected detector-id=https://host", flagVerifierOrigin, value)
+		}
+		if _, duplicate := origins[detectorID]; duplicate {
+			return nil, fmt.Errorf("duplicate --%s entry for detector %q", flagVerifierOrigin, detectorID)
+		}
+		origins[detectorID] = origin
+	}
+	return origins, nil
 }
 
 // mergedExcludeDetectors returns the config-file filter.exclude-detectors
@@ -488,6 +516,16 @@ func flagFloat64(cmd *cobra.Command, name string) float64 {
 // convention.
 func flagStringSlice(cmd *cobra.Command, name string) []string {
 	v, err := cmd.Flags().GetStringSlice(name)
+	if err != nil {
+		slog.Debug("flag lookup failed", "flag", name, "error", err)
+	}
+	return v
+}
+
+// flagStringArray reads a repeatable string-array flag; see flagString for the
+// error convention.
+func flagStringArray(cmd *cobra.Command, name string) []string {
+	v, err := cmd.Flags().GetStringArray(name)
 	if err != nil {
 		slog.Debug("flag lookup failed", "flag", name, "error", err)
 	}

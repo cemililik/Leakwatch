@@ -57,7 +57,7 @@ func TestVerifierContracts_UseRealDetectorOutput(t *testing.T) {
 			require.True(t, ok, "verifier has no registered production detector")
 			fixture, ok := fixtures[id]
 			require.True(t, ok, "verifier detector has no shared contract fixture")
-			findings := testutil.ScanViaMatcher(det, fixture)
+			findings := testutil.ScanViaMatcher(det, fixture.Input)
 			require.NotEmpty(t, findings, "real matcher/detector path produced no verifier input")
 			assert.Equal(t, id, findings[0].DetectorID)
 

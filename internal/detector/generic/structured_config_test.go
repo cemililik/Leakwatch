@@ -72,6 +72,16 @@ func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *
 			valueStart: secret,
 		},
 		{
+			name: "flat YAML document", format: "yaml", path: "password",
+			data:       []byte("service: fixture\npassword: " + secret + "\n"),
+			valueStart: secret,
+		},
+		{
+			name: "YAML literal block", format: "yaml", path: "password",
+			data:       []byte("---\npassword: |\n  " + secret + "\n"),
+			valueStart: secret,
+		},
+		{
 			name: "YAML escaped single quote", format: "yaml", path: "service.client_secret",
 			data:       []byte("service:\n  client_secret: 'fixture-it''s-secret-9mN2pQ7r'\n"),
 			valueStart: "fixture-it''s-secret-9mN2pQ7r",
@@ -87,6 +97,11 @@ func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *
 			valueStart: `fixture\u002Dsecret-9mN2pQ7r`,
 		},
 		{
+			name: "TOML dotted key", format: "toml", path: "service.password",
+			data:       []byte("service.password = \"" + secret + "\"\nother = \"fixture\"\n"),
+			valueStart: secret,
+		},
+		{
 			name: "sectionless TOML", format: "toml", path: "client_secret",
 			data:       []byte("service_name = \"fixture\"\nclient_secret = \"" + secret + "\"\n"),
 			valueStart: secret,
@@ -94,6 +109,11 @@ func TestStructuredConfigDetector_AllSupportedFormats_MatcherAndEngineParity(t *
 		{
 			name: "nested XML", format: "xml", path: "configuration.service.credentials.ClientSecret",
 			data:       []byte("<configuration><service><credentials><ClientSecret>" + secret + "</ClientSecret></credentials></service></configuration>"),
+			valueStart: secret,
+		},
+		{
+			name: "XML CDATA", format: "xml", path: "configuration.Password",
+			data:       []byte("<configuration><Password><![CDATA[" + secret + "]]></Password></configuration>"),
 			valueStart: secret,
 		},
 		{
@@ -148,6 +168,11 @@ func TestStructuredConfigDetector_AllSupportedFormats_HardNegatives(t *testing.T
 			assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
 		})
 	}
+}
+
+func TestStructuredConfigDetector_YAMLAliasIsReferenceNotSecret(t *testing.T) {
+	data := []byte("---\nvalue: &db_password fixture-secret-9mN2pQ7r\npassword: *db_password\n")
+	assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
 }
 
 func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
@@ -215,6 +240,24 @@ func TestStructuredConfigDetector_FormatAdapterBoundaries(t *testing.T) {
 			assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), input), string(input))
 		}
 	})
+}
+
+func TestStructuredConfigDetector_DynamicPathMetadataIsBoundedAndSafe(t *testing.T) {
+	secretParent := "sk-" + strings.Repeat("Ab7x", 40)
+	value := "fixture-value-secret-9mN2pQ7r"
+	data := []byte(fmt.Sprintf(`{%q:{"Password":%q}}`, secretParent, value))
+	findings := (&StructuredConfigDetector{}).Scan(t.Context(), data)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "<dynamic-key>.Password", findings[0].ExtraData["key_path"])
+	assert.NotContains(t, findings[0].ExtraData["key_path"], secretParent)
+	assert.NotContains(t, findings[0].ExtraData["key_path"], value)
+
+	controlParent := "line\nbreak"
+	data = []byte(fmt.Sprintf(`{%q:{"Password":%q}}`, controlParent, value))
+	findings = (&StructuredConfigDetector{}).Scan(t.Context(), data)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "<dynamic-key>.Password", findings[0].ExtraData["key_path"])
+	assert.NotContains(t, findings[0].ExtraData["key_path"], "\n")
 }
 
 func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
@@ -307,9 +350,56 @@ func TestStructuredConfigDetector_LineSyntaxEdges(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, []string{"service", "credentials"}, parts)
 
+		parts, ok = parseTOMLDottedKey([]byte(`"service".'credentials'.password`))
+		assert.True(t, ok)
+		assert.Equal(t, []string{"service", "credentials", "password"}, parts)
+		for _, key := range [][]byte{
+			nil, []byte("service..password"), []byte(`"".password`),
+			[]byte(`"unterminated.password`), []byte("bad key.password"),
+		} {
+			_, ok := parseTOMLDottedKey(key)
+			assert.False(t, ok, string(key))
+		}
+
+		for _, indicator := range [][]byte{
+			[]byte("|"), []byte(">-"), []byte("|2 # comment"), []byte(">+4"),
+		} {
+			assert.True(t, isYAMLBlockIndicator(indicator), string(indicator))
+		}
+		for _, indicator := range [][]byte{
+			nil, []byte("plain"), []byte("| trailing"), []byte(">!"),
+		} {
+			assert.False(t, isYAMLBlockIndicator(indicator), string(indicator))
+		}
+
 		assert.False(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0, hasValue: true}}))
 		assert.False(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0}, {indent: 0, hasValue: true}}))
 		assert.True(t, hasNestedYAMLSignals([]yamlSignal{{indent: 0}, {indent: 2, hasValue: true}}))
+	})
+
+	t.Run("YAML block scalar decoding and failure boundaries", func(t *testing.T) {
+		literal := []byte("  first-secret-line\n  second-secret-line\nsibling: value\n")
+		value, start, end, next, ok := parseYAMLBlockScalar(t.Context(), literal, 0, 0, '|')
+		assert.True(t, ok)
+		assert.Equal(t, "first-secret-line\nsecond-secret-line", value)
+		assert.Equal(t, "first-secret-line\n  second-secret-line", string(literal[start:end]))
+		assert.Equal(t, strings.Index(string(literal), "sibling:"), next)
+
+		folded := []byte("  first-secret-line\n\n  second-secret-line\n")
+		value, _, _, _, ok = parseYAMLBlockScalar(t.Context(), folded, 0, 0, '>')
+		assert.True(t, ok)
+		assert.Equal(t, "first-secret-line\nsecond-secret-line", value)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, _, _, _, ok = parseYAMLBlockScalar(ctx, literal, 0, 0, '|')
+		assert.False(t, ok)
+		for _, invalid := range [][]byte{
+			[]byte("\tsecret\n"), []byte("secret\n"), []byte("  \n"),
+		} {
+			_, _, _, _, ok = parseYAMLBlockScalar(t.Context(), invalid, 0, 0, '|')
+			assert.False(t, ok, string(invalid))
+		}
 	})
 
 	t.Run("YAML sibling paths and cancellation", func(t *testing.T) {
