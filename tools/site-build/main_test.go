@@ -256,3 +256,102 @@ func TestSyncSiteReleaseVersion_ValidatesAllPagesBeforeWriting(t *testing.T) {
 		t.Fatalf("earlier page mode = %o, want 600", got)
 	}
 }
+
+func TestCommitStagedSite_LateFooterErrorDoesNotPublishGeneratedFiles(t *testing.T) {
+	root := t.TempDir()
+	siteDir := filepath.Join(root, "site")
+	target := filepath.Join(siteDir, "js", "detectors.js")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old generated output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(siteDir, "index.html"), []byte("<main>missing footer</main>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageRoot := t.TempDir()
+	staged := filepath.Join(stageRoot, "js", "detectors.js")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("new generated output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := commitStagedSite(root, stageRoot, "v1.7.0"); err == nil {
+		t.Fatal("commitStagedSite() error = nil, want missing-footer error")
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "old generated output" {
+		t.Fatalf("generated target was partially published: %q", content)
+	}
+}
+
+func TestPublishStagedSite_RejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	siteDir := filepath.Join(root, "site", "js")
+	if err := os.MkdirAll(siteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(root, "external.txt")
+	if err := os.WriteFile(external, []byte("must remain unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(siteDir, "detectors.js")
+	if err := os.Symlink(external, target); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	stageRoot := t.TempDir()
+	staged := filepath.Join(stageRoot, "js", "detectors.js")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishStagedSite(root, stageRoot); err == nil {
+		t.Fatal("publishStagedSite() error = nil, want symlink rejection")
+	}
+	content, err := os.ReadFile(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "must remain unchanged" {
+		t.Fatalf("symlink target was modified: %q", content)
+	}
+}
+
+func TestPublishStagedSite_RejectsSymlinkParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "site"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalDir := filepath.Join(root, "external")
+	if err := os.MkdirAll(externalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalDir, filepath.Join(root, "site", "js")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	stageRoot := t.TempDir()
+	staged := filepath.Join(stageRoot, "js", "detectors.js")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishStagedSite(root, stageRoot); err == nil {
+		t.Fatal("publishStagedSite() error = nil, want parent symlink rejection")
+	}
+	if _, err := os.Stat(filepath.Join(externalDir, "detectors.js")); !os.IsNotExist(err) {
+		t.Fatalf("external target exists after rejected publish: err=%v", err)
+	}
+}

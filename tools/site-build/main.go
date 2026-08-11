@@ -108,9 +108,18 @@ func run() error {
 		return fmt.Errorf("no languages declared in _meta.yaml")
 	}
 
-	outDir := filepath.Join(root, "site", "js", "manuals")
+	// Build every generated artifact outside the committed site tree. A parser,
+	// strict-missing-page, detector, or footer validation error can therefore
+	// never leave a partially regenerated workspace behind.
+	stageRoot, err := os.MkdirTemp("", "leakwatch-site-build-*")
+	if err != nil {
+		return fmt.Errorf("create site staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stageRoot) }()
+
+	outDir := filepath.Join(stageRoot, "js", "manuals")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
+		return fmt.Errorf("create staging output dir: %w", err)
 	}
 
 	// Navigation index (language-independent).
@@ -162,26 +171,26 @@ func run() error {
 	}
 
 	// Compile the in-browser playground detector set from internal/detector.
-	jsDir := filepath.Join(root, "site", "js")
+	jsDir := filepath.Join(stageRoot, "js")
 	nDet, err := buildDetectors(root, jsDir, *strict)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("site-build: wrote detectors.js (%d detectors)\n", nDet)
 
+	if missing > 0 && *strict {
+		return fmt.Errorf("%d manual page(s) missing (strict mode)", missing)
+	}
+
 	releaseVersion, err := readReleaseVersion(root)
 	if err != nil {
 		return err
 	}
-	footerCount, err := syncSiteReleaseVersion(root, releaseVersion)
+	footerCount, err := commitStagedSite(root, stageRoot, releaseVersion)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("site-build: synced release footer %s (%d pages)\n", releaseVersion, footerCount)
-
-	if missing > 0 && *strict {
-		return fmt.Errorf("%d manual page(s) missing (strict mode)", missing)
-	}
+	fmt.Printf("site-build: published generated site and synced release footer %s (%d pages)\n", releaseVersion, footerCount)
 	return nil
 }
 

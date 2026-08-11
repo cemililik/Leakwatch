@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,34 +86,49 @@ type sitePageUpdate struct {
 // on every page prevents a removed footer from silently escaping the canonical
 // metadata pipeline.
 func syncSiteReleaseVersion(root, version string) (int, error) {
+	updates, pageCount, err := collectSiteReleaseUpdates(root, version)
+	if err != nil {
+		return 0, err
+	}
+	if err := applySiteReleaseUpdates(updates); err != nil {
+		return 0, err
+	}
+	return pageCount, nil
+}
+
+func collectSiteReleaseUpdates(root, version string) ([]sitePageUpdate, int, error) {
 	if !stableReleasePattern.MatchString(version) {
-		return 0, fmt.Errorf("refuse unsafe release version %q", version)
+		return nil, 0, fmt.Errorf("refuse unsafe release version %q", version)
 	}
 
-	pages, err := filepath.Glob(filepath.Join(root, "site", "*.html"))
+	siteDir := filepath.Join(root, "site")
+	if err := validateDirectoryTree(siteDir, siteDir); err != nil {
+		return nil, 0, fmt.Errorf("inspect site directory: %w", err)
+	}
+	pages, err := filepath.Glob(filepath.Join(siteDir, "*.html"))
 	if err != nil {
-		return 0, fmt.Errorf("find site pages: %w", err)
+		return nil, 0, fmt.Errorf("find site pages: %w", err)
 	}
 	if len(pages) == 0 {
-		return 0, fmt.Errorf("no top-level site HTML pages found")
+		return nil, 0, fmt.Errorf("no top-level site HTML pages found")
 	}
 
 	updates := make([]sitePageUpdate, 0, len(pages))
 	for _, path := range pages {
 		info, err := os.Lstat(path)
 		if err != nil {
-			return 0, fmt.Errorf("inspect %s: %w", filepath.Base(path), err)
+			return nil, 0, fmt.Errorf("inspect %s: %w", filepath.Base(path), err)
 		}
 		if !info.Mode().IsRegular() {
-			return 0, fmt.Errorf("site page %s must be a regular file", filepath.Base(path))
+			return nil, 0, fmt.Errorf("site page %s must be a regular file", filepath.Base(path))
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return 0, fmt.Errorf("read %s: %w", filepath.Base(path), err)
+			return nil, 0, fmt.Errorf("read %s: %w", filepath.Base(path), err)
 		}
 		updated, err := replaceReleaseFooter(content, version)
 		if err != nil {
-			return 0, fmt.Errorf("release footer %s: %w", filepath.Base(path), err)
+			return nil, 0, fmt.Errorf("release footer %s: %w", filepath.Base(path), err)
 		}
 		if bytes.Equal(content, updated) {
 			continue
@@ -120,14 +136,16 @@ func syncSiteReleaseVersion(root, version string) (int, error) {
 		updates = append(updates, sitePageUpdate{path: path, content: updated, mode: info.Mode().Perm()})
 	}
 
-	// Validation above is deliberately complete before this write phase: a
-	// malformed later page can never leave earlier pages partially regenerated.
+	return updates, len(pages), nil
+}
+
+func applySiteReleaseUpdates(updates []sitePageUpdate) error {
 	for _, update := range updates {
 		if err := writeFileAtomic(update.path, update.content, update.mode); err != nil {
-			return 0, fmt.Errorf("write %s: %w", filepath.Base(update.path), err)
+			return fmt.Errorf("write %s: %w", filepath.Base(update.path), err)
 		}
 	}
-	return len(pages), nil
+	return nil
 }
 
 func replaceReleaseFooter(content []byte, version string) ([]byte, error) {
@@ -186,6 +204,154 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
+	}
+	return nil
+}
+
+// commitStagedSite validates the release footer before publishing any staged
+// JavaScript. All parsing/rendering/detector work therefore completes outside
+// the committed site tree, and a late validation error leaves it untouched.
+func commitStagedSite(root, stageRoot, version string) (int, error) {
+	updates, pageCount, err := collectSiteReleaseUpdates(root, version)
+	if err != nil {
+		return 0, err
+	}
+	if err := publishStagedSite(root, stageRoot); err != nil {
+		return 0, err
+	}
+	if err := applySiteReleaseUpdates(updates); err != nil {
+		return 0, err
+	}
+	return pageCount, nil
+}
+
+func publishStagedSite(root, stageRoot string) error {
+	type publishItem struct {
+		target  string
+		content []byte
+		mode    os.FileMode
+	}
+
+	var stagedFiles []string
+	err := filepath.WalkDir(stageRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return fmt.Errorf("staged site entry %s must be a regular file", path)
+		}
+		stagedFiles = append(stagedFiles, path)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("inspect staged site: %w", err)
+	}
+	if len(stagedFiles) == 0 {
+		return fmt.Errorf("staged site contains no generated files")
+	}
+
+	siteDir := filepath.Join(root, "site")
+	items := make([]publishItem, 0, len(stagedFiles))
+	for _, stagedPath := range stagedFiles {
+		rel, err := filepath.Rel(stageRoot, stagedPath)
+		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("resolve staged site path %s", stagedPath)
+		}
+		target := filepath.Join(siteDir, rel)
+		if err := validateDirectoryTree(siteDir, filepath.Dir(target)); err != nil {
+			return fmt.Errorf("inspect generated site directory for %s: %w", target, err)
+		}
+
+		mode := os.FileMode(0o644)
+		info, err := os.Lstat(target)
+		switch {
+		case err == nil:
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("generated site target %s must be a regular file", target)
+			}
+			mode = info.Mode().Perm()
+		case !os.IsNotExist(err):
+			return fmt.Errorf("inspect generated site target %s: %w", target, err)
+		}
+		content, err := os.ReadFile(stagedPath)
+		if err != nil {
+			return fmt.Errorf("read staged site file %s: %w", stagedPath, err)
+		}
+		items = append(items, publishItem{target: target, content: content, mode: mode})
+	}
+
+	// All staged inputs, target paths, file types, and parent chains are checked
+	// before the first committed file is replaced.
+	for _, item := range items {
+		if err := ensureDirectoryTree(siteDir, filepath.Dir(item.target)); err != nil {
+			return fmt.Errorf("create generated site directory for %s: %w", item.target, err)
+		}
+		if err := writeFileAtomic(item.target, item.content, item.mode); err != nil {
+			return fmt.Errorf("publish generated site file %s: %w", item.target, err)
+		}
+	}
+	return nil
+}
+
+func validateDirectoryTree(base, target string) error {
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("directory %s escapes base %s", target, base)
+	}
+
+	current := base
+	parts := []string{}
+	if rel != "." {
+		parts = strings.Split(rel, string(filepath.Separator))
+	}
+	for i := -1; i < len(parts); i++ {
+		if i >= 0 {
+			current = filepath.Join(current, parts[i])
+		}
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if i == -1 {
+				return fmt.Errorf("base directory %s does not exist", base)
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s must be a real directory", current)
+		}
+	}
+	return nil
+}
+
+func ensureDirectoryTree(base, target string) error {
+	if err := validateDirectoryTree(base, target); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return err
+	}
+	current := base
+	if rel == "." {
+		return nil
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s must be a real directory", current)
+		}
 	}
 	return nil
 }
