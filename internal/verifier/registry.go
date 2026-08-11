@@ -14,12 +14,19 @@ var (
 // Each verifier package calls this function in its init() function.
 // Panics if a verifier with the same Type() is already registered.
 func Register(v Verifier) {
+	if v == nil || isNilVerifier(v) {
+		panic("cannot register a nil verifier")
+	}
+	typeID := v.Type()
+	if typeID == "" {
+		panic("cannot register a verifier with an empty type")
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if _, exists := verifiers[v.Type()]; exists {
-		panic("duplicate verifier type: " + v.Type())
+	if _, exists := verifiers[typeID]; exists {
+		panic("duplicate verifier type: " + typeID)
 	}
-	verifiers[v.Type()] = v
+	verifiers[typeID] = v
 }
 
 // Get returns the verifier registered for the given detector ID.

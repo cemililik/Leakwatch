@@ -20,7 +20,11 @@ type Detector interface {
 	// If empty, pre-filtering is skipped and regex is applied to every chunk.
 	Keywords() []string
 
-	// Scan scans the given data and returns potential secret findings.
+	// Scan scans the given data and returns potential secret findings. Results
+	// MUST be emitted in stable, left-to-right source order. When ByteStart and
+	// ByteEnd are present they must be monotonically non-decreasing by ByteStart;
+	// legacy findings without spans must preserve their matcher's source order.
+	// The engine uses this contract to disambiguate repeated identical values.
 	Scan(ctx context.Context, data []byte) []RawFinding
 
 	// Severity returns the default severity for findings from this detector.

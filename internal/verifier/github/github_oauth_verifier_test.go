@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,6 +21,8 @@ func TestOAuthVerify_ValidToken_ReturnsActive(t *testing.T) {
 		assert.Equal(t, "application/vnd.github+json", r.Header.Get("Accept"))
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-OAuth-Scopes", "user, repo, user")
+		w.Header().Set("GitHub-Authentication-Token-Expiration", "2027-01-02 03:04:05 UTC")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"login":"octocat"}`))
 	}))
@@ -41,6 +44,19 @@ func TestOAuthVerify_ValidToken_ReturnsActive(t *testing.T) {
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, "GitHub OAuth or installation token is active", result.Message)
 	assert.Equal(t, "octocat", result.ExtraData["login"])
+	assert.Equal(t, "repo,user", result.ExtraData["scopes"])
+	assert.Equal(t, "2", result.ExtraData["scope_count"])
+	assert.Equal(t, "2027-01-02T03:04:05Z", result.ExtraData["expires_at"])
+}
+
+func TestDecodeInstallationRepositories_RejectsMalformedSuccess(t *testing.T) {
+	for _, body := range []string{
+		`{"total_count":-1}`,
+		`{"total_count":0} {"extra":true}`,
+	} {
+		_, _, err := decodeInstallationRepositories(strings.NewReader(body))
+		assert.Error(t, err, body)
+	}
 }
 
 func TestOAuthVerify_InstallationToken_UsesInstallationEndpoint(t *testing.T) {

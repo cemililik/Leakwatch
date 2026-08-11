@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,8 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-OAuth-Scopes", "user, repo, user")
+		w.Header().Set("GitHub-Authentication-Token-Expiration", "2027-01-02 03:04:05 UTC")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"login":"octocat","id":1}`))
 	}))
@@ -40,6 +43,20 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, "GitHub token is active", result.Message)
 	assert.Equal(t, "octocat", result.ExtraData["login"])
+	assert.Equal(t, "repo,user", result.ExtraData["scopes"])
+	assert.Equal(t, "2", result.ExtraData["scope_count"])
+	assert.Equal(t, "2027-01-02T03:04:05Z", result.ExtraData["expires_at"])
+}
+
+func TestDecodeUserResponse_IgnoresMalformedUntrustedMetadata(t *testing.T) {
+	header := http.Header{
+		"X-Oauth-Scopes":                         []string{"repo, scope with spaces, bad\nvalue"},
+		"Github-Authentication-Token-Expiration": []string{"not-a-date"},
+	}
+	extra, _, err := decodeUserResponse(header, strings.NewReader(`{"login":"octocat"}`))
+	require.NoError(t, err)
+	assert.Equal(t, "repo", extra["scopes"])
+	assert.NotContains(t, extra, "expires_at")
 }
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {

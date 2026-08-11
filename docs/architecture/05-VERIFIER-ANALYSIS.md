@@ -27,7 +27,7 @@ All counts are verified by inspecting `detector.Register(` and `verifier.Registe
 All current verifiers follow a consistent pattern:
 
 - **AWS** (`aws-access-key-id`): Uses STS `GetCallerIdentity` with the key pair (requires both Access Key ID in `Raw` and Secret Access Key in `RawV2`). Returns account/ARN metadata on success.
-- **GitHub** (`github-token`, `github-oauth-token`): GitHub.com and GHES share token formats. Production has no operator-controlled trusted origin yet, so both return `unverified` without a request. With a trusted origin, PAT/`gho_`/`ghu_` use `/user`, `ghs_` uses `/installation/repositories`, and `ghr_` remains unverified because exchange would rotate it.
+- **GitHub** (`github-token`, `github-oauth-token`): GitHub.com and GHES share token formats. Production has no operator-controlled trusted origin yet, so both return `unverified` without a request. With a trusted origin, PAT/`gho_`/`ghu_` use `/user` and validate optional scope/expiry headers, `ghs_` uses `/installation/repositories`, and `ghr_` remains unverified because exchange would rotate it.
 - **Slack** (`slack-token`): HTTP POST to `https://slack.com/api/auth.test` with `Bearer` token. Returns team/user metadata on success.
 
 ## 2. Verifier Classification
@@ -40,11 +40,11 @@ These detectors can be verified with a single HTTP request using only the detect
 
 | # | Detector ID | API Endpoint | Method | Auth Header | Complexity | Priority | Notes |
 |---|-------------|-------------|--------|-------------|------------|----------|-------|
-| 1 | `github-token` | Trusted GitHub.com/GHES `/user` | GET | `Bearer {token}` | Context required | P0 | GitHub.com and GHES share token formats; the operator selects the issuer with the command-line-only `--verifier-origin` flag |
+| 1 | `github-token` | Trusted GitHub.com/GHES `/user` | GET | `Bearer {token}` | Context required | P0 | GitHub.com and GHES share token formats; the operator selects the issuer with the command-line-only `--verifier-origin` flag. Valid optional scope/expiry headers enrich the active result |
 | 2 | `slack-token` | `https://slack.com/api/auth.test` | POST | `Bearer {token}` | Easy | P0 | Returns team/user metadata on success |
 | 3 | `openai-api-key` | `https://api.openai.com/v1/models` | GET | `Bearer {token}` | Easy | P0 | Returns model list; 401 if invalid |
 | 4 | `anthropic-api-key` | `https://api.anthropic.com/v1/models` | GET | `x-api-key: {token}` | Easy | P0 | Requires `anthropic-version` header |
-| 5 | `gitlab-pat` | Operator-trusted GitLab.com/self-managed `/api/v4/user` | GET | `PRIVATE-TOKEN: {token}` | Context required | P0 | Repository content never chooses the origin; the command-line-only `--verifier-origin` flag supplies explicit trust. Only the `glpat-` subtype supports this safe identity probe; a `401` is inactive only with the standard invalid-token JSON body, not a DPoP challenge |
+| 5 | `gitlab-pat` | Operator-trusted GitLab.com/self-managed `/api/v4/user`, then optional `/personal_access_tokens/self` | GET | `PRIVATE-TOKEN: {token}` | Context required | P0 | Repository content never chooses the origin; the command-line-only `--verifier-origin` flag supplies explicit trust. Only the `glpat-` subtype supports the identity probe; self metadata safely enriches scopes/expiry after active proof. A `401` is inactive only with the standard invalid-token JSON body, not a DPoP challenge |
 | 6 | `sendgrid-api-key` | `https://api.sendgrid.com/v3/scopes` | GET | `Bearer {token}` | Easy | P0 | Needs no specific scope, so a restricted-permission key is never misread as revoked; 401 = invalid, other unexpected statuses fall through to a verify error rather than a false negative |
 | 7 | `digitalocean-token` | `https://api.digitalocean.com/v2/account` | GET | `Bearer {token}` | Easy | P0 | Returns account info |
 | 8 | `cloudflare-api-token` | `https://api.cloudflare.com/client/v4/user/tokens/verify` | GET | `Bearer {token}` | Easy | P0 | Dedicated verify endpoint |

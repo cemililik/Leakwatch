@@ -10,3 +10,4 @@ eslint.config.mjs
 package-lock.json
 **/*.ts
 **/*.map
+images/icon.svg

@@ -393,10 +393,9 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			rawFindings := det.Scan(ctx, chunk.Data)
 
 			// Track the search position per raw value so repeated matches of the
-			// same bytes resolve to distinct offsets. Detectors emit findings in
-			// left-to-right match order (regexp.FindAll guarantees this; this
-			// engine-level assumption is documented here because the Detector
-			// interface does not encode it), so the Nth occurrence of a raw value
+			// same bytes resolve to distinct offsets. The Detector interface requires
+			// stable left-to-right output (regexp.FindAll naturally guarantees it),
+			// so the Nth occurrence of a raw value
 			// maps to its Nth position in the chunk. The cursor map is allocated
 			// only when a detector returns more than one finding — the common
 			// zero/one-finding case uses a plain index scan.
@@ -659,7 +658,7 @@ func (e *Engine) rawToFinding(raw detector.RawFinding, chunk source.Chunk, det d
 	}
 
 	if e.config.EnableEntropy && len(raw.Raw) > 0 {
-		f.Entropy = entropy.Calculate(raw.Raw)
+		f.SetEntropy(entropy.Calculate(raw.Raw))
 	}
 
 	// Deterministic ID: detectorID + redacted + filePath + line + offset.

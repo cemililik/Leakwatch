@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- Opt-in Slack text-attachment scanning with Slack-owned HTTPS enforcement,
+  shared request limiting, bounded file size/retries, binary filtering, and
+  file-ID de-duplication.
+- Best-effort GitHub scope/expiration and GitLab PAT scope/expiration metadata
+  after authoritative active verification.
+- A reviewable VSIX artifact, 256×256 Marketplace icon, protected manual VS Code
+  publication workflow, and a scheduled provider-contract freshness gate.
+
+### Changed
+
+- Finding JSON now distinguishes calculated zero entropy from absent entropy and
+  omits an unset detection timestamp; terminal tables use Unicode display width.
+- Detector/verifier registries fail closed on invalid or duplicate registration,
+  matcher results are explicitly stable, and obsolete global custom-rule APIs
+  were removed.
 
 ---
 

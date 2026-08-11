@@ -144,6 +144,45 @@ func TestVerifyToken_Active_Decode_PopulatesExtra(t *testing.T) {
 	assert.Equal(t, "alice", res.ExtraData["name"])
 }
 
+func TestVerifyToken_ResponseDecoderReceivesHeadersAndBoundedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Safe-Metadata", "scope-a")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:    "header-aware",
+		Request: Request{URL: server.URL},
+		DecodeResponse: func(header http.Header, body io.Reader) (map[string]string, string, error) {
+			contents, err := io.ReadAll(body)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"ok":true}`, string(contents))
+			return map[string]string{"scope": header.Get("X-Safe-Metadata")}, "", nil
+		},
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
+	})
+
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "scope-a", result.ExtraData["scope"])
+}
+
+func TestVerifyToken_RejectsMultipleActiveDecoders(t *testing.T) {
+	server := jsonServer(t, http.StatusOK, `{}`)
+	defer server.Close()
+
+	decode := func(io.Reader) (map[string]string, string, error) { return nil, "", nil }
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:           "invalid-contract",
+		Request:        Request{URL: server.URL},
+		Decode:         decode,
+		DecodeResponse: func(http.Header, io.Reader) (map[string]string, string, error) { return nil, "", nil },
+	})
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+}
+
 func TestVerifyToken_Decode_DowngradesToInactive(t *testing.T) {
 	server := jsonServer(t, http.StatusOK, `{"ok":false}`)
 	defer server.Close()

@@ -33,9 +33,11 @@ Verify the CLI is available:
 leakwatch version
 ```
 
-### 2.2 Install from Marketplace / GitHub Releases (Not Yet Available)
+### 2.2 Install a CI-built VSIX
 
-The extension is not yet published to the VS Code Marketplace, and no CI workflow packages or uploads a `.vsix` to GitHub Releases today — `.github/workflows/vscode-ci.yml` only lints, compiles, and tests `vscode/` on every push/PR; it does not run `vsce package` or attach an artifact. Until one of those ships, build the `.vsix` yourself with [§2.3 Build from Source](#23-build-from-source) below.
+The extension is not yet advertised as generally available in the Visual Studio Marketplace. Extension CI does, however, lint, test, package, and upload a reviewable `leakwatch-vsix` workflow artifact. Download the artifact from a trusted workflow run and install it with `code --install-extension leakwatch-<version>.vsix`.
+
+Marketplace publication is experimental and deliberately separate from ordinary CI: `.github/workflows/vscode-release.yml` requires a manual `publish=true` dispatch, approval through the protected `vscode-marketplace` environment, and its environment-scoped `VSCE_PAT`. It publishes the exact VSIX produced and reviewed by the package job; tags do not publish automatically.
 
 ### 2.3 Build from Source
 
@@ -44,14 +46,11 @@ The extension is not yet published to the VS Code Marketplace, and no CI workflo
 git clone https://github.com/HodeTech/Leakwatch.git
 cd Leakwatch/vscode
 
-# Install dependencies
-npm install
-
-# Build for production
-npm run compile
+# Install the lockfile-pinned dependency graph
+npm ci
 
 # Package as VSIX
-npx @vscode/vsce package
+npm run package:vsix
 
 # Install the generated VSIX
 code --install-extension leakwatch-0.1.0.vsix

@@ -6,7 +6,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"text/tabwriter"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/HodeTech/leakwatch/internal/output"
 	"github.com/HodeTech/leakwatch/pkg/finding"
@@ -44,32 +45,20 @@ type Formatter struct {
 // strips control/ANSI-escape bytes so a crafted finding cannot inject
 // terminal escape sequences into the operator's session.
 func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-
-	// Write header.
-	header := "SEVERITY\tDETECTOR\tFILE\tLINE\tREDACTED\tSTATUS\tREMEDIATION"
-	separator := "--------\t--------\t----\t----\t--------\t------\t-----------"
+	headers := []string{"SEVERITY", "DETECTOR", "FILE", "LINE", "REDACTED", "STATUS", "REMEDIATION"}
 	if f.ShowRaw {
-		header += "\tRAW"
-		separator += "\t---"
-	}
-	if _, err := fmt.Fprintln(tw, header); err != nil {
-		return fmt.Errorf("failed to write table header: %w", err)
+		headers = append(headers, "RAW")
 	}
 
-	// Write separator.
-	if _, err := fmt.Fprintln(tw, separator); err != nil {
-		return fmt.Errorf("failed to write table separator: %w", err)
-	}
-
-	// Write rows.
+	rows := make([]tableRow, 0, len(findings))
 	for _, fd := range findings {
 		remediation := "-"
 		if fd.Remediation != nil && fd.Remediation.Title != "" {
 			remediation = fd.Remediation.Title
 		}
 
-		sevText := strings.ToUpper(fd.Severity.String())
+		plainSeverity := strings.ToUpper(fd.Severity.String())
+		sevText := plainSeverity
 		if f.ColorEnabled {
 			sevText = f.colorizeSeverity(fd.Severity, sevText)
 		}
@@ -79,26 +68,23 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 			lineNo = strconv.Itoa(fd.SourceMetadata.Line)
 		}
 
-		line := fmt.Sprintf(
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s",
-			sevText,
-			output.SanitizeForDisplay(fd.DetectorID),
-			output.SanitizeForDisplay(fd.SourceMetadata.FilePath),
-			lineNo,
-			output.SanitizeForDisplay(fd.Redacted),
-			fd.Verification.Status.String(),
-			remediation,
-		)
+		cells := []tableCell{
+			{text: sevText, widthText: plainSeverity},
+			{text: output.SanitizeForDisplay(fd.DetectorID)},
+			{text: output.SanitizeForDisplay(fd.SourceMetadata.FilePath)},
+			{text: lineNo},
+			{text: output.SanitizeForDisplay(fd.Redacted)},
+			{text: fd.Verification.Status.String()},
+			{text: output.SanitizeForDisplay(remediation)},
+		}
 		if f.ShowRaw {
-			line += "\t" + fd.Raw
+			cells = append(cells, tableCell{text: output.SanitizeForDisplay(fd.Raw)})
 		}
-		if _, err := fmt.Fprintln(tw, line); err != nil {
-			return fmt.Errorf("failed to write table row: %w", err)
-		}
+		rows = append(rows, tableRow{cells: cells})
 	}
 
-	if err := tw.Flush(); err != nil {
-		return fmt.Errorf("failed to flush table output: %w", err)
+	if err := writeDisplayWidthTable(w, headers, rows); err != nil {
+		return err
 	}
 
 	// Write summary line.
@@ -111,6 +97,83 @@ func (f *Formatter) Format(w io.Writer, findings []finding.Finding) error {
 	}
 
 	return nil
+}
+
+const columnPadding = 2
+
+type tableCell struct {
+	text      string
+	widthText string
+}
+
+func (c tableCell) displayWidth() int {
+	if c.widthText != "" {
+		return runewidth.StringWidth(c.widthText)
+	}
+	return runewidth.StringWidth(c.text)
+}
+
+type tableRow struct {
+	cells []tableCell
+}
+
+// writeDisplayWidthTable aligns columns by terminal cells, not bytes or rune
+// count. This keeps CJK, emoji, and combining-character paths aligned while
+// allowing ANSI-colored severity text to use its uncolored widthText.
+func writeDisplayWidthTable(w io.Writer, headers []string, rows []tableRow) error {
+	widths := make([]int, len(headers))
+	for index, header := range headers {
+		widths[index] = runewidth.StringWidth(header)
+	}
+	for _, row := range rows {
+		for index, cell := range row.cells {
+			if index < len(widths) && cell.displayWidth() > widths[index] {
+				widths[index] = cell.displayWidth()
+			}
+		}
+	}
+
+	headerCells := make([]tableCell, len(headers))
+	separatorCells := make([]tableCell, len(headers))
+	for index, header := range headers {
+		headerCells[index] = tableCell{text: header}
+		separatorCells[index] = tableCell{text: strings.Repeat("-", widths[index])}
+	}
+	if err := writeTableRow(w, tableRow{cells: headerCells}, widths); err != nil {
+		return fmt.Errorf("failed to write table header: %w", err)
+	}
+	if err := writeTableRow(w, tableRow{cells: separatorCells}, widths); err != nil {
+		return fmt.Errorf("failed to write table separator: %w", err)
+	}
+	for _, row := range rows {
+		if err := writeTableRow(w, row, widths); err != nil {
+			return fmt.Errorf("failed to write table row: %w", err)
+		}
+	}
+	return nil
+}
+
+func writeTableRow(w io.Writer, row tableRow, widths []int) error {
+	for index, cell := range row.cells {
+		if index > 0 {
+			if _, err := io.WriteString(w, strings.Repeat(" ", columnPadding)); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(w, cell.text); err != nil {
+			return err
+		}
+		if index < len(row.cells)-1 {
+			padding := widths[index] - cell.displayWidth()
+			if padding > 0 {
+				if _, err := io.WriteString(w, strings.Repeat(" ", padding)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
 }
 
 // colorizeSeverity wraps the severity text with the appropriate ANSI color code.

@@ -1,14 +1,14 @@
 ---
 title: "Slack Çalışma Alanı"
-description: "Slack kanal ve DM mesaj metinlerini sızan sırlara karşı tarayın."
+description: "Slack mesajlarını ve isteğe bağlı metin eklerini sızan sırlara karşı tarayın."
 ---
 
 # Slack Çalışma Alanı
 
-Geliştiriciler çoğu zaman kimlik bilgilerini sohbet üzerinden paylaşır — hızlı bir test için bir kanala yapıştırılan token, DM ile gönderilen parola ya da bir olay başlığında söz edilen API anahtarı. `leakwatch scan slack`, Slack çalışma alanınızdaki mesaj metinlerini okur ve bulduğu sırları işaretler.
+Geliştiriciler çoğu zaman kimlik bilgilerini sohbet üzerinden paylaşır — hızlı bir test için bir kanala yapıştırılan token, DM ile gönderilen parola ya da olay başlığına yüklenen bir yapılandırma dosyası. `leakwatch scan slack`, Slack çalışma alanınızdaki mesaj metinlerini ve açıkça etkinleştirildiğinde metin benzeri dosya eklerini okur.
 
-:::warn
-Leakwatch yalnızca **mesaj metnini** tarar. Yüklenen dosyaların (ekler, snippet'ler) içeriğini taramak uygulanmamıştır. Yalnızca mesajların metin gövdesi analiz edilir.
+:::note
+Dosya eki taraması isteğe bağlıdır. `--include-files` kullanın ve `files:read` kapsamını verin; bayrak olmadan Leakwatch hiçbir eki indirmez.
 :::
 
 ## Temel kullanım
@@ -38,6 +38,7 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 | `groups:history` | Botun katıldığı özel kanallardaki mesajları oku. |
 | `im:history` | Doğrudan mesajları oku (yalnızca `--include-dms` ile gerekli). |
 | `mpim:history` | Grup doğrudan mesajlarını oku (yalnızca `--include-dms` ile gerekli). |
+| `files:read` | Dosya meta verisini ve içeriğini oku (yalnızca `--include-files` ile gerekli). |
 
 ## Bayraklar
 
@@ -50,7 +51,8 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 | `--exclude-channels` | string | — | Atlanacak kanal adlarının virgülle ayrılmış listesi. |
 | `--since` | string (YYYY-MM-DD) | — | Bu tarihte veya sonrasında gönderilen mesajları tara. |
 | `--include-dms` | bool | `false` | Doğrudan mesajları ve grup DM'lerini de tara. |
-| `--rate-limit` | float | `1` | Saniye başına maksimum Slack API istek sayısı. |
+| `--include-files` | bool | `false` | Boyutu sınırlı metin benzeri dosya eklerini indir ve tara. `files:read` gerektirir. |
+| `--rate-limit` | float | `1/60` | Saniye başına maksimum Slack API istek sayısı (dakikada bir). Yalnız uygulamanın yayımlanmış Slack katmanı izin veriyorsa artırın. |
 
 ### Ortak tarama bayrakları
 
@@ -59,7 +61,7 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 | `--format` | `-f` | `json` | Çıktı biçimi: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Sonuçları stdout yerine bu dosyaya yaz. |
 | `--concurrency` | `-c` | CPU sayısı | Eşzamanlı çalışan sayısı. |
-| `--max-file-size` | — | `10485760` (10 MB) | Dahili parça boyutu sınırı (bayt). |
+| `--max-file-size` | — | `10485760` (10 MB) | Tarama için belleğe alınan en büyük ek boyutu (bayt). |
 | `--show-raw` | — | `false` | Çıktıda ham sır değerini göster. |
 | `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri. Tekrarlanabilir; `filter.exclude-detectors` ile birleştirilir. |
 | `--no-verify` | — | `false` | Sır doğrulamasını devre dışı bırak. |
@@ -94,10 +96,18 @@ leakwatch scan slack \
   --include-dms
 ```
 
-Büyük çalışma alanlarında Slack hız sınırı hatalarını önlemek için API istek hızını düşürün:
+Dosya başına bellek sınırını düşürerek metin benzeri ekleri dahil edin:
 
 ```bash
-leakwatch scan slack --rate-limit 10 --format table
+leakwatch scan slack \
+  --include-files \
+  --max-file-size 5242880
+```
+
+API istek hızını yalnız yayımlanmış katmanı izin veren Marketplace/dahili bir uygulama için artırın:
+
+```bash
+leakwatch scan slack --rate-limit 0.8 --format table
 ```
 
 Yalnızca doğrulanmış aktif bulguları bir JSON dosyasına kaydedin:
@@ -120,12 +130,15 @@ Slack taramasından elde edilen her bulgu mesaj ve kanal meta verisi içerir:
 | `message_user` | Mesaj yazarının Slack kullanıcı kimliği. Slack bulguları için `author` alanı yoktur. |
 | `message_ts` | Slack mesaj zaman damgası (benzersiz mesaj kimliği). |
 | `thread_ts` | Yalnızca bulgu bir ileti dizisi yanıtındaysa bulunan, üst mesajın zaman damgası. |
+| `file_path` | Ekten gelen bulgularda bulunan sentetik `slack/<kanal>/<dosya-adı>` yolu. |
 
 ## Performans değerlendirmeleri
 
-Slack API istekleri, Slack tarafından uygulanan hız sınırlarına tabidir. `--rate-limit` bayrağı (varsayılan saniyede `1` istek), Leakwatch'ın istekleri ne kadar agresif yapacağını kontrol eder. Cömert hız sınırlarına sahip bir çalışma alanında daha hızlı bir tarama için dikkatli bir şekilde artırın, ya da `429 Too Many Requests` hatası görüyorsanız daha da düşürün.
+Slack API istekleri yöntem ve dağıtım modeline özgü hız sınırlarına tabidir. `--rate-limit`, yeni dağıtılan Marketplace dışı uygulamalar için Slack'in yayımladığı en düşük `conversations.history` sınırıyla uyumlu olarak varsayılan dakikada bir istektir. Tier 3 erişimli Marketplace/dahili uygulamalar bunu bilinçli olarak artırabilir.
 
 Slack `429 Too Many Requests` ile yanıt verdiğinde, Leakwatch `Retry-After` başlığına otomatik olarak uyar ve taramayı tamamen başarısız kılmak yerine isteği yeniden dener.
+
+Ek indirmeleri aynı istek sınırlayıcıyı paylaşır. Leakwatch yalnız Slack'e ait HTTPS indirme URL'lerini kabul eder, en fazla `--max-file-size` kadar veri tutar, ikili/NUL içeren içeriği atlar ve aynı Slack dosya kimliğini mesajlar arasında tekilleştirir.
 
 Her çalıştırmada tüm çalışma alanını taramak yerine belirli kanalları hedeflemek için `--channels` kullanın. Mesajları artımlı biçimde taramak için `--since` ile birleştirin.
 

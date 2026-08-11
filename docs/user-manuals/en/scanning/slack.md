@@ -1,14 +1,14 @@
 ---
 title: "Slack Workspace"
-description: "Scan Slack channel and DM message text for leaked secrets."
+description: "Scan Slack messages and opt-in text attachments for leaked secrets."
 ---
 
 # Slack Workspace
 
-Developers frequently share credentials in chat — a token pasted into a channel for a quick test, a password sent in a DM, or an API key mentioned in an incident thread. `leakwatch scan slack` reads message text across your Slack workspace and flags any secrets it finds.
+Developers frequently share credentials in chat — a token pasted into a channel for a quick test, a password sent in a DM, or a configuration file uploaded to an incident thread. `leakwatch scan slack` reads message text across your Slack workspace and, when explicitly enabled, text-like file attachments.
 
-:::warn
-Leakwatch scans **message text only**. Scanning the contents of uploaded files (attachments, snippets) is not implemented. Only the text body of messages is analysed.
+:::note
+File attachment scanning is opt-in. Use `--include-files` and grant `files:read`; without the flag, Leakwatch downloads no attachments.
 :::
 
 ## Basic usage
@@ -38,6 +38,7 @@ The bot token must be associated with a Slack app that has the following OAuth s
 | `groups:history` | Read messages in private channels the bot has joined. |
 | `im:history` | Read direct messages (required only with `--include-dms`). |
 | `mpim:history` | Read group direct messages (required only with `--include-dms`). |
+| `files:read` | Read file metadata and contents (required only with `--include-files`). |
 
 ## Flags
 
@@ -50,7 +51,8 @@ The bot token must be associated with a Slack app that has the following OAuth s
 | `--exclude-channels` | string | — | Comma-separated list of channel names to skip. |
 | `--since` | string (YYYY-MM-DD) | — | Scan messages posted on or after this date. |
 | `--include-dms` | bool | `false` | Also scan direct messages and group DMs. |
-| `--rate-limit` | float | `1` | Maximum Slack API requests per second. |
+| `--include-files` | bool | `false` | Download and scan bounded text-like file attachments. Requires `files:read`. |
+| `--rate-limit` | float | `1/60` | Maximum Slack API requests per second (one request/minute). Raise only when the app's published Slack tier permits it. |
 
 ### Common scan flags
 
@@ -59,7 +61,7 @@ The bot token must be associated with a Slack app that has the following OAuth s
 | `--format` | `-f` | `json` | Output format: `json`, `sarif`, `csv`, `table`, `github`. |
 | `--output` | `-o` | stdout | Write results to this file instead of stdout. |
 | `--concurrency` | `-c` | CPU count | Number of concurrent workers. |
-| `--max-file-size` | — | `10485760` (10 MB) | Internal chunk size limit (bytes). |
+| `--max-file-size` | — | `10485760` (10 MB) | Maximum attachment size buffered for scanning, in bytes. |
 | `--show-raw` | — | `false` | Include the raw secret value in output. |
 | `--exclude-detectors` | — | — | Detector IDs to exclude for this run. Repeatable; combined with `filter.exclude-detectors`. |
 | `--no-verify` | — | `false` | Disable secret verification. |
@@ -94,10 +96,18 @@ leakwatch scan slack \
   --include-dms
 ```
 
-Reduce the API request rate to avoid Slack rate-limit errors on large workspaces:
+Include text-like file attachments while lowering the per-file memory bound:
 
 ```bash
-leakwatch scan slack --rate-limit 10 --format table
+leakwatch scan slack \
+  --include-files \
+  --max-file-size 5242880
+```
+
+Raise the API request rate only for a Marketplace/internal app whose published tier permits it:
+
+```bash
+leakwatch scan slack --rate-limit 0.8 --format table
 ```
 
 Save only verified active findings to a JSON file:
@@ -120,12 +130,15 @@ Each finding from a Slack scan includes message and channel metadata:
 | `message_user` | Slack user ID of the message author. There is no `author` field for Slack findings. |
 | `message_ts` | Slack message timestamp (unique message ID). |
 | `thread_ts` | Timestamp of the parent message, present only when the finding is in a threaded reply. |
+| `file_path` | Synthetic `slack/<channel>/<filename>` path, present for findings from an attachment. |
 
 ## Performance considerations
 
-Slack API requests are subject to rate limits enforced by Slack. The `--rate-limit` flag (default `1` request/second) controls how aggressively Leakwatch makes requests. Raise it cautiously for a faster scan on a workspace with generous rate limits, or lower it further if you see `429 Too Many Requests` errors.
+Slack API requests are subject to method- and distribution-specific limits. The `--rate-limit` flag defaults to one request/minute, matching Slack's lowest published `conversations.history` limit for newly distributed non-Marketplace apps. Marketplace/internal apps with Tier 3 access can raise it deliberately.
 
 When Slack responds with `429 Too Many Requests`, Leakwatch automatically honors the `Retry-After` header and retries the request rather than failing the scan outright.
+
+Attachment downloads share the same request limiter. Leakwatch accepts only Slack-owned HTTPS download URLs, buffers at most `--max-file-size`, skips binary/NUL-containing content, and de-duplicates the same Slack file ID across messages.
 
 Use `--channels` to target specific channels rather than scanning the entire workspace on every run. Combine with `--since` to scan only recent messages incrementally.
 

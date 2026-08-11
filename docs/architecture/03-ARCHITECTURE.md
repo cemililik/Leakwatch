@@ -271,8 +271,8 @@ type Finding struct {
     Severity   Severity  `json:"severity"`
 
     // Secret data
-    Raw      string `json:"raw,omitempty"`     // Only with --show-raw
-    Redacted string `json:"redacted"`           // Masked
+    Raw      string `json:"-"`        // Dedicated opt-in wire type only
+    Redacted string `json:"redacted"` // Masked
 
     // Location
     SourceMetadata SourceMetadata `json:"source"`
@@ -281,14 +281,18 @@ type Finding struct {
     Verification VerificationResult `json:"verification"`
 
     // Timestamp
-    DetectedAt time.Time `json:"detected_at"`
+    DetectedAt time.Time `json:"detected_at,omitempty"` // Custom marshal omits zero
 
     // Entropy
-    Entropy float64 `json:"entropy,omitempty"`
+    Entropy           float64 `json:"entropy,omitempty"`
+    EntropyCalculated bool    `json:"-"` // Preserves a calculated 0.0 on the wire
 
     // Additional context
-    ExtraData map[string]string `json:"extra_data,omitempty"`
+    ExtraData map[string]string `json:"-"` // Dedicated opt-in wire type only
 }
+
+// SetEntropy marks a value as calculated, including a legitimate 0.0.
+func (f *Finding) SetEntropy(value float64)
 
 // Severity represents the finding severity level.
 type Severity int
@@ -300,6 +304,11 @@ const (
     SeverityCritical
 )
 ```
+
+The custom JSON contract omits absent entropy and zero `DetectedAt`, but emits a
+legitimately calculated entropy of `0.0`. `Raw` and `ExtraData` remain
+type-level excluded; the JSON formatter's explicit `--show-raw` wire type is the
+only path that can add them.
 
 ---
 

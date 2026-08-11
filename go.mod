@@ -13,6 +13,7 @@ require (
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/google/go-containerregistry v0.21.3
+	github.com/mattn/go-runewidth v0.0.27
 	github.com/slack-go/slack v0.20.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -21,6 +22,8 @@ require (
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.289.0
 )
+
+require github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 
 require (
 	cel.dev/expr v0.25.1 // indirect

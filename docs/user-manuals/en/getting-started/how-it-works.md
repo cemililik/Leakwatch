@@ -33,10 +33,10 @@ Every scan starts with a **Source** — an abstraction that emits chunks of data
 | Container image | `scan image` | Layer contents of an OCI/Docker image, daemonless |
 | AWS S3 | `scan s3` | Object contents from an S3 bucket |
 | Google Cloud Storage | `scan gcs` | Object contents from a GCS bucket |
-| Slack | `scan slack` | Message text from channels and DMs |
+| Slack | `scan slack` | Message text from channels/DMs and opt-in text-like attachments |
 
 :::note
-Slack scanning covers **message text only**. The contents of files uploaded to Slack are not scanned.
+Slack downloads no files by default. `--include-files` enables bounded scanning of text-like attachments and requires Slack's `files:read` scope.
 :::
 
 Chunks flow into a buffered channel consumed by the worker pool.

@@ -28,6 +28,7 @@ const (
 )
 
 type retryGateKey struct{}
+
 type requestGateKey struct{}
 
 // RequestGate is installed by the verification engine for standard httpx
@@ -88,6 +89,12 @@ type Request struct {
 // The reader passed to a DecodeFunc is already bounded by LimitReader.
 type DecodeFunc func(body io.Reader) (extra map[string]string, downgradeMessage string, err error)
 
+// ResponseDecodeFunc is the header-aware counterpart to DecodeFunc. It is for
+// provider metadata that is available only in response headers (for example
+// GitHub OAuth scopes and token expiry). Header values are untrusted provider
+// input and must never be copied wholesale into ExtraData.
+type ResponseDecodeFunc func(header http.Header, body io.Reader) (extra map[string]string, downgradeMessage string, err error)
+
 // InactiveDecodeFunc validates that an inactive-status response is definitive
 // for the provider. A nil error permits verified-inactive; an error keeps the
 // outcome fail-conservative as StatusVerifyError. It is intended for providers
@@ -139,6 +146,11 @@ type TokenSpec struct {
 	// extract ExtraData (and optionally downgrade the result). When nil, an
 	// active-status response yields a bare active result without reading the body.
 	Decode DecodeFunc
+
+	// DecodeResponse is mutually exclusive with Decode and receives both the
+	// active response headers and bounded body. Use it only for explicitly
+	// validated, non-secret provider metadata.
+	DecodeResponse ResponseDecodeFunc
 
 	// DecodeInactive, when non-nil, must positively validate an inactive-status
 	// response body before the credential is classified as inactive. The body is
@@ -239,7 +251,7 @@ func (spec TokenSpec) handleResponse(ctx context.Context, resp *http.Response) f
 				Message: "200 OK but response Content-Type is not JSON",
 			}
 		}
-		return spec.handleActive(ctx, resp.Body)
+		return spec.handleActive(ctx, resp)
 	case containsStatus(spec.inactiveStatuses(), code):
 		return spec.handleInactive(ctx, resp)
 	case code == http.StatusTooManyRequests:
@@ -444,8 +456,14 @@ func redactTransportError(err error, secrets ...string) string {
 
 // handleActive maps an active-status response to a result, decoding the body for
 // ExtraData (and any downgrade) when a DecodeFunc is configured.
-func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.VerificationResult {
-	if spec.Decode == nil {
+func (spec TokenSpec) handleActive(ctx context.Context, resp *http.Response) finding.VerificationResult {
+	if spec.Decode != nil && spec.DecodeResponse != nil {
+		return finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: "verification contract configured multiple active response decoders",
+		}
+	}
+	if spec.Decode == nil && spec.DecodeResponse == nil {
 		slog.InfoContext(ctx, spec.Name+" verifier: secret is active")
 		return finding.VerificationResult{
 			Status:    finding.StatusVerifiedActive,
@@ -454,9 +472,9 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		}
 	}
 
-	decodeBody := LimitReader(body)
+	decodeBody := LimitReader(resp.Body)
 	if spec.RequireCompleteBody {
-		contents, err := io.ReadAll(io.LimitReader(body, MaxBodyBytes+1))
+		contents, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
 		if err != nil {
 			return finding.VerificationResult{
 				Status:  finding.StatusVerifyError,
@@ -472,7 +490,14 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		decodeBody = bytes.NewReader(contents)
 	}
 
-	extra, downgrade, err := spec.Decode(decodeBody)
+	var extra map[string]string
+	var downgrade string
+	var err error
+	if spec.DecodeResponse != nil {
+		extra, downgrade, err = spec.DecodeResponse(resp.Header.Clone(), decodeBody)
+	} else {
+		extra, downgrade, err = spec.Decode(decodeBody)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to decode response", slog.String("error", err.Error()))
 		return finding.VerificationResult{

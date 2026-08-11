@@ -108,34 +108,6 @@ func (d *CustomDetector) Scan(_ context.Context, data []byte) []detector.RawFind
 	return findings
 }
 
-// RegisterCustomRules parses RuleDefs, creates detectors, and registers them.
-// Returns the count of successfully registered rules and any errors.
-//
-// A rule whose ID collides with an already-registered detector (a built-in
-// detector or a previously registered custom rule) is skipped with an error
-// rather than registered, because detector.Register panics on duplicate IDs.
-func RegisterCustomRules(rules []RuleDef) (int, []error) {
-	var errs []error
-	count := 0
-
-	for _, def := range rules {
-		det, err := NewFromDef(def)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		// RegisterIfAbsent checks-and-inserts atomically, so a colliding ID is
-		// rejected without the panic that detector.Register would raise.
-		if !detector.RegisterIfAbsent(det) {
-			errs = append(errs, fmt.Errorf("custom rule %q: ID already registered (built-in detector or duplicate custom rule)", det.ID()))
-			continue
-		}
-		count++
-	}
-
-	return count, errs
-}
-
 // parseSeverity converts a rule's YAML severity string into a finding.Severity.
 // The second return value is false when s is a non-empty string that does not
 // match one of the four recognized (lowercase, exact) severity names; callers

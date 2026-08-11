@@ -52,6 +52,10 @@ leakwatch scan fs ./src --format json --output findings.json
 
 `id` is a deterministic, truncated SHA-256 rendered as a flat 32-character lowercase hex string — it is **not** a UUID and never contains dashes. See [How It Works](#/getting-started/how-it-works) for how it is computed.
 
+`entropy` is omitted when it was not calculated; a calculated value of `0.0` is emitted as zero. `detected_at` is omitted for library-created findings that have no timestamp instead of emitting Go's year-1 zero time. Normal CLI findings set the timestamp.
+
+Provider-validated identity, scope, and expiry metadata appears under `verification.extra_data` when available. Values are bounded and schema-validated; absence means the provider did not supply safe metadata, not that the token has no permissions or expiry.
+
 When `--remediation` is also set, a `"remediation"` object is nested inside each finding. See [Remediation Guidance](#/output/remediation).
 
 ## SARIF
@@ -110,7 +114,7 @@ e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws
 
 ## Table
 
-The `table` format writes a human-readable tab-aligned table, best suited for interactive terminal sessions where you want a quick visual scan of the results.
+The `table` format writes a human-readable terminal-cell-aligned table, including correct display width for CJK, combining marks, and emoji. It is best suited for interactive terminal sessions where you want a quick visual scan of the results.
 
 **Columns:**
 

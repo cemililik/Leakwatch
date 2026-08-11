@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -78,29 +82,101 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		},
 		ActiveMessage:          "GitHub token is active",
 		InactiveMessage:        "GitHub token is invalid or revoked",
-		Decode:                 decodeUser,
+		DecodeResponse:         decodeUserResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
 }
 
+// decodeUserResponse parses the required identity body and enriches classic PAT
+// findings with the provider's documented OAuth-scope and token-expiry response
+// headers. Fine-grained tokens may omit X-OAuth-Scopes; absence is not an error.
+func decodeUserResponse(header http.Header, body io.Reader) (map[string]string, string, error) {
+	extra, downgrade, err := decodeUser(body)
+	if err != nil {
+		return nil, "", err
+	}
+	if scopes := normalizedScopes(header.Get("X-OAuth-Scopes")); len(scopes) > 0 {
+		extra["scopes"] = strings.Join(scopes, ",")
+		extra["scope_count"] = strconv.Itoa(len(scopes))
+	}
+	if expiresAt, ok := normalizedGitHubExpiry(header.Get("GitHub-Authentication-Token-Expiration")); ok {
+		extra["expires_at"] = expiresAt
+	}
+	return extra, downgrade, nil
+}
+
 // decodeUser parses the GitHub API response for a valid token.
-//
-// Enhancement note: a classic PAT's granted scopes are exposed by GitHub in
-// the X-OAuth-Scopes response header, not the body, and would be valuable
-// triage signal (a repo-scoped token is materially more critical than a
-// read:user-scoped one). Surfacing it requires httpx.DecodeFunc to receive
-// the response headers, which it currently does not (body-only) — that is a
-// change to internal/verifier/internal/httpx, outside this package.
 func decodeUser(body io.Reader) (map[string]string, string, error) {
 	var user struct {
 		Login string `json:"login"`
 	}
-	if err := json.NewDecoder(body).Decode(&user); err != nil {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&user); err != nil {
 		return nil, "", err
 	}
+	user.Login = strings.TrimSpace(user.Login)
 	if user.Login == "" {
 		return nil, "", fmt.Errorf("missing GitHub user login")
 	}
+	if err := requireGitHubJSONEOF(decoder); err != nil {
+		return nil, "", err
+	}
 	return map[string]string{"login": user.Login}, "", nil
+}
+
+func requireGitHubJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("GitHub response contains trailing JSON values")
+		}
+		return fmt.Errorf("invalid trailing GitHub response: %w", err)
+	}
+	return nil
+}
+
+func normalizedScopes(raw string) []string {
+	if len(raw) > 4096 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, candidate := range strings.Split(raw, ",") {
+		scope := strings.TrimSpace(candidate)
+		if scope == "" || len(scope) > 64 || !isSafeScope(scope) {
+			continue
+		}
+		seen[scope] = struct{}{}
+		if len(seen) >= 128 {
+			break
+		}
+	}
+	scopes := make([]string, 0, len(seen))
+	for scope := range seen {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
+func isSafeScope(scope string) bool {
+	for _, char := range scope {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == ':' || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizedGitHubExpiry(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05 MST"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC().Format(time.RFC3339), true
+		}
+	}
+	return "", false
 }

@@ -68,10 +68,12 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw detector.RawFinding) fin
 	}
 	apiURL := v.apiURL
 	path := "/user"
-	decode := decodeUser
+	var decode httpx.DecodeFunc
+	var decodeResponse httpx.ResponseDecodeFunc
 	switch {
 	case strings.HasPrefix(token, "gho_"), strings.HasPrefix(token, "ghu_"):
 		// OAuth and GitHub App user access tokens authenticate a user.
+		decodeResponse = decodeUserResponse
 	case strings.HasPrefix(token, "ghs_"):
 		// Installation tokens do not support GET /user. This endpoint is a
 		// read-only identity-safe probe and works even when the installation has
@@ -104,6 +106,7 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw detector.RawFinding) fin
 		ActiveMessage:          "GitHub OAuth or installation token is active",
 		InactiveMessage:        "GitHub OAuth or installation token is invalid or revoked",
 		Decode:                 decode,
+		DecodeResponse:         decodeResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
@@ -113,10 +116,14 @@ func decodeInstallationRepositories(body io.Reader) (map[string]string, string, 
 	var response struct {
 		TotalCount *int `json:"total_count"`
 	}
-	if err := json.NewDecoder(body).Decode(&response); err != nil {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
 		return nil, "", err
 	}
-	if response.TotalCount == nil {
+	if err := requireGitHubJSONEOF(decoder); err != nil {
+		return nil, "", err
+	}
+	if response.TotalCount == nil || *response.TotalCount < 0 {
 		return nil, "", fmt.Errorf("missing GitHub installation repository count")
 	}
 	return map[string]string{"token_subtype": "ghs"}, "", nil

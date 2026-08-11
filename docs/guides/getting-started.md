@@ -279,7 +279,7 @@ leakwatch scan repos https://github.com/org/repo1 https://github.com/org/repo2 -
 
 ### 4.7 Slack Workspace Scan (`scan slack`)
 
-Scans message text across channels in a Slack workspace for leaked secrets. (Scanning of uploaded files is planned but not yet implemented.)
+Scans message text across channels in a Slack workspace for leaked secrets. Add `--include-files` (and Slack's `files:read` scope) to scan bounded text-like attachments.
 
 ```bash
 # Scan a Slack workspace

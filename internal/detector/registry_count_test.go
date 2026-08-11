@@ -10,9 +10,8 @@ package detector_test
 //   - 65 detectors registered at compile time via init() (detector.Register).
 //   - 59 packages register statically; azure, github, slack, stripe, discord
 //     and generic each register two detectors (59 + 6 = 65).
-//   - 60 detector subpackages exist in total; the 60th, "custom", registers its
-//     rules at runtime (detector.RegisterIfAbsent) and is therefore not part of
-//     the compile-time count.
+//   - 60 detector subpackages exist in total; the 60th, "custom", is compiled
+//     into the per-scan detector slice and never mutates this global registry.
 //
 // If you add or remove a detector, update internal/meta.Detectors (the single
 // source of truth for the published count) and keep the blank-import block in

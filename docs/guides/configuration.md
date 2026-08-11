@@ -255,7 +255,7 @@ leakwatch scan slack \
   --channels "engineering,devops" \
   --exclude-channels "random" \
   --since "2026-01-01" \
-  --rate-limit 20 \
+  --rate-limit 0.8 \
   --min-severity medium
 ```
 
@@ -266,8 +266,8 @@ leakwatch scan slack \
 | `--exclude-channels` | none | Comma-separated channel names to skip |
 | `--since` | none | Scan messages posted after this date (`YYYY-MM-DD`) |
 | `--include-dms` | `false` | Scan direct messages (requires `im:history` / `mpim:history` scopes) |
-| `--include-files` | `false` | **Not yet implemented** (planned). Deprecated and hidden; has no effect — only message text is scanned |
-| `--rate-limit` | `20` | Maximum Slack API requests per second |
+| `--include-files` | `false` | Download and scan bounded text-like attachments; requires Slack `files:read` |
+| `--rate-limit` | `1/60` (~`0.0167`) | Maximum Slack API requests per second; raise only for a Marketplace/internal app with a higher published tier |
 
 > **Security note:** Always provide the Slack token via the `LEAKWATCH_SLACK_TOKEN` environment variable rather than the `--token` flag in automated environments, to avoid token exposure in process listings or CI logs.
 

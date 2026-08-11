@@ -15,12 +15,17 @@ import (
 
 func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v4/user", r.URL.Path)
 		assert.NotEmpty(t, r.Header.Get("PRIVATE-TOKEN"))
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":1,"username":"johndoe","name":"John Doe"}`))
+		switch r.URL.Path {
+		case "/api/v4/user":
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe","name":"John Doe"}`))
+		case "/api/v4/personal_access_tokens/self":
+			_, _ = w.Write([]byte(`{"active":true,"revoked":false,"scopes":["read_api","api","api"],"expires_at":"2027-02-03"}`))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
@@ -40,6 +45,48 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, "GitLab token is active", result.Message)
 	assert.Equal(t, "johndoe", result.ExtraData["username"])
+	assert.Equal(t, "api,read_api", result.ExtraData["scopes"])
+	assert.Equal(t, "2", result.ExtraData["scope_count"])
+	assert.Equal(t, "2027-02-03", result.ExtraData["expires_at"])
+}
+
+func TestVerifyWithRequestGate_MetadataFailureDoesNotEraseProvenActiveIdentity(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v4/user" {
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"404 Not Found"}`))
+	}))
+	defer server.Close()
+
+	admissions := 0
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).VerifyWithRequestGate(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+		func() *finding.VerificationResult { admissions++; return nil },
+	)
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, 2, requests)
+	assert.Equal(t, 2, admissions)
+}
+
+func TestVerifyWithRequestGate_RejectionPreventsAnyRequest(t *testing.T) {
+	called := false
+	v := &Verifier{apiURL: "https://trusted.example", httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, assert.AnError
+	})}}
+	rejection := finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+	result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+		Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab"),
+	}, func() *finding.VerificationResult { return &rejection })
+	assert.Equal(t, rejection, result)
+	assert.False(t, called)
 }
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {

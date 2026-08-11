@@ -223,6 +223,21 @@ func TestFormatter_Format_ShowRawTrue_OmitsExtraDataWhenNil(t *testing.T) {
 	assert.False(t, hasExtraData, "extra_data should be omitted when nil, even with ShowRaw=true")
 }
 
+func TestFormatter_Format_ShowRaw_PreservesNullableFindingFields(t *testing.T) {
+	formatted := finding.Finding{ID: "computed-zero", Raw: "synthetic-secret"}
+	formatted.SetEntropy(0)
+
+	var buf bytes.Buffer
+	require.NoError(t, (&Formatter{ShowRaw: true}).Format(&buf, []finding.Finding{formatted}))
+
+	var output []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &output))
+	require.Len(t, output, 1)
+	assert.NotContains(t, output[0], "detected_at")
+	assert.Equal(t, float64(0), output[0]["entropy"])
+	assert.Equal(t, "synthetic-secret", output[0]["raw"])
+}
+
 func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 	f := &Formatter{ShowRaw: false}
 	var buf bytes.Buffer

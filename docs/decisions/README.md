@@ -31,3 +31,4 @@ Each ADR follows the structure below:
 | [ADR-0008](ADR-0008-concurrency-model.md) | Concurrency: Worker Pool | Accepted | 2026-03-24 |
 | [ADR-0009](ADR-0009-github-marketplace-action.md) | GitHub Marketplace Action: Location & Runtime | Accepted | 2026-05-24 |
 | [ADR-0010](ADR-0010-entropy-gating-policy.md) | Entropy Gating Policy | Accepted | 2026-08-11 |
+| [ADR-0011](ADR-0011-product-trust-boundaries.md) | Product Enhancement Trust Boundaries | Accepted | 2026-08-11 |

@@ -36,6 +36,8 @@ file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.
   output-buffer overflow.
 - ESLint flat config, unit tests (Node test runner) for the parsing and
   path-resolution helpers, and a committed `package-lock.json`.
+- A 256×256 Marketplace icon, lockfile-pinned VSIX packaging command, CI package
+  artifact, and a protected manual Marketplace publishing workflow.
 
 ## [0.1.0]
 

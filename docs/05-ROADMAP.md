@@ -42,6 +42,21 @@
 - **Secret-safe output and transport** — raw credentials are excluded from default output and logs; panic, URL, terminal, CSV, container, and editor trust boundaries were hardened
 - **Quality and supply-chain gates** — detector coverage, website drift, VS Code, Windows build, SBOM/signing, security scanning, and dependency/toolchain checks were strengthened
 
+### Post-v1.7.0 hardening-wave status
+
+| Product capability | Status | Delivery boundary |
+|---|---|---|
+| Slack text-file attachments | **Shipped** | Explicit `--include-files`, bounded text-only downloads from Slack-owned HTTPS endpoints |
+| GitHub/GitLab scope and expiry metadata | **Shipped** | Best-effort metadata after authoritative active verification |
+| VSIX build and Marketplace icon | **Shipped** | Lockfile-pinned CI package and reviewable artifact |
+| Visual Studio Marketplace publication | **Experimental** | Manual, protected-environment promotion only |
+| Provider contract freshness audit | **Shipped** | Primary references plus weekly 180-day gate |
+| Baseline/snapshot suppression | **Planned** | HMAC-keyed design and threat model in ADR-0011; no current CLI surface |
+| Coinbase legacy live HMAC verification | **Planned** | Format-only until unambiguous pair correlation and safe provider proof exist |
+| Live provider canaries | **Planned** | Provider-specific, secret-safe protected opt-in; never default CI |
+
+See [ADR-0011](decisions/ADR-0011-product-trust-boundaries.md) for the trust boundaries and acceptance requirements behind these labels.
+
 ### v1.6.0 Highlights
 
 - **GitHub Marketplace Action** — `uses: HodeTech/Leakwatch@v1`. Composite action that installs a prebuilt, checksum-verified binary (no Go toolchain), runs a scan, maps exit codes, writes a job summary, supports PR-diff scanning (`scan-diff`), and can upload SARIF to Code Scanning. Linux & macOS runners.
@@ -544,7 +559,7 @@ GitHub Release published with `v1.10.0` tag.
 | `scan confluence` command | Critical | Space filtering, attachment scanning |
 | `scan jira` command | Critical | Project filtering, JQL support |
 | Org-scale repository enumeration | High | Scan every repository (and its history) under an organization/group via the hosting API, instead of a single local/remote repo at a time |
-| Slack file content scanning | Medium | Fetch and scan file attachments via the Files API, completing the `--include-files` flag that is currently accepted but a no-op |
+| Slack file content scanning | Delivered after `v1.7.0` | Fetch and scan bounded text-like attachments via the Files API when `--include-files` is set |
 | SourceMetadata fields | High | Space, page, issue key, org/repo context in findings |
 | Additional platform sources | Low | API-collection platforms, CI systems, and search clusters as demand warrants |
 | Tests | High | `httptest.NewServer` mocks |
@@ -557,7 +572,7 @@ GitHub Release published with `v1.10.0` tag.
 - [ ] Both Cloud and Server editions supported
 - [ ] HTML content properly extracted from Confluence storage format
 - [ ] An entire organization's repositories can be enumerated and scanned from a single command
-- [ ] Slack file attachments are fetched and scanned when `--include-files` is set
+- [x] Slack file attachments are fetched and scanned when `--include-files` is set (post-`v1.7.0` hardening wave)
 
 ### Exit Criteria
 
@@ -646,7 +661,7 @@ Earlier reviews recorded behaviors that the documentation or public interface pr
 | Unbounded in-memory result buffering | Phase 9 |
 | `--remediation-format brief\|full` flag not implemented | Phase 9 (minor) |
 | Provider-specific verification policy, caching, and broader bounded transient backoff | Phase 11 |
-| Slack file scanning (`--include-files` is a no-op) | Phase 12 |
+| Slack file scanning | Delivered after `v1.7.0`; `--include-files` is explicit opt-in |
 
 > **Minor item — `--remediation-format`:** today only a boolean `--remediation` flag exists; the `brief|full` variant referenced in the Phase 6 deliverables and the verification guide is unimplemented. Small UX task, folded into Phase 9.
 
@@ -837,7 +852,7 @@ Source packages (no formal standard, but visible gaps):
 
 | # | Gap | One-line description | Area affected | Owning phase |
 |---|-----|----------------------|---------------|--------------|
-| 1 | **Slack file scanning** | `--include-files` flag is accepted and documented but is a no-op; the `SlackSource` never fetches file content from the Slack Files API. | `internal/source/slack/slack.go`, `docs/guides/slack-scanning.md`, CHANGELOG v1.2.0 | Phase 12 |
+| 1 | **Slack file scanning** | Historical 2026-05-22 finding: `--include-files` was a no-op. Closed after `v1.7.0` with explicit opt-in, bounded text downloads, and `files:read`. | `internal/source/slack/slack.go`, `docs/guides/slack-scanning.md`, CHANGELOG Unreleased | Delivered |
 | 2 | **Provider-specific verification policy, caching, and broader bounded transient backoff** | Historical snapshot: the engine formerly had only one global limiter and no retry. It now enforces global plus per-detector admission and one bounded safe `Retry-After` replay; response caching, provider-tuned policies, and wider eligible transient backoff remain planned. | `internal/verifier/engine.go`, Phase 8 deliverables table, v1.3.0 highlights | Phase 11 |
 | 3 | **`--remediation-format brief\|full` flag** | Only a boolean `--remediation` flag exists; the two-value `brief\|full` variant mentioned in Phase 6 deliverables and `docs/guides/secret-verification.md` is not implemented. | `cmd/scan_common.go`, Phase 6 deliverables table | Phase 9 (minor) |
 | 4 | **Engine-level entropy-threshold gating** | The `detection.entropy.threshold` config value is read and displayed in scan summaries, but the detection engine does not gate findings on it; only custom YAML rules apply their own per-rule entropy threshold. | `internal/engine/`, `internal/config/`, `docs/guides/configuration.md` | Phase 9 |

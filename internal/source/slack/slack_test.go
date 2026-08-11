@@ -1,9 +1,12 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -32,13 +35,17 @@ type mockHistoryPage struct {
 
 // mockSlackClient is a minimal mock for the slackClient interface.
 type mockSlackClient struct {
-	channels   []slack.Channel
-	messages   map[string][]slack.Message
-	authErr    error
-	authWait   bool
-	authCtx    context.Context
-	listErr    error
-	historyErr error
+	channels    []slack.Channel
+	messages    map[string][]slack.Message
+	authErr     error
+	authWait    bool
+	authCtx     context.Context
+	listErr     error
+	historyErr  error
+	fileInfoErr error
+	downloadErr error
+	files       map[string]slack.File
+	fileBodies  map[string][]byte
 
 	// listRateLimitedCalls, when > 0, makes that many upcoming calls to
 	// GetConversationsContext return a *slack.RateLimitedError before
@@ -61,12 +68,15 @@ type mockSlackClient struct {
 	historyPages map[string]mockHistoryPage
 
 	// listCalls and historyCalls count invocations, for assertions.
-	listCalls    int
-	historyCalls int
+	listCalls     int
+	historyCalls  int
+	fileInfoCalls int
+	downloadCalls int
 
 	// lastHistoryOldest records the Oldest parameter from the most recent
 	// GetConversationHistoryContext call, for assertions.
 	lastHistoryOldest string
+	lastHistoryLimit  int
 }
 
 func (m *mockSlackClient) AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error) {
@@ -111,6 +121,7 @@ func (m *mockSlackClient) GetConversationsContext(_ context.Context, params *sla
 func (m *mockSlackClient) GetConversationHistoryContext(_ context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
 	m.historyCalls++
 	m.lastHistoryOldest = params.Oldest
+	m.lastHistoryLimit = params.Limit
 
 	if m.historyRateLimitedCalls > 0 {
 		m.historyRateLimitedCalls--
@@ -149,6 +160,34 @@ func (m *mockSlackClient) GetConversationHistoryContext(_ context.Context, param
 		Messages:      msgs,
 		SlackResponse: slack.SlackResponse{Ok: true},
 	}, nil
+}
+
+func (m *mockSlackClient) GetFileInfoContext(_ context.Context, fileID string, _, _ int) (*slack.File, []slack.Comment, *slack.Paging, error) {
+	m.fileInfoCalls++
+	if m.fileInfoErr != nil {
+		return nil, nil, nil, m.fileInfoErr
+	}
+	file, ok := m.files[fileID]
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("file_not_found")
+	}
+	return &file, nil, &slack.Paging{}, nil
+}
+
+func (m *mockSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
+	m.downloadCalls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.downloadErr != nil {
+		return m.downloadErr
+	}
+	body, ok := m.fileBodies[downloadURL]
+	if !ok {
+		return fmt.Errorf("download_not_found")
+	}
+	_, err := io.Copy(writer, bytes.NewReader(body))
+	return err
 }
 
 func TestSlackSource_Type_ReturnsSlack(t *testing.T) {
@@ -251,6 +290,7 @@ func TestSlackSource_Chunks_SingleChannel_EmitsMessages(t *testing.T) {
 	assert.Len(t, chunks, 2)
 	assert.Contains(t, chunks, "here is my API_KEY=sk-abc123")
 	assert.Contains(t, chunks, "another message with SECRET=xyz")
+	assert.Equal(t, defaultHistoryLimit, mock.lastHistoryLimit)
 	// All chunks should reference channel C001.
 	for _, m := range metas {
 		assert.Equal(t, "C001", m)
@@ -423,16 +463,22 @@ func TestSlackSource_New_IncludeFilesDefaultsFalse(t *testing.T) {
 	assert.False(t, s.includeFiles)
 }
 
-func TestSlackSource_Chunks_IncludeFiles_ScansTextOnly(t *testing.T) {
-	// File scanning is not implemented; enabling WithIncludeFiles must not
-	// change the emitted chunks (still text-only) and must not error.
+func TestSlackSource_Chunks_IncludeFiles_ScansMessageAndBoundedTextAttachment(t *testing.T) {
+	const downloadURL = "https://files.slack.com/files-pri/T1-F1/config.env"
 	mock := &mockSlackClient{
 		channels: []slack.Channel{
 			{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}},
 		},
 		messages: map[string][]slack.Message{
-			"C001": {{Msg: slack.Msg{Text: "hello", User: "U001", Timestamp: "1700000001.000000"}}},
+			"C001": {{Msg: slack.Msg{
+				Text: "hello", User: "U001", Timestamp: "1700000001.000000",
+				Files: []slack.File{{ID: "F1"}},
+			}}},
 		},
+		files: map[string]slack.File{
+			"F1": {ID: "F1", Name: "config.env", Mimetype: "text/plain", Size: 20, URLPrivateDownload: downloadURL},
+		},
+		fileBodies: map[string][]byte{downloadURL: []byte("TOKEN=synthetic-value")},
 	}
 
 	s := New("xoxb-test-token", WithIncludeFiles(true), WithRateLimit(1000))
@@ -444,7 +490,85 @@ func TestSlackSource_Chunks_IncludeFiles_ScansTextOnly(t *testing.T) {
 		chunks = append(chunks, string(chunk.Data))
 	}
 
-	assert.Equal(t, []string{"hello"}, chunks)
+	assert.Equal(t, []string{"hello", "TOKEN=synthetic-value"}, chunks)
+	assert.Equal(t, 1, mock.fileInfoCalls)
+	assert.Equal(t, 1, mock.downloadCalls)
+}
+
+func TestSlackSource_Chunks_IncludeFiles_SkipsOversizedBinaryAndDuplicateFiles(t *testing.T) {
+	const (
+		textURL   = "https://files.slack.com/files-pri/T1-F1/text"
+		binaryURL = "https://files.slack.com/files-pri/T1-F2/binary"
+	)
+	mock := &mockSlackClient{
+		channels: []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}}},
+		messages: map[string][]slack.Message{"C001": {
+			{Msg: slack.Msg{Timestamp: "1700000001.000000", Files: []slack.File{{ID: "F1"}, {ID: "F2"}, {ID: "F3"}}}},
+			{Msg: slack.Msg{Timestamp: "1700000002.000000", Files: []slack.File{{ID: "F1"}}}},
+		}},
+		files: map[string]slack.File{
+			"F1": {ID: "F1", Name: "large.txt", Mimetype: "text/plain", Size: 100, URLPrivateDownload: textURL},
+			"F2": {ID: "F2", Name: "image.bin", Mimetype: "application/octet-stream", Size: 3, URLPrivateDownload: binaryURL},
+			"F3": {ID: "F3", Name: "nul.txt", Mimetype: "text/plain", Size: 3, URLPrivateDownload: textURL},
+		},
+		fileBodies: map[string][]byte{textURL: {'a', 0, 'b'}, binaryURL: {1, 2, 3}},
+	}
+	s := New("xoxb-test-token", WithIncludeFiles(true), WithMaxFileSize(16), WithRateLimit(1000))
+	s.client = mock
+
+	var chunks []source.Chunk
+	for chunk := range s.Chunks(context.Background()) {
+		chunks = append(chunks, chunk)
+	}
+	assert.Empty(t, chunks)
+	assert.Equal(t, 3, mock.fileInfoCalls, "duplicate F1 must not be fetched twice")
+	assert.Equal(t, 1, mock.downloadCalls, "only the text-like, in-limit F3 reaches download")
+}
+
+func TestSlackSource_Chunks_IncludeFiles_DownloadFailureIsReportedAndTokenRedacted(t *testing.T) {
+	const downloadURL = "https://files.slack.com/files-pri/T1-F1/config.env"
+	token := "xoxb-sensitive-fixture"
+	mock := &mockSlackClient{
+		channels:    []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}}},
+		messages:    map[string][]slack.Message{"C001": {{Msg: slack.Msg{Timestamp: "1700000001.000000", Files: []slack.File{{ID: "F1"}}}}}},
+		files:       map[string]slack.File{"F1": {ID: "F1", Name: "config.env", Mimetype: "text/plain", URLPrivateDownload: downloadURL}},
+		downloadErr: fmt.Errorf("download failed for %s", token),
+	}
+	s := New(token, WithIncludeFiles(true), WithRateLimit(1000))
+	s.client = mock
+	for range s.Chunks(context.Background()) {
+	}
+	require.Error(t, s.Err())
+	assert.NotContains(t, s.Err().Error(), token)
+	assert.Contains(t, s.Err().Error(), "***")
+}
+
+func TestValidateSlackDownloadURL_RejectsCredentialAndNonSlackDestinations(t *testing.T) {
+	assert.NoError(t, validateSlackDownloadURL("https://files.slack.com/files-pri/T1-F1/file"))
+	assert.NoError(t, validateSlackDownloadURL("https://files.slack.com:443/files-pri/T1-F1/file"))
+	for _, raw := range []string{
+		"http://files.slack.com/file",
+		"https://token@files.slack.com/file",
+		"https://files.slack.com:8443/file",
+		"https://downloads.slack.com/file",
+		"https://files.slack.com.attacker.example/file",
+		"https://127.0.0.1/file",
+	} {
+		assert.Error(t, validateSlackDownloadURL(raw), raw)
+	}
+}
+
+func TestRejectSlackRedirect_PreventsCredentialForwarding(t *testing.T) {
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://attacker.example/file", nil)
+	require.NoError(t, err)
+	assert.ErrorIs(t, rejectSlackRedirect(request, nil), http.ErrUseLastResponse)
+}
+
+func TestSafeSlackPathSegment_RejectsTraversalAndControls(t *testing.T) {
+	assert.Equal(t, "config.env", safeSlackPathSegment("../config.env", "attachment"))
+	assert.Equal(t, "attachment", safeSlackPathSegment("..", "attachment"))
+	assert.Equal(t, "bad_name.txt", safeSlackPathSegment("bad\nname.txt", "attachment"))
+	assert.Equal(t, "秘密.env", safeSlackPathSegment("秘密.env", "attachment"))
 }
 
 func TestSlackSource_Chunks_ContextCancellation_Stops(t *testing.T) {
@@ -581,6 +705,14 @@ func TestSlackSource_ListChannels_RateLimitedBeyondMaxRetries_ReturnsError(t *te
 	assert.Equal(t, maxRateLimitRetries+1, mock.listCalls)
 }
 
+func TestWaitRetryAfter_RejectsUnboundedProviderDelay(t *testing.T) {
+	start := time.Now()
+	err := waitRetryAfter(context.Background(), maximumRetryAfterWait+time.Second)
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 100*time.Millisecond)
+	assert.NotContains(t, err.Error(), (maximumRetryAfterWait + time.Second).String())
+}
+
 func TestSlackSource_ProcessChannel_RateLimited_RetriesAndEmits(t *testing.T) {
 	mock := &mockSlackClient{
 		messages: map[string][]slack.Message{
@@ -666,7 +798,7 @@ func TestSlackSource_Chunks_ListError_ReturnsNoChunksWithoutPanic(t *testing.T) 
 	assert.Equal(t, 0, count)
 }
 
-func TestSlackSource_Chunks_HistoryError_DegradesGracefullyWithoutPanic(t *testing.T) {
+func TestSlackSource_Chunks_HistoryError_IsReportedAndStops(t *testing.T) {
 	mock := &mockSlackClient{
 		channels: []slack.Channel{
 			{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}},
@@ -685,9 +817,9 @@ func TestSlackSource_Chunks_HistoryError_DegradesGracefullyWithoutPanic(t *testi
 	}
 
 	assert.Equal(t, 0, count)
-	// Both channels must have been attempted; a history error on one
-	// channel must not abort the scan of subsequent channels.
-	assert.Equal(t, 2, mock.historyCalls)
+	require.Error(t, s.Err())
+	assert.Contains(t, s.Err().Error(), "conversation history")
+	assert.Equal(t, 1, mock.historyCalls, "a terminal source error must stop partial scanning")
 }
 
 // --- Multi-page cursor pagination tests ---

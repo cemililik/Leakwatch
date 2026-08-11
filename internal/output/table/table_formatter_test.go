@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
+	"github.com/mattn/go-runewidth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -156,7 +157,7 @@ func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 		"Format must not mutate the original slice")
 }
 
-func TestFormatter_Format_ColumnsAligned_TabwriterProducesAlignedOutput(t *testing.T) {
+func TestFormatter_Format_ColumnsAligned_ProducesAlignedOutput(t *testing.T) {
 	f := &Formatter{}
 	var buf bytes.Buffer
 
@@ -171,6 +172,48 @@ func TestFormatter_Format_ColumnsAligned_TabwriterProducesAlignedOutput(t *testi
 	lines := strings.Split(buf.String(), "\n")
 	// Header and separator should exist.
 	require.GreaterOrEqual(t, len(lines), 4)
+}
+
+func TestFormatter_Format_UnicodeDisplayWidthAlignsColumns(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+	findings := []finding.Finding{
+		{
+			DetectorID: "detector-a",
+			Severity:   finding.SeverityLow,
+			Redacted:   "first-redacted",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "設定/秘密.yaml",
+			},
+		},
+		{
+			DetectorID: "detector-b",
+			Severity:   finding.SeverityHigh,
+			Redacted:   "second-redacted",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "cafe\u0301/emoji-🔐.yaml",
+			},
+		},
+	}
+
+	require.NoError(t, f.Format(&buf, findings))
+	lines := strings.Split(buf.String(), "\n")
+	require.GreaterOrEqual(t, len(lines), 4)
+
+	wantColumn := -1
+	for _, item := range []struct {
+		line   int
+		needle string
+	}{{0, "REDACTED"}, {2, "first-redacted"}, {3, "second-redacted"}} {
+		line := lines[item.line]
+		byteIndex := strings.Index(line, item.needle)
+		require.NotEqual(t, -1, byteIndex)
+		column := runewidth.StringWidth(line[:byteIndex])
+		if wantColumn < 0 {
+			wantColumn = column
+		}
+		assert.Equal(t, wantColumn, column, "display column drifted for %q", item.needle)
+	}
 }
 
 func TestFormatter_Format_WithRemediation_ShowsRemediationTitle(t *testing.T) {

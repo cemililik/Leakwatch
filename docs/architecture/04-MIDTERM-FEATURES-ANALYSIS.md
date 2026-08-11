@@ -158,8 +158,8 @@ leakwatch scan slack --token xoxb-... [flags]
   --exclude-channels      Channels to exclude
   --since string          Oldest message date (RFC3339)
   --include-dms           Include direct messages (default: false)
-  --include-files         Scan uploaded files (default: true)
-  --rate-limit float      Max API req/sec (default: 20)
+  --include-files         Scan uploaded text files (default: false)
+  --rate-limit float      Max API req/sec (default: 1/60)
 ```
 
 ### Implementation Tasks

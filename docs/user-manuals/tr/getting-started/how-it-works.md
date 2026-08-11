@@ -33,10 +33,10 @@ Her tarama, motorun işlemesi için veri parçaları yayan bir soyutlama olan **
 | Konteyner imajı | `scan image` | Bir OCI/Docker imajının katman içerikleri, daemonsuz |
 | AWS S3 | `scan s3` | Bir S3 kovasındaki nesne içerikleri |
 | Google Cloud Storage | `scan gcs` | Bir GCS kovasındaki nesne içerikleri |
-| Slack | `scan slack` | Kanal ve DM'lerdeki mesaj metni |
+| Slack | `scan slack` | Kanal/DM mesajları ve isteğe bağlı metin benzeri ekler |
 
 :::note
-Slack taraması yalnızca **mesaj metnini** kapsar. Slack'e yüklenen dosyaların içerikleri taranmaz.
+Slack varsayılan olarak hiçbir dosya indirmez. `--include-files`, metin benzeri eklerin boyutu sınırlı taramasını etkinleştirir ve Slack `files:read` kapsamını gerektirir.
 :::
 
 Parçalar, işçi havuzu tarafından tüketilen tamponlu bir kanala akar.

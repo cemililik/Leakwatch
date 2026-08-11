@@ -226,15 +226,72 @@ type Finding struct {
 	SourceMetadata SourceMetadata     `json:"source"`
 	Verification   VerificationResult `json:"verification"`
 	Remediation    *Remediation       `json:"remediation,omitempty"`
-	DetectedAt     time.Time          `json:"detected_at"`
-	// Entropy is the Shannon entropy of the raw match, populated only when
-	// entropy analysis is enabled. It is omitted (via omitempty) when it holds
-	// the Go zero value, so a serialized finding cannot distinguish "not
-	// computed" from "computed as exactly 0.0"; consumers should treat an
-	// absent entropy as "not computed" rather than zero.
-	Entropy float64 `json:"entropy,omitempty"`
+	DetectedAt     time.Time          `json:"detected_at,omitempty"`
+	// Entropy is the Shannon entropy of the raw match. EntropyCalculated records
+	// whether the value was actually computed, so a legitimate 0.0 is distinct
+	// from "not computed" on the JSON wire without changing the long-standing
+	// public Entropy float64 field. Call SetEntropy when constructing findings
+	// outside the engine. For source compatibility, a non-zero Entropy value is
+	// also serialized even when an older caller did not set EntropyCalculated.
+	Entropy           float64 `json:"entropy,omitempty"`
+	EntropyCalculated bool    `json:"-"`
 	// ExtraData carries non-secret contextual metadata. It is json:"-" as a
 	// defense-in-depth measure (see the type doc); it must never hold secret
 	// material.
 	ExtraData map[string]string `json:"-"`
+}
+
+// SetEntropy records a computed Shannon entropy value, including a legitimate
+// zero. The explicit presence bit preserves the public float64 API while making
+// the JSON representation nullable.
+func (f *Finding) SetEntropy(value float64) {
+	f.Entropy = value
+	f.EntropyCalculated = true
+}
+
+// MarshalJSON omits zero DetectedAt and emits entropy only when it was
+// calculated. A non-zero legacy value remains visible for source compatibility
+// with callers written before EntropyCalculated existed.
+func (f Finding) MarshalJSON() ([]byte, error) {
+	type alias Finding
+	shadow := struct {
+		alias
+		DetectedAt *time.Time `json:"detected_at,omitempty"`
+		Entropy    *float64   `json:"entropy,omitempty"`
+	}{alias: alias(f)}
+	if !f.DetectedAt.IsZero() {
+		shadow.DetectedAt = &f.DetectedAt
+	}
+	if f.EntropyCalculated || f.Entropy != 0 {
+		shadow.Entropy = &f.Entropy
+	}
+	out, err := json.Marshal(shadow)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal Finding JSON: %w", err)
+	}
+	return out, nil
+}
+
+// UnmarshalJSON restores the entropy presence bit so a computed zero survives a
+// JSON round trip. Missing timestamps and entropy values retain their Go zero
+// values.
+func (f *Finding) UnmarshalJSON(data []byte) error {
+	type alias Finding
+	var decoded alias
+	shadow := struct {
+		*alias
+		DetectedAt *time.Time `json:"detected_at,omitempty"`
+		Entropy    *float64   `json:"entropy,omitempty"`
+	}{alias: &decoded}
+	if err := json.Unmarshal(data, &shadow); err != nil {
+		return fmt.Errorf("failed to unmarshal Finding JSON: %w", err)
+	}
+	*f = Finding(decoded)
+	if shadow.DetectedAt != nil {
+		f.DetectedAt = *shadow.DetectedAt
+	}
+	if shadow.Entropy != nil {
+		f.SetEntropy(*shadow.Entropy)
+	}
+	return nil
 }

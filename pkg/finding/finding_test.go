@@ -215,8 +215,8 @@ func TestFinding_JSONMarshalUnmarshal_SeverityAsString(t *testing.T) {
 			Status: StatusUnverified,
 		},
 		DetectedAt: now,
-		Entropy:    4.5,
 	}
+	f.SetEntropy(4.5)
 
 	data, err := json.Marshal(f)
 	require.NoError(t, err)
@@ -243,7 +243,56 @@ func TestFinding_JSONMarshalUnmarshal_SeverityAsString(t *testing.T) {
 	assert.Equal(t, f.SourceMetadata.FilePath, decoded.SourceMetadata.FilePath)
 	assert.Equal(t, f.SourceMetadata.Line, decoded.SourceMetadata.Line)
 	assert.Equal(t, f.Verification.Status, decoded.Verification.Status)
+	assert.True(t, decoded.EntropyCalculated)
+	assert.Equal(t, 4.5, decoded.Entropy)
 	assert.Empty(t, decoded.Raw) // Raw is never serialized via json:"-"
+}
+
+func TestFinding_JSONNullableEntropyAndDetectedAt(t *testing.T) {
+	t.Run("missing values are omitted", func(t *testing.T) {
+		data, err := json.Marshal(Finding{ID: "test-1"})
+		require.NoError(t, err)
+
+		var object map[string]any
+		require.NoError(t, json.Unmarshal(data, &object))
+		assert.NotContains(t, object, "detected_at")
+		assert.NotContains(t, object, "entropy")
+		assert.NotContains(t, string(data), "0001-01-01")
+	})
+
+	t.Run("computed zero is present and round trips", func(t *testing.T) {
+		original := Finding{ID: "test-2"}
+		original.SetEntropy(0)
+
+		data, err := json.Marshal(original)
+		require.NoError(t, err)
+		var object map[string]any
+		require.NoError(t, json.Unmarshal(data, &object))
+		value, exists := object["entropy"]
+		require.True(t, exists)
+		assert.Equal(t, float64(0), value)
+
+		var decoded Finding
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		assert.True(t, decoded.EntropyCalculated)
+		assert.Zero(t, decoded.Entropy)
+	})
+
+	t.Run("legacy non-zero entropy remains source compatible", func(t *testing.T) {
+		data, err := json.Marshal(Finding{ID: "test-3", Entropy: 3.5})
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"entropy":3.5`)
+	})
+
+	t.Run("missing values clear a reused destination", func(t *testing.T) {
+		destination := Finding{DetectedAt: time.Now().UTC()}
+		destination.SetEntropy(4.2)
+		require.NoError(t, json.Unmarshal([]byte(`{"id":"replacement"}`), &destination))
+		assert.Equal(t, "replacement", destination.ID)
+		assert.True(t, destination.DetectedAt.IsZero())
+		assert.Zero(t, destination.Entropy)
+		assert.False(t, destination.EntropyCalculated)
+	})
 }
 
 func TestFinding_JSONOmitsEmptyRaw(t *testing.T) {

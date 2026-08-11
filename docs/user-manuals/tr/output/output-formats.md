@@ -52,6 +52,10 @@ leakwatch scan fs ./src --format json --output findings.json
 
 `id`, düz 32 karakterlik küçük harfli bir hex dizesi olarak gösterilen, deterministik ve kısaltılmış bir SHA-256 değeridir — bir UUID **değildir** ve hiçbir zaman tire içermez. Nasıl hesaplandığı için [Nasıl Çalışır](#/getting-started/how-it-works) sayfasına bakın.
 
+`entropy` hesaplanmadığında atlanır; hesaplanan `0.0` değeri sıfır olarak yazılır. Zaman damgası olmayan kütüphane üretimi bulgularda `detected_at`, Go'nun 1. yıl sıfır zamanı yerine atlanır. Normal CLI bulguları zaman damgasını ayarlar.
+
+Sağlayıcı tarafından doğrulanmış kimlik, kapsam ve sona erme meta verisi mevcut olduğunda `verification.extra_data` altında görünür. Değerler sınırlı ve şema doğrulamalıdır; alanın olmaması token'ın izni veya sona ermesi olmadığı değil, sağlayıcının güvenli meta veri sunmadığı anlamına gelir.
+
 `--remediation` de ayarlandığında her bulgunun içine iç içe bir `"remediation"` nesnesi yerleştirilir. Bkz. [Düzeltme Rehberi](#/output/remediation).
 
 ## SARIF
@@ -110,7 +114,7 @@ e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws
 
 ## Tablo
 
-`table` formatı, insan tarafından okunabilir sekme hizalı bir tablo yazar; sonuçların hızlı görsel taramasını istediğiniz etkileşimli terminal oturumları için en uygun formattır.
+`table` formatı; CJK, birleşen işaretler ve emoji için doğru görüntü genişliği dahil, terminal hücrelerine göre hizalanmış insan tarafından okunabilir bir tablo yazar. Sonuçların hızlı görsel taramasını istediğiniz etkileşimli terminal oturumları için en uygun formattır.
 
 **Sütunlar:**
 

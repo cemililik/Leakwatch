@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"net/url"
 	"regexp"
 	"sort"
 	"testing"
@@ -73,12 +74,39 @@ func TestVerificationCapabilities_AreCompleteAndWellFormed(t *testing.T) {
 		if capability.LastContractReviewedAt != "" {
 			_, err := time.Parse(time.DateOnly, capability.LastContractReviewedAt)
 			assert.NoError(t, err, capability.DetectorID)
+			assert.NotEmpty(t, capability.ContractReferenceURLs, capability.DetectorID)
+		} else {
+			assert.Empty(t, capability.ContractReferenceURLs, capability.DetectorID)
+		}
+		for _, reference := range capability.ContractReferenceURLs {
+			parsed, err := url.Parse(reference)
+			if assert.NoError(t, err, capability.DetectorID) {
+				assert.Equal(t, "https", parsed.Scheme, capability.DetectorID)
+				assert.NotEmpty(t, parsed.Hostname(), capability.DetectorID)
+			}
 		}
 	}
 
 	sorted := append([]string(nil), ids...)
 	sort.Strings(sorted)
 	assert.Equal(t, sorted, ids, "capability manifest must remain sorted by detector ID")
+}
+
+func TestVerificationCapabilities_ReviewedContractsAreFresh(t *testing.T) {
+	const maximumAuditAge = 180 * 24 * time.Hour
+	now := time.Now().UTC()
+
+	for _, capability := range VerificationCapabilities() {
+		if capability.LastContractReviewedAt == "" {
+			continue
+		}
+		reviewedAt, err := time.Parse(time.DateOnly, capability.LastContractReviewedAt)
+		require.NoError(t, err, capability.DetectorID)
+		assert.False(t, reviewedAt.After(now), "%s contract review is future-dated", capability.DetectorID)
+		assert.LessOrEqual(t, now.Sub(reviewedAt), maximumAuditAge,
+			"%s provider contract audit is stale; review the primary references and update code/tests before advancing the date",
+			capability.DetectorID)
+	}
 }
 
 func TestVerificationCapabilityCounts_MatchPublishedCategories(t *testing.T) {
@@ -93,7 +121,7 @@ func TestVerificationCapabilities_ReturnsDefensiveCopy(t *testing.T) {
 	first := VerificationCapabilities()
 	require.NotEmpty(t, first)
 	originalID := first[0].DetectorID
-	contextIndex, regionIndex, subtypeIndex := -1, -1, -1
+	contextIndex, regionIndex, subtypeIndex, referenceIndex := -1, -1, -1, -1
 	for i := range first {
 		if contextIndex < 0 && len(first[i].RequiredContextFields) > 0 {
 			contextIndex = i
@@ -104,19 +132,25 @@ func TestVerificationCapabilities_ReturnsDefensiveCopy(t *testing.T) {
 		if subtypeIndex < 0 && len(first[i].VerifiableSubtypes) > 0 && len(first[i].UnverifiableSubtypes) > 0 {
 			subtypeIndex = i
 		}
+		if referenceIndex < 0 && len(first[i].ContractReferenceURLs) > 0 {
+			referenceIndex = i
+		}
 	}
 	require.NotEqual(t, -1, contextIndex)
 	require.NotEqual(t, -1, regionIndex)
 	require.NotEqual(t, -1, subtypeIndex)
+	require.NotEqual(t, -1, referenceIndex)
 	originalContext := first[contextIndex].RequiredContextFields[0]
 	originalRegion := first[regionIndex].ProviderRegions[0]
 	originalVerifiableSubtype := first[subtypeIndex].VerifiableSubtypes[0]
 	originalUnverifiableSubtype := first[subtypeIndex].UnverifiableSubtypes[0]
+	originalReference := first[referenceIndex].ContractReferenceURLs[0]
 	first[0].DetectorID = "mutated"
 	first[contextIndex].RequiredContextFields[0] = "mutated"
 	first[regionIndex].ProviderRegions[0] = "mutated"
 	first[subtypeIndex].VerifiableSubtypes[0] = "mutated"
 	first[subtypeIndex].UnverifiableSubtypes[0] = "mutated"
+	first[referenceIndex].ContractReferenceURLs[0] = "https://mutated.invalid"
 
 	second := VerificationCapabilities()
 	assert.Equal(t, originalID, second[0].DetectorID)
@@ -124,6 +158,7 @@ func TestVerificationCapabilities_ReturnsDefensiveCopy(t *testing.T) {
 	assert.Equal(t, originalRegion, second[regionIndex].ProviderRegions[0])
 	assert.Equal(t, originalVerifiableSubtype, second[subtypeIndex].VerifiableSubtypes[0])
 	assert.Equal(t, originalUnverifiableSubtype, second[subtypeIndex].UnverifiableSubtypes[0])
+	assert.Equal(t, originalReference, second[referenceIndex].ContractReferenceURLs[0])
 }
 
 func TestVerificationCapabilities_GitHubOAuthSubtypeContract(t *testing.T) {
