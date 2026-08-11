@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"regexp"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
@@ -64,10 +65,12 @@ func (d *OAuthDetector) Scan(_ context.Context, data []byte) []detector.RawFindi
 
 	findings := make([]detector.RawFinding, 0, len(matches))
 	for _, match := range matches {
+		subtype := strings.TrimSuffix(string(match[:4]), "_")
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        match,
 			Redacted:   detector.RedactBytes(match),
+			ExtraData:  map[string]string{"token_subtype": subtype},
 		})
 	}
 	return findings

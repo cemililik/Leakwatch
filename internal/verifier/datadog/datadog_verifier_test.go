@@ -66,8 +66,36 @@ func TestVerify_InvalidKey_200False_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "Datadog API key is invalid", result.Message)
 }
 
+func TestVerify_MalformedSuccessResponse_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing valid", contentType: "application/json", body: `{}`},
+		{name: "null body", contentType: "application/json", body: `null`},
+		{name: "wrong content type", contentType: "text/plain", body: `{"valid":true}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("synthetic-datadog-key")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
+}
+
 func TestVerify_InvalidKey_403_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"errors":["Forbidden"]}`))
 	}))
@@ -88,6 +116,25 @@ func TestVerify_InvalidKey_403_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "Datadog API key is invalid or revoked", result.Message)
+}
+
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>WAF block</html>`},
+		{contentType: "application/json", body: `{"errors":["challenge"]}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detector.RawFinding{Raw: []byte("synthetic-datadog-key")},
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {
@@ -132,4 +179,30 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
+}
+
+func TestVerify_WithoutTrustedSite_MakesNoRequest(t *testing.T) {
+	v := &Verifier{}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-datadog-key")})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Datadog site is not configured", result.Message)
+}
+
+func TestNewForTrustedInstance_AcceptsOnlyOfficialDatadogSites(t *testing.T) {
+	for _, origin := range []string{
+		"https://api.datadoghq.com", "https://api.datadoghq.eu", "https://api.ap2.datadoghq.com",
+		"https://api.ddog-gov.com", "https://api.us2.ddog-gov.com",
+	} {
+		configured, err := NewForTrustedInstance(origin)
+		require.NoError(t, err, origin)
+		assert.Equal(t, origin, configured.apiURL)
+	}
+	for _, origin := range []string{
+		"https://datadoghq.com", "https://api.datadoghq.com.attacker.example",
+		"https://api.datadoghq.com:443", "http://api.datadoghq.com",
+	} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
 }

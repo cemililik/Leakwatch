@@ -1,4 +1,4 @@
-// Package supabase provides a Supabase Service Role Key secret detector.
+// Package supabase provides a Supabase personal access token detector.
 package supabase
 
 import (
@@ -9,20 +9,22 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var supabaseKeyPattern = regexp.MustCompile(`sbp_[a-f0-9]{40}`)
+var supabaseKeyPattern = regexp.MustCompile(`\bsbp_[a-f0-9]{40}\b`)
 
-// Detector detects Supabase Service Role Keys.
+// Detector detects legacy Supabase Management API personal access tokens. The
+// stable detector ID predates this naming correction; sbp_ is not a project
+// service-role key.
 type Detector struct{}
 
 func (d *Detector) ID() string { return "supabase-service-key" }
 
-func (d *Detector) Description() string { return "Supabase Service Role Key" }
+func (d *Detector) Description() string { return "Supabase Personal Access Token" }
 
 func (d *Detector) Keywords() []string { return []string{"sbp_"} }
 
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
 
-// Scan searches the data for Supabase Service Role Key patterns.
+// Scan searches the data for Supabase personal access token patterns.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 	matches := supabaseKeyPattern.FindAll(data, -1)
 	if len(matches) == 0 {

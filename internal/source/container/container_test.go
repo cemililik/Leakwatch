@@ -19,17 +19,17 @@ func TestContainerSource_Type_ReturnsContainer(t *testing.T) {
 
 func TestContainerSource_Validate_ValidRef_ReturnsNoError(t *testing.T) {
 	s := New("nginx:latest")
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestContainerSource_Validate_InvalidRef_ReturnsError(t *testing.T) {
 	s := New(":::invalid")
-	assert.Error(t, s.Validate())
+	assert.Error(t, s.Validate(context.Background()))
 }
 
 func TestContainerSource_Validate_FullRef_ReturnsNoError(t *testing.T) {
 	s := New("ghcr.io/org/repo:v1.0.0")
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestShouldSkipContainerPath(t *testing.T) {

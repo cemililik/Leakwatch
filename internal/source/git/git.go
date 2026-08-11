@@ -53,6 +53,7 @@ type GitSource struct {
 	excludePaths   []string
 	tmpDir         string // Temporary directory for cloned repos
 	resolvedBranch string // Cached branch resolution
+	removeAll      func(string) error
 
 	// err records the first terminal failure that aborted history production
 	// (start-commit resolution, git log, or the history walk). It is written
@@ -87,23 +88,37 @@ func (s *GitSource) Type() string {
 // when --since-commit is set it verifies the given commit is an ancestor of the
 // walk's starting point; otherwise the diff-based walk would silently fall back
 // to scanning the entire history or an unintended branch.
-func (s *GitSource) Validate() error {
-	if s.isRemote() {
-		if err := s.cloneRemote(); err != nil {
+
+func (s *GitSource) Validate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	remote, cloneTarget, err := classifyGitTarget(s.target)
+	if err != nil {
+		return fmt.Errorf("invalid git target %s: %w", s.displayTarget, err)
+	}
+	if remote {
+		if err := s.cloneRemote(ctx, cloneTarget); err != nil {
 			return err
 		}
 	} else if err := s.openLocal(); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if s.branch != "" {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := s.resolveStartHash(); err != nil {
 			return err
 		}
 	}
 
 	if s.sinceCommit != "" {
-		if err := s.validateSinceCommit(); err != nil {
+		if err := s.validateSinceCommit(ctx); err != nil {
 			return err
 		}
 	}
@@ -115,9 +130,12 @@ func (s *GitSource) Validate() error {
 // ancestor of the walk's starting commit (the configured branch tip, or HEAD).
 // Returning an explicit error prevents the diff-based scan from silently
 // degrading into a full-history scan.
-func (s *GitSource) validateSinceCommit() error {
-	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
+func (s *GitSource) validateSinceCommit(ctx context.Context) error {
+	sinceCommitObj, err := s.resolveCommitHash(ctx, s.sinceCommit)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -125,17 +143,23 @@ func (s *GitSource) validateSinceCommit() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	startCommit, err := s.repo.CommitObject(startHash)
 	if err != nil {
 		return fmt.Errorf("failed to resolve start commit for since-commit check: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if sinceCommitObj.Hash == startCommit.Hash {
 		return nil
 	}
 
-	isAncestor, err := sinceCommitObj.IsAncestor(startCommit)
+	isAncestor, err := isAncestorContext(ctx, sinceCommitObj, startCommit)
 	if err != nil {
 		return fmt.Errorf("failed to check ancestry of since-commit %q: %w", s.sinceCommit, err)
 	}
@@ -151,27 +175,43 @@ func (s *GitSource) validateSinceCommit() error {
 // resolved by scanning the object store for a unique match, so the documented
 // `--since-commit abc1234` short-hash usage works rather than silently producing
 // a wrong zero-padded hash via plumbing.NewHash.
-func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
-	ref = strings.TrimSpace(ref)
-
-	if len(ref) == fullHashLen {
-		if !isHexString(ref) {
-			return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
-		}
-		c, err := s.repo.CommitObject(plumbing.NewHash(ref))
-		if err != nil {
-			return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
-		}
-		return c, nil
+func (s *GitSource) resolveCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	normalized, full, err := normalizeCommitHashReference(ref)
+	if err != nil {
+		return nil, err
+	}
+	if full {
+		return s.resolveFullCommitHash(ctx, normalized)
+	}
+	return s.resolveAbbreviatedCommitHash(ctx, normalized)
+}
 
+func normalizeCommitHashReference(ref string) (string, bool, error) {
+	ref = strings.TrimSpace(ref)
 	if len(ref) < minAbbrevHashLen {
-		return nil, fmt.Errorf("since-commit %q is too short: provide at least %d hex characters or a full 40-character SHA", ref, minAbbrevHashLen)
+		return "", false, fmt.Errorf("since-commit %q is too short: provide at least %d hex characters or a full 40-character SHA", ref, minAbbrevHashLen)
 	}
 	if len(ref) > fullHashLen || !isHexString(ref) {
-		return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
+		return "", false, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
 	}
+	return ref, len(ref) == fullHashLen, nil
+}
 
+func (s *GitSource) resolveFullCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
+	commit, err := s.repo.CommitObject(plumbing.NewHash(ref))
+	if err != nil {
+		return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return commit, nil
+}
+
+func (s *GitSource) resolveAbbreviatedCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
 	// Deliberately NOT go-git's Repository.ResolveRevision: it resolves a hash
 	// prefix by collecting every candidate and returning the first that resolves,
 	// with no ambiguity signal (there is no ErrAmbiguousRevision in go-git). For a
@@ -191,6 +231,9 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		ambiguous bool
 	)
 	err = iter.ForEach(func(c *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !strings.HasPrefix(c.Hash.String(), lower) {
 			return nil
 		}
@@ -211,6 +254,25 @@ func (s *GitSource) resolveCommitHash(ref string) (*object.Commit, error) {
 		return nil, fmt.Errorf("since-commit %q not found", ref)
 	}
 	return match, nil
+}
+
+func isAncestorContext(ctx context.Context, ancestor, descendant *object.Commit) (bool, error) {
+	iter := object.NewCommitPreorderIter(descendant, nil, nil)
+	defer iter.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		commit, err := iter.Next()
+		switch {
+		case errors.Is(err, io.EOF):
+			return false, nil
+		case err != nil:
+			return false, err
+		case commit.Hash == ancestor.Hash:
+			return true, nil
+		}
+	}
 }
 
 // resolveStartHash returns the commit hash the history walk should start from.
@@ -236,7 +298,11 @@ func (s *GitSource) resolveStartHash() (plumbing.Hash, error) {
 // the temporary directory.
 func (s *GitSource) Close() error {
 	if s.tmpDir != "" {
-		if err := os.RemoveAll(s.tmpDir); err != nil {
+		removeAll := s.removeAll
+		if removeAll == nil {
+			removeAll = os.RemoveAll
+		}
+		if err := removeAll(s.tmpDir); err != nil {
 			return fmt.Errorf("failed to remove temp directory %s: %w", s.tmpDir, err)
 		}
 		s.tmpDir = ""
@@ -245,31 +311,75 @@ func (s *GitSource) Close() error {
 }
 
 func (s *GitSource) isRemote() bool {
-	return strings.HasPrefix(s.target, "http://") ||
-		strings.HasPrefix(s.target, "https://") ||
-		strings.HasPrefix(s.target, "git@") ||
-		strings.HasPrefix(s.target, "ssh://")
+	remote, _, err := classifyGitTarget(s.target)
+	return err == nil && remote
+}
+
+// classifyGitTarget distinguishes the supported network transports from local
+// paths without relying on case-sensitive string prefixes. URI schemes are
+// case-insensitive under RFC 3986; unsupported schemes fail closed instead of
+// being reinterpreted as local filesystem paths. Windows drive-letter paths
+// remain local even when this code is cross-compiled on another platform.
+func classifyGitTarget(target string) (remote bool, normalized string, err error) {
+	if strings.HasPrefix(target, "git@") {
+		return true, target, nil
+	}
+	if len(target) >= 3 && target[1] == ':' &&
+		((target[0] >= 'a' && target[0] <= 'z') || (target[0] >= 'A' && target[0] <= 'Z')) &&
+		(target[2] == '/' || target[2] == '\\') {
+		return false, target, nil
+	}
+
+	// A colon is legal in a local Unix filename. Treat a target as a URI only
+	// when it uses the explicit scheme:// form; SCP syntax was handled above.
+	if !strings.Contains(target, "://") {
+		return false, target, nil
+	}
+	parsed, parseErr := url.Parse(target)
+	if parseErr != nil {
+		return false, "", fmt.Errorf("malformed target")
+	}
+	if parsed.Scheme == "" {
+		return false, target, nil
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ssh":
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		return true, parsed.String(), nil
+	default:
+		return false, "", fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
+	}
 }
 
 func (s *GitSource) openLocal() error {
+	info, err := os.Stat(s.target)
+	if err != nil {
+		return fmt.Errorf("failed to inspect git target %s: %w", s.displayTarget, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("git target %s is not a directory", s.displayTarget)
+	}
 	// DetectDotGit walks up parent directories to find the repository root,
 	// matching real git tooling when pointed at a subdirectory of a repo.
 	repo, err := git.PlainOpenWithOptions(s.target, &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
-		return fmt.Errorf("failed to open git repository %s: %w", s.target, err)
+		return fmt.Errorf("failed to open git repository %s: %w", s.displayTarget, err)
 	}
 	s.repo = repo
 	return nil
 }
 
-func (s *GitSource) cloneRemote() error {
+func (s *GitSource) cloneRemote(ctx context.Context, cloneTarget string) error {
 	tmpDir, err := os.MkdirTemp("", "leakwatch-clone-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
+	// Own the directory immediately so every failure path can clean it through
+	// Close and a failed cleanup remains retryable by the caller.
+	s.tmpDir = tmpDir
 
 	cloneOpts := &git.CloneOptions{
-		URL:      s.target,
+		URL:      cloneTarget,
 		Progress: nil,
 	}
 
@@ -284,19 +394,28 @@ func (s *GitSource) cloneRemote() error {
 
 	slog.Info("cloning remote repository", "url", s.displayTarget, "tmpDir", tmpDir)
 
-	repo, err := git.PlainClone(tmpDir, false, cloneOpts)
+	repo, err := git.PlainCloneContext(ctx, tmpDir, false, cloneOpts)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
 		// go-git's HTTP transport and endpoint layers re-embed the raw
 		// user:password@host userinfo from the clone URL into their error
 		// strings, so the raw err must never be wrapped with %w. Sanitize it
 		// first so no credential can reach errors.Unwrap chains, stderr, or CI
 		// logs.
-		return fmt.Errorf("failed to clone git repository %s: %w",
-			s.displayTarget, sanitizeCloneError(err, s.target, s.displayTarget))
+		var cloneErr error
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Preserve cancellation identity so the CLI maps an interrupted clone
+			// to exit 3. The context error itself contains no clone credential.
+			cloneErr = ctxErr
+		} else {
+			cloneErr = fmt.Errorf("failed to clone git repository %s: %w",
+				s.displayTarget, sanitizeCloneError(err, s.target, s.displayTarget))
+		}
+		if cleanupErr := s.Close(); cleanupErr != nil {
+			return errors.Join(cloneErr, cleanupErr)
+		}
+		return cloneErr
 	}
 	s.repo = repo
-	s.tmpDir = tmpDir
 	return nil
 }
 
@@ -416,7 +535,7 @@ func (s *GitSource) chunksFullHistory(ctx context.Context, ch chan<- source.Chun
 // (exclusive) and the branch tip / HEAD (inclusive), diffing each commit against
 // its parent.
 func (s *GitSource) chunksSinceCommit(ctx context.Context, ch chan<- source.Chunk) {
-	sinceCommitObj, err := s.resolveCommitHash(s.sinceCommit)
+	sinceCommitObj, err := s.resolveCommitHash(ctx, s.sinceCommit)
 	if err != nil {
 		slog.Error("since-commit resolution failed", "commit", s.sinceCommit, "error", err)
 		s.captureErr(fmt.Errorf("since-commit resolution failed: %w", err))

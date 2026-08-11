@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/HodeTech/leakwatch/internal/meta"
 	csvout "github.com/HodeTech/leakwatch/internal/output/csv"
 	githubout "github.com/HodeTech/leakwatch/internal/output/github"
 	jsonout "github.com/HodeTech/leakwatch/internal/output/json"
@@ -85,22 +89,88 @@ func TestSelectFormatter_AllFormats_ReturnsCorrectType(t *testing.T) {
 	}
 }
 
+func TestSelectFormatter_CanonicalFormatsHaveExactImplementations(t *testing.T) {
+	expected := map[string]interface{}{
+		"json":   &jsonout.Formatter{},
+		"sarif":  &sarifout.Formatter{},
+		"csv":    &csvout.Formatter{},
+		"table":  &tableout.Formatter{},
+		"github": &githubout.Formatter{},
+	}
+	require.Len(t, expected, len(meta.OutputFormatNames()))
+
+	for _, format := range meta.OutputFormatNames() {
+		want, ok := expected[format]
+		require.True(t, ok, "canonical format %q has no formatter contract", format)
+		assert.IsType(t, want, selectFormatter(format, false, false))
+	}
+	for format := range expected {
+		assert.True(t, meta.IsOutputFormat(format), "formatter %q is absent from canonical metadata", format)
+	}
+}
+
 func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	// Set known version info for deterministic output.
 	SetVersionInfo("1.0.0-test", "abc1234", "2026-03-24")
+	t.Cleanup(func() { SetVersionInfo("dev", "none", "unknown") })
 
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
 	rootCmd.SetArgs([]string{"version"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
 
 	err := rootCmd.Execute()
 	require.NoError(t, err)
 
-	output := buf.String()
-	assert.Contains(t, output, "1.0.0-test")
-	assert.Contains(t, output, "abc1234")
-	assert.Contains(t, output, "2026-03-24")
+	want := readGolden(t, "version.golden")
+	assert.Equal(t, want, buf.String())
+}
+
+func TestRootCommand_HelpMatchesGolden(t *testing.T) {
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"--help"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
+
+	require.NoError(t, rootCmd.Execute())
+	want := readGolden(t, "root-help.golden")
+	assert.Equal(t, want, buf.String())
+}
+
+func TestOutputFormats_MatchGoldenAndFlagHelp(t *testing.T) {
+	want := readGolden(t, "output-formats.golden")
+	got := strings.Join(meta.OutputFormatNames(), "\n") + "\n"
+	assert.Equal(t, want, got)
+
+	formatFlag := scanFsCmd.Flags().Lookup("format")
+	require.NotNil(t, formatFlag)
+	assert.Equal(t, "output format ("+meta.OutputFormatList+")", formatFlag.Usage)
+	assert.Equal(t, 1, strings.Count(defaultConfigTemplate, "{{OUTPUT_FORMATS}}"))
+	assert.Contains(t, defaultConfig, "# Output format: "+meta.OutputFormatList)
+	assert.NotContains(t, defaultConfig, "{{OUTPUT_FORMATS}}")
+
+	guide, err := os.ReadFile(filepath.Join("..", "docs", "guides", "configuration.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(guide), "# Valid values: "+meta.OutputFormatList)
+	assert.Contains(t, string(guide), "| `format` | string | `json` | `"+strings.Join(meta.OutputFormatNames(), "`, `")+"` |")
+	assert.Contains(t, string(guide), "| `output.format` | `"+strings.Join(meta.OutputFormatNames(), "`, `")+"` |")
+}
+
+func readGolden(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+	return string(b)
 }
 
 func TestScanCommand_NoSubcommand_ShowsHelp(t *testing.T) {

@@ -26,7 +26,7 @@ Exit code `1` is only emitted when at least one finding survives all active outp
 This means exit code `0` means "no findings matched your current filter settings" — not necessarily that the codebase contains no secrets at all.
 
 :::warn
-A clean `0` exit under `--only-verified` does not guarantee the codebase is secret-free. Secrets for which verification is unavailable (10 detector types) are always reported as unverified and are suppressed by `--only-verified`. Pair `--only-verified` with a separate unfiltered scan if you need full coverage.
+A clean `0` exit under `--only-verified` does not guarantee the codebase is secret-free. Secrets for which verification is unavailable (11 detector types) are always reported as unverified and are suppressed by `--only-verified`. Pair `--only-verified` with a separate unfiltered scan if you need full coverage.
 :::
 
 ## Using exit codes in shell scripts

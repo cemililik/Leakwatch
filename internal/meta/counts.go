@@ -1,7 +1,10 @@
-// Package meta holds the canonical, human-maintained project counts that are
-// published in the README banner, the social-preview image, and the docs.
+// Package meta holds canonical project counts and verification-capability
+// metadata published in the README banner, social-preview image, and docs.
 //
-// These constants are the single source of truth for the published numbers:
+// These constants are the single source of truth for release metadata and
+// registry/output counts.
+// VerificationCapabilities is the separate source of truth for direct-live,
+// context-required, format-only, and no-verifier capability counts:
 //
 //   - Detectors and Verifiers are guarded at test time against the live
 //     registries (detector.All() / verifier.All()), so adding or removing one
@@ -17,12 +20,14 @@
 // re-render their PNGs (the re-render command is in each asset's header).
 package meta
 
+import "strings"
+
 //go:generate go run ./statsgen
 
 const (
 	// Detectors is the number of compile-time registered secret detectors;
 	// it must equal len(detector.All()).
-	Detectors = 64
+	Detectors = 65
 
 	// Verifiers is the number of registered verifiers; it must equal
 	// len(verifier.All()).
@@ -35,4 +40,23 @@ const (
 	// OutputFormats is the number of output formats: json, sarif, csv, table,
 	// and github.
 	OutputFormats = 5
+
+	// OutputFormatList is the canonical user-facing order and spelling used by
+	// CLI help and documentation contracts.
+	OutputFormatList = "json, sarif, csv, table, github"
 )
+
+// OutputFormatNames returns the canonical output formats as a fresh slice.
+func OutputFormatNames() []string {
+	return strings.Split(OutputFormatList, ", ")
+}
+
+// IsOutputFormat reports whether name is a canonical output format.
+func IsOutputFormat(name string) bool {
+	for _, format := range OutputFormatNames() {
+		if name == format {
+			return true
+		}
+	}
+	return false
+}

@@ -25,12 +25,13 @@ func makeJWT(iss string) string {
 
 func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v2/", r.URL.Path)
+		assert.Equal(t, "/api/v2/clients", r.URL.Path)
+		assert.Equal(t, "1", r.URL.Query().Get("per_page"))
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer server.Close()
 
@@ -53,6 +54,7 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"statusCode":401,"error":"Unauthorized","message":"Invalid token"}`))
 	}))
@@ -118,10 +120,7 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 	assert.Equal(t, "empty token", result.Message)
 }
 
-func TestVerify_NonJWTToken_ReturnsUnverified(t *testing.T) {
-	// No apiURL override: the verifier must derive the tenant from the token
-	// itself. A non-JWT token cannot be routed, so the result is indeterminate
-	// (StatusUnverified) — never a false "invalid".
+func TestVerify_MissingTrustedOrigin_ReturnsUnverified(t *testing.T) {
 	v := &Verifier{}
 
 	raw := detector.RawFinding{
@@ -133,21 +132,17 @@ func TestVerify_NonJWTToken_ReturnsUnverified(t *testing.T) {
 	result := v.Verify(context.Background(), raw)
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
-	assert.Contains(t, result.Message, "tenant domain")
+	assert.Contains(t, result.Message, "trusted Auth0 tenant origin")
 }
 
-func TestVerify_TenantHostDerivedFromIssClaim(t *testing.T) {
-	var gotHost string
+func TestVerify_UntrustedIssuerClaimCannotSelectDestination(t *testing.T) {
+	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHost = r.Host
-		assert.Equal(t, "/api/v2/", r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
+		called = true
+		t.Fatalf("untrusted JWT issuer triggered request to %s", r.URL)
 	}))
 	defer server.Close()
 
-	// The iss claim points the verifier at the test server; apiURL is left
-	// unset so the iss-decoding path (not the test override) is exercised.
 	v := &Verifier{httpClient: server.Client()}
 
 	raw := detector.RawFinding{
@@ -158,50 +153,20 @@ func TestVerify_TenantHostDerivedFromIssClaim(t *testing.T) {
 
 	result := v.Verify(context.Background(), raw)
 
-	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.NotEmpty(t, gotHost)
+	require.Equal(t, finding.StatusUnverified, result.Status)
+	assert.False(t, called)
 }
 
-func TestIssuerFromJWT(t *testing.T) {
-	tests := []struct {
-		name    string
-		token   string
-		wantIss string
-		wantOK  bool
-	}{
-		{
-			name:    "valid JWT with iss",
-			token:   makeJWT("https://acme.eu.auth0.com/"),
-			wantIss: "https://acme.eu.auth0.com/",
-			wantOK:  true,
-		},
-		{
-			name:   "not a JWT (single segment)",
-			token:  "plaintextsecret",
-			wantOK: false,
-		},
-		{
-			name:   "wrong segment count",
-			token:  "a.b.c.d",
-			wantOK: false,
-		},
-		{
-			name:   "JWT without iss claim",
-			token:  makeJWT(""),
-			wantOK: false,
-		},
-		{
-			name:   "invalid base64 payload",
-			token:  "aaa.!!!not-base64!!!.ccc",
-			wantOK: false,
-		},
-	}
+func TestNewForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://fixture.eu.auth0.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://fixture.eu.auth0.com", configured.apiURL)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			iss, ok := issuerFromJWT(tt.token)
-			assert.Equal(t, tt.wantOK, ok)
-			assert.Equal(t, tt.wantIss, iss)
-		})
+	for _, origin := range []string{
+		"http://fixture.auth0.com", "https://127.0.0.1", "https://localhost",
+		"https://user:pass@fixture.auth0.com", "https://fixture.auth0.com/path",
+	} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
 	}
 }

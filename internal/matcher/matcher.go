@@ -4,6 +4,7 @@
 package matcher
 
 import (
+	"sort"
 	"strings"
 	"sync"
 
@@ -116,6 +117,7 @@ func (m *Matcher) Match(data []byte) []detector.Detector {
 		for _, det := range m.allDetectors {
 			result = append(result, det)
 		}
+		sortDetectors(result)
 		return result
 	}
 
@@ -152,5 +154,12 @@ func (m *Matcher) Match(data []byte) []detector.Detector {
 			result = append(result, det)
 		}
 	}
+	sortDetectors(result)
 	return result
+}
+
+func sortDetectors(detectors []detector.Detector) {
+	sort.Slice(detectors, func(i, j int) bool {
+		return detectors[i].ID() < detectors[j].ID()
+	})
 }

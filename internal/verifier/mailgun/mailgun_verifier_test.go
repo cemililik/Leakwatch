@@ -4,14 +4,43 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/verifier"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+type statusSequence struct {
+	mu       sync.Mutex
+	statuses []int
+	calls    int
+}
+
+func (s *statusSequence) handler(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	index := s.calls
+	s.calls++
+	status := s.statuses[len(s.statuses)-1]
+	if index < len(s.statuses) {
+		status = s.statuses[index]
+	}
+	s.mu.Unlock()
+	if status == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", "0")
+	}
+	w.WriteHeader(status)
+}
+
+func (s *statusSequence) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
 
 func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,4 +182,88 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
+}
+
+func TestVerifyWithRequestGate_AdmitsEveryFallbackAnd429Send(t *testing.T) {
+	tests := []struct {
+		name       string
+		usStatuses []int
+		euStatuses []int
+		wantCalls  int
+	}{
+		{name: "US inactive then EU active", usStatuses: []int{http.StatusUnauthorized}, euStatuses: []int{http.StatusOK}, wantCalls: 2},
+		{name: "US 429 retry inactive then EU active", usStatuses: []int{http.StatusTooManyRequests, http.StatusUnauthorized}, euStatuses: []int{http.StatusOK}, wantCalls: 3},
+		{name: "US inactive then EU 429 retry active", usStatuses: []int{http.StatusUnauthorized}, euStatuses: []int{http.StatusTooManyRequests, http.StatusOK}, wantCalls: 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			us := &statusSequence{statuses: tc.usStatuses}
+			eu := &statusSequence{statuses: tc.euStatuses}
+			usServer := httptest.NewServer(http.HandlerFunc(us.handler))
+			defer usServer.Close()
+			euServer := httptest.NewServer(http.HandlerFunc(eu.handler))
+			defer euServer.Close()
+
+			v := &Verifier{apiURL: usServer.URL, euAPIURL: euServer.URL, httpClient: usServer.Client()}
+			gateCalls := 0
+			result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+				DetectorID: detectorID,
+				Raw:        []byte("key-synthetic-region-sequence-123456"),
+				Redacted:   "key-****3456",
+			}, func() *finding.VerificationResult {
+				gateCalls++
+				return nil
+			})
+
+			assert.Equal(t, finding.StatusVerifiedActive, result.Status)
+			assert.Equal(t, tc.wantCalls, us.callCount()+eu.callCount())
+			assert.Equal(t, tc.wantCalls, gateCalls, "each actual HTTP send needs one admission")
+		})
+	}
+}
+
+func TestVerifyWithRequestGate_RejectionPreventsEURequest(t *testing.T) {
+	us := &statusSequence{statuses: []int{http.StatusUnauthorized}}
+	eu := &statusSequence{statuses: []int{http.StatusOK}}
+	usServer := httptest.NewServer(http.HandlerFunc(us.handler))
+	defer usServer.Close()
+	euServer := httptest.NewServer(http.HandlerFunc(eu.handler))
+	defer euServer.Close()
+
+	v := &Verifier{apiURL: usServer.URL, euAPIURL: euServer.URL, httpClient: usServer.Client()}
+	gateCalls := 0
+	result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+		DetectorID: detectorID,
+		Raw:        []byte("key-synthetic-gate-reject-123456789"),
+		Redacted:   "key-****6789",
+	}, func() *finding.VerificationResult {
+		gateCalls++
+		if gateCalls == 2 {
+			return &finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+		}
+		return nil
+	})
+
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Equal(t, "admission rejected", result.Message)
+	assert.Equal(t, 1, us.callCount())
+	assert.Zero(t, eu.callCount())
+}
+
+func TestVerificationRequestBudget_CoversTwoRegionsAndRetries(t *testing.T) {
+	v := &Verifier{}
+	assert.Equal(t, 4, v.VerificationRequestBudget())
+	var _ verifier.RequestGatedVerifier = v
+}
+
+func TestVerifyWithRequestGate_EmptyTokenConsumesNoAdmission(t *testing.T) {
+	v := &Verifier{}
+	gateCalls := 0
+	result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{}, func() *finding.VerificationResult {
+		gateCalls++
+		return nil
+	})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Zero(t, gateCalls)
 }

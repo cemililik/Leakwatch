@@ -99,7 +99,8 @@ verification:
   # Enable live verification against provider APIs.
   enabled: true
 
-  # Per-request HTTP timeout. Must be >= 1ms when verification is enabled.
+  # Per-finding verification-operation timeout, including bounded fallback and
+  # request admission. Must be >= 1ms when verification is enabled.
   # Use a duration string (e.g. "10s", "500ms") — a bare integer is
   # treated as nanoseconds and will fail validation.
   timeout: 10s
@@ -176,7 +177,7 @@ custom-rules: []
 ```
 
 :::note
-`detection.entropy.threshold` controls which entropy value is displayed alongside a finding, and gates any detector that opts into entropy-based heuristics — currently only the built-in `generic-api-key` detector, plus custom rules that declare their own `entropy` field. A match from one of these whose entropy falls below the threshold is suppressed as a likely placeholder. Every other (structural/format-anchored) built-in detector — `aws-access-key-id`, `github-token`, and the rest — has its own fixed match criteria and is **never** dropped by this setting, regardless of entropy.
+`detection.entropy.enabled` controls whether a computed entropy value is present alongside findings. `detection.entropy.threshold` does not control display; it gates detectors that opt into engine entropy heuristics — currently only the built-in `generic-api-key` detector. A match whose entropy falls below that threshold is suppressed as a likely placeholder. Custom rules that declare an `entropy` field apply their own independent per-rule threshold. Every structural/format-anchored built-in detector — `aws-access-key-id`, `github-token`, and the rest — is **never** dropped by the engine threshold, regardless of entropy.
 :::
 
 ## Validation

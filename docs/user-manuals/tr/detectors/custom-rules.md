@@ -1,11 +1,11 @@
 ---
 title: "Özel Kurallar"
-description: "YAML ile kendi sır tespit kalıplarınızı nasıl tanımlayacağınız ve 64 yerleşik dedektörün yanında bir Leakwatch taramasına nasıl ekleyeceğiniz."
+description: "YAML ile kendi sır tespit kalıplarınızı nasıl tanımlayacağınız ve 65 yerleşik dedektörün yanında bir Leakwatch taramasına nasıl ekleyeceğiniz."
 ---
 
 # Özel Kurallar
 
-64 yerleşik dedektör yaygın kullanılan kimlik bilgisi formatlarını kapsar; ancak her kuruluşun dahili token'ları, özel servis anahtarları veya hiçbir genel aracın önceden tahmin edemeyeceği ortama özgü kalıpları vardır. Özel kurallar, kaynak kodu değiştirmeden veya ikili dosyayı yeniden derlemeden kendi kalıplarınızı düz YAML ile tanımlamanıza ve çalışma zamanında yüklemenize olanak tanıyarak Leakwatch'ı genişletmenizi sağlar.
+65 yerleşik dedektör yaygın kullanılan kimlik bilgisi formatlarını kapsar; ancak her kuruluşun dahili token'ları, özel servis anahtarları veya hiçbir genel aracın önceden tahmin edemeyeceği ortama özgü kalıpları vardır. Özel kurallar, kaynak kodu değiştirmeden veya ikili dosyayı yeniden derlemeden kendi kalıplarınızı düz YAML ile tanımlamanıza ve çalışma zamanında yüklemenize olanak tanıyarak Leakwatch'ı genişletmenizi sağlar.
 
 ## Özel kurallar nerede tanımlanır
 
@@ -116,5 +116,5 @@ filter:
 ## Ayrıca bakın
 
 - [Yapılandırma: Yapılandırma Dosyası](#/configuration/config-file) — `custom-rules:` öğesinin belge yapısındaki yeri dahil `.leakwatch.yaml` için tam referans.
-- [Dedektör Kataloğu](#/detectors/detector-catalog) — özel kuralınızı adlandırmadan önce ID çakışmalarını kontrol etmek için 64 yerleşik dedektör.
+- [Dedektör Kataloğu](#/detectors/detector-catalog) — özel kuralınızı adlandırmadan önce ID çakışmalarını kontrol etmek için 65 yerleşik dedektör.
 - [Nasıl Çalışır](#/getting-started/how-it-works) — `keywords` öğesinin bağlandığı Aho-Corasick ön-filtre hattı.

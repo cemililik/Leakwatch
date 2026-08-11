@@ -17,9 +17,9 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/self", r.URL.Path)
 		// The Snyk REST API requires the version as a query parameter.
-		assert.Equal(t, "2024-04-29", r.URL.Query().Get("version"))
+		assert.Equal(t, "2024-10-15", r.URL.Query().Get("version"))
 		assert.Equal(t, "token test-snyk-api-key-abcdef1234567890", r.Header.Get("Authorization"))
-		assert.Equal(t, "2024-04-29", r.Header.Get("Version"))
+		assert.Equal(t, "2024-10-15", r.Header.Get("Version"))
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -46,6 +46,7 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":401,"message":"Invalid auth token provided"}`))
 	}))
@@ -68,7 +69,26 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	assert.Equal(t, "Snyk API key is invalid or revoked", result.Message)
 }
 
-func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>login</html>`},
+		{contentType: "application/json", body: `{"code":401,"message":"challenge"}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")},
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
+}
+
+func TestVerify_ForbiddenKey_ReturnsVerifyError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"code":403,"message":"Forbidden"}`))
@@ -88,8 +108,35 @@ func TestVerify_ForbiddenKey_ReturnsInactive(t *testing.T) {
 
 	result := v.Verify(context.Background(), raw)
 
-	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "Snyk API key is invalid or revoked", result.Message)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Contains(t, result.Message, "403")
+}
+
+func TestVerify_MalformedSuccessResponse_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing data", contentType: "application/vnd.api+json", body: `{}`},
+		{name: "null data", contentType: "application/json", body: `{"data":null}`},
+		{name: "wrong content type", contentType: "text/plain", body: `{"data":{}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {
@@ -134,4 +181,22 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
+}
+
+func TestVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
+	v := &Verifier{}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted Snyk API origin is not configured", result.Message)
+}
+
+func TestNewForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://api.eu.snyk.io/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.eu.snyk.io", configured.apiURL)
+	for _, origin := range []string{"http://api.snyk.io", "https://127.0.0.1", "https://localhost", "https://api.snyk.io/rest"} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
 }

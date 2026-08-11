@@ -3,8 +3,10 @@ package meta
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,4 +67,43 @@ func TestOutputFormats_MatchOutputPackageDirectories(t *testing.T) {
 	assert.Equal(t, OutputFormats, got,
 		"meta.OutputFormats drifted from the number of internal/output subpackages; "+
 			"update internal/meta then run `go generate ./...`")
+	assert.Len(t, OutputFormatNames(), OutputFormats,
+		"meta.OutputFormatList and meta.OutputFormats must change together")
+
+	seen := make(map[string]struct{}, OutputFormats)
+	for _, format := range OutputFormatNames() {
+		assert.Regexp(t, regexp.MustCompile(`^[a-z][a-z0-9-]*$`), format)
+		if _, duplicate := seen[format]; duplicate {
+			t.Errorf("duplicate output format %q", format)
+		}
+		seen[format] = struct{}{}
+		assert.True(t, IsOutputFormat(format))
+	}
+	assert.False(t, IsOutputFormat(""))
+	assert.False(t, IsOutputFormat("unknown"))
+}
+
+func TestReleaseMetadata_MatchesPublishedDocumentation(t *testing.T) {
+	assert.Regexp(t, regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`), ReleaseVersion)
+	assert.Regexp(t, regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`), ReleaseDate)
+	_, err := time.Parse(time.DateOnly, ReleaseDate)
+	require.NoError(t, err, "ReleaseDate must be a real ISO 8601 calendar date")
+
+	changelog, err := os.ReadFile(filepath.Join("..", "..", "CHANGELOG.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(changelog), "## ["+ReleaseVersion+"] - "+ReleaseDate,
+		"release metadata must identify a published changelog entry")
+
+	roadmap, err := os.ReadFile(filepath.Join("..", "..", "docs", "05-ROADMAP.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(roadmap),
+		"| Phase 9 — Detection Accuracy & FP Reduction | Completed | `"+ReleaseVersion+"` | "+ReleaseDate+" |",
+		"roadmap release record must match canonical release metadata")
+	assert.Contains(t, string(roadmap),
+		"| Phase 10 — Detector Library Expansion | Planned | `v1.9.0` | — |",
+		"the next minor version must remain assigned to planned Phase 10")
+	assert.NotContains(t, string(roadmap),
+		"| Phase 9 — Detection Accuracy & FP Reduction | Planned | `"+ReleaseVersion+"` | — |")
+	assert.Contains(t, string(roadmap), "| Broaden OpenAI key coverage | Delivered in `v1.7.0` |")
+	assert.Contains(t, string(roadmap), "| GitHub fine-grained PAT support | Delivered in `v1.7.0` |")
 }

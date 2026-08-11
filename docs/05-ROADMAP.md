@@ -1,9 +1,9 @@
 # Leakwatch - Phased Development Roadmap
 
-> **Document Version:** 7.1
+> **Document Version:** 7.2
 > **Date:** 2026-04-09
 > **Status:** Approved
-> **Last Updated:** 2026-05-25
+> **Last Updated:** 2026-08-11
 
 ---
 
@@ -24,14 +24,46 @@
 | Phase 8.3 — Scan Summary + Security | Completed | `v1.4.0` | 2026-04-08 |
 | Phase 8.4 — False Positive Reduction | Completed | `v1.5.0` | 2026-04-09 |
 | Phase 8.5 — GitHub Marketplace Action & Distribution | Completed | `v1.6.0` | 2026-05-25 |
-| Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.7.0` | — |
-| Phase 10 — Detector Library Expansion | Planned | `v1.8.0` | — |
-| Phase 11 — Verification Depth & Credential Impact | Planned | `v1.9.0` | — |
-| Phase 12 — Source Expansion (Confluence/Jira, org-scale) | Planned | `v1.10.0` | — |
-| Phase 13 — Secrets Inventory | Planned | `v1.11.0` | — |
-| Phase 14 — Honeytokens | Planned | `v1.12.0` | — |
+| Review Remediation Release | Released | `v1.7.0` | 2026-07-20 |
+| Phase 9 — Detection Accuracy & FP Reduction | Completed | `v1.8.0` | 2026-08-11 |
+| Phase 10 — Detector Library Expansion | Planned | `v1.9.0` | — |
+| Phase 11 — Verification Depth & Credential Impact | Planned | `v1.10.0` | — |
+| Phase 12 — Source Expansion (Confluence/Jira, org-scale) | Planned | `v1.11.0` | — |
+| Phase 13 — Secrets Inventory | Planned | `v1.12.0` | — |
+| Phase 14 — Honeytokens | Planned | `v1.13.0` | — |
 
-> **Prioritization note (v7.0):** the planned sequence is re-ordered so the work that most strengthens the core promise — accurate, verified, low-noise findings — comes first. Detection accuracy and false-positive reduction (Phase 9), broader coverage of high-blast-radius credential types (Phase 10), and deeper verification with credential-impact insight (Phase 11) precede new scan sources (Phase 12) and the inventory/honeytoken platform features (Phases 13–14). Rationale is detailed in [Planned Work — Prioritization](#planned-work--prioritization).
+> **Prioritization note (v7.0):** the planned sequence is re-ordered so the work that most strengthens the core promise — accurate, verified, low-noise findings — comes first. Detection accuracy and false-positive reduction (Phase 9, completed in `v1.8.0`), broader coverage of high-blast-radius credential types (Phase 10), and deeper verification with credential-impact insight (Phase 11) precede new scan sources (Phase 12) and the inventory/honeytoken platform features (Phases 13–14). Rationale is detailed in [Planned Work — Prioritization](#planned-work--prioritization).
+
+### v1.8.0 Highlights
+
+- **Detection accuracy** — structured configuration and generic API-key detection now cover realistic SDK, shell, YAML, JSON, TOML, INI, dotenv, and XML shapes while rejecting source-code, prose, locale, placeholder, and package-version lookalikes
+- **Verification reliability** — inactive credentials require strict provider-authentication evidence and JSON response contracts; trusted origins, regional fallbacks, rate admission, cancellation, panic containment, and metadata enrichment fail conservatively
+- **Source resilience** — Slack pagination, attachment failures, rate-limit waits, Git cancellation/cleanup, and GCS client ownership now surface partial failures without silent clean scans or lifecycle races
+- **Truthful product surface** — capability counts, verifier context requirements, CLI flags, EN/TR manuals, generated site content, release metadata, and CI drift guards share machine-checked sources of truth
+- **Security and quality gates** — mutation-sensitive HTTP/SSRF/rate-limit/display-width tests, full race coverage, provider-contract audits, protected VSIX publication, and release-time registry checks defend the published artifact
+
+### v1.7.0 Highlights
+
+- **Full-project remediation release** — findings from a multi-dimensional review of the code, tests, documentation, CI/CD, VS Code extension, and website were remediated and recorded in the changelog
+- **Detection and scan correctness** — expanded token coverage, per-file scanning, consistent exclusion flags, deterministic and bounded engine behavior, correct Git-history attribution, and stricter false-positive handling
+- **Verification accuracy** — corrected provider endpoint/context handling and removed verification paths that could not truthfully prove credential liveness
+- **Secret-safe output and transport** — raw credentials are excluded from default output and logs; panic, URL, terminal, CSV, container, and editor trust boundaries were hardened
+- **Quality and supply-chain gates** — detector coverage, website drift, VS Code, Windows build, SBOM/signing, security scanning, and dependency/toolchain checks were strengthened
+
+### Post-v1.7.0 hardening-wave status
+
+| Product capability | Status | Delivery boundary |
+|---|---|---|
+| Slack text-file attachments | **Shipped** | Explicit `--include-files`, bounded text-only downloads from Slack-owned HTTPS endpoints |
+| GitHub/GitLab scope and expiry metadata | **Shipped** | Best-effort metadata after authoritative active verification |
+| VSIX build and Marketplace icon | **Shipped** | Lockfile-pinned CI package and reviewable artifact |
+| Visual Studio Marketplace publication | **Experimental** | Manual, protected-environment promotion only |
+| Provider contract freshness audit | **Shipped** | Primary references plus weekly 180-day gate |
+| Baseline/snapshot suppression | **Planned** | HMAC-keyed design and threat model in ADR-0011; no current CLI surface |
+| Coinbase legacy live HMAC verification | **Planned** | Format-only until unambiguous pair correlation and safe provider proof exist |
+| Live provider canaries | **Planned** | Provider-specific, secret-safe protected opt-in; never default CI |
+
+See [ADR-0011](decisions/ADR-0011-product-trust-boundaries.md) for the trust boundaries and acceptance requirements behind these labels.
 
 ### v1.6.0 Highlights
 
@@ -94,7 +126,7 @@
 
 ## Roadmap Overview
 
-Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–8 (through `v1.6.0`) are complete; Phases 9–14 are the planned forward path, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
+Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–9 (through `v1.8.0`) are complete. Phases 10–14 remain the planned forward path beginning with `v1.9.0`, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
 
 ```mermaid
 gantt
@@ -134,8 +166,11 @@ gantt
         UX, Security, FP reduction      :done, f8, after f6, 6w
         Marketplace Action & distrib.   :done, f85, after f8, 3w
 
-    section Planned v1.7.0+
-        Detection accuracy & FP         :p9, after f85, 5w
+    section Completed v1.7.0-v1.8.0
+        Full-project review remediation :done, f87, after f85, 4w
+        Detection accuracy & FP         :done, p9, after f87, 5w
+
+    section Planned v1.9.0+
         Detector library expansion      :p10, after p9, 6w
         Verification depth & impact     :p11, after p10, 6w
         Source expansion                :p12, after p11, 6w
@@ -422,36 +457,36 @@ The product's core promise is **accurate, verified, low-noise secret findings**.
 
 **Goal:** Make accuracy a measurable strength. Raise detector precision and recall, cut false positives across the board, and ensure every documented detection/verification behavior actually fires. This phase improves the quality of every existing scan without adding new surfaces.
 
-**Duration:** 4-5 weeks | **Version:** `v1.7.0` | **Status:** Planned
+**Duration:** 4-5 weeks | **Version:** `v1.8.0` | **Status:** Planned
 
 ### Deliverables
 
-| Task | Priority | Description |
-|------|----------|-------------|
-| Centralized false-positive filter | Critical | Shared module applied before verification: common placeholder values, a dictionary/word-list of dummy strings, and known non-secret patterns, so individual detectors no longer each re-implement ad-hoc skips |
-| Engine-level entropy gating | Critical | Apply the configured `detection.entropy.threshold` in the detection engine itself (today only custom YAML rules honor it), so low-entropy matches are dropped consistently |
-| Keyword pre-filters for high-noise detectors | High | Add Aho-Corasick pre-filter keywords / context anchors to detectors that currently scan every chunk (e.g. Telegram, Discord), which today fire on any token-shaped string |
-| Broaden OpenAI key coverage | High | Detect legacy and service-account key variants in addition to project keys, anchoring on the embedded provider marker for precision (fewer misses, fewer false positives) |
-| GitHub fine-grained PAT support | High | Extend the GitHub detector to cover fine-grained personal access tokens (`github_pat_`), now a default token type |
-| Wire okta / shopify / bitbucket verification | High | Populate the `ExtraData` fields (`domain`, `store_domain`, `username`) these verifiers require, so the three detectors actually reach verified/inactive instead of always-unverified |
-| Tighten Anthropic key regex | Medium | Anchor exact length and trailing marker; distinguish admin from standard keys |
-| Mailgun & JWT format breadth | Medium | Add the alternate Mailgun key format; broaden JWT matching to pretty-printed / base64-variant headers and optional padding |
-| Supabase service-role detection | Medium | Detect service-role JWTs (`role: service_role`) in addition to management PATs, so coverage matches the detector's name |
-| Bounded / streaming result buffering | Medium | Cap or stream the in-memory finding buffer so adversarially large inputs cannot exhaust memory before the verification phase |
-| Accuracy benchmark suite | High | Curated true/false corpus measuring precision and recall per detector, run in CI to guard against regressions |
+| Task | Status | Priority | Description |
+|------|--------|----------|-------------|
+| Centralized false-positive filter | Planned | Critical | Shared module applied before verification: common placeholder values, a dictionary/word-list of dummy strings, and known non-secret patterns, so individual detectors no longer each re-implement ad-hoc skips |
+| Engine-level entropy gating | Delivered in `v1.7.0` | Critical | The configured `detection.entropy.threshold` gates opt-in heuristic findings while structural detectors remain eligible; [ADR-0010](decisions/ADR-0010-entropy-gating-policy.md) owns the policy |
+| Keyword pre-filters for high-noise detectors | Planned | High | Add Aho-Corasick pre-filter keywords / context anchors to detectors that still scan every chunk; validate them against the accuracy corpus |
+| Broaden OpenAI key coverage | Delivered in `v1.7.0` | High | Legacy and service-account variants ship alongside project keys, anchored on provider-specific structure |
+| GitHub fine-grained PAT support | Delivered in `v1.7.0` | High | Fine-grained personal access tokens (`github_pat_`) are detected |
+| Trusted Shopify issuer configuration | Delivered after `v1.7.0` | High | The CLI accepts only an explicit, validated operator-controlled store origin; finding-controlled domains never select the target |
+| Tighten Anthropic key regex | Planned | Medium | Anchor exact length and trailing marker; distinguish admin from standard keys |
+| Mailgun & JWT format breadth | Planned | Medium | Add the alternate Mailgun key format; broaden JWT matching to pretty-printed / base64-variant headers and optional padding |
+| Supabase service-role detection | Planned | Medium | Detect service-role JWTs (`role: service_role`) in addition to management PATs; the existing `sbp_` detector is explicitly documented as a Management PAT |
+| Bounded result buffering | Delivered in `v1.7.0` | Medium | Scan result memory is explicitly bounded before verification |
+| Accuracy benchmark suite | Planned | High | Curated true/false corpus measuring precision and recall per detector, run in CI to guard against regressions |
 
 ### Acceptance Criteria
 
 - [ ] Verified-mode false-positive rate is measured on the benchmark corpus and meets the `<5%` target
-- [ ] The configured entropy threshold gates findings engine-wide, not only for custom rules
+- [x] The configured entropy threshold gates findings engine-wide, not only for custom rules (`v1.7.0`)
 - [ ] Telegram/Discord (and other previously keyword-less detectors) no longer fire on unrelated numeric/base64 strings in the corpus
-- [ ] okta, shopify, and bitbucket findings produce verified/inactive results end-to-end
-- [ ] OpenAI legacy/service-account keys and GitHub `github_pat_` tokens are detected
+- [x] Shopify findings reach verification only through a validated operator-trusted store origin; Okta and Bitbucket retain their detector-to-verifier context wiring (post-`v1.7.0`, awaiting the next release)
+- [x] OpenAI legacy/service-account keys and GitHub `github_pat_` tokens are detected (`v1.7.0`)
 - [ ] Detector test coverage stays ≥95% for every touched detector
 
 ### Exit Criteria
 
-GitHub Release published with `v1.7.0` tag.
+GitHub Release published with `v1.8.0` tag.
 
 ---
 
@@ -459,7 +494,7 @@ GitHub Release published with `v1.7.0` tag.
 
 **Goal:** Grow coverage of frequently-leaked, high-blast-radius credential types, prioritizing secrets whose exposure causes the most damage. Every new detector with a public verification endpoint ships with its verifier.
 
-**Duration:** 5-6 weeks | **Version:** `v1.8.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.9.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -482,7 +517,7 @@ GitHub Release published with `v1.7.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.8.0` tag.
+GitHub Release published with `v1.9.0` tag.
 
 ---
 
@@ -490,13 +525,13 @@ GitHub Release published with `v1.8.0` tag.
 
 **Goal:** Deepen the verification differentiator. Harden the verification engine, verify more credential classes, and — for live secrets — tell users what the credential can actually reach so they can triage blast radius.
 
-**Duration:** 5-6 weeks | **Version:** `v1.9.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.10.0` | **Status:** Planned
 
 ### Deliverables
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| Per-provider rate limiting, caching & backoff | Critical | Replace the single global token-bucket limiter with per-provider limits, response caching to avoid re-verifying identical secrets, and exponential backoff/retry on transient failures |
+| Provider policy, caching & transient backoff | Critical | Build on the current global plus per-detector token-bucket limiters and one bounded, safe `Retry-After` replay: add provider-specific policies, response caching to avoid re-verifying identical secrets, and broader safe transient backoff |
 | Canary-safe verification | High | Recognize well-known decoy/canary credential formats and skip live verification for them, so a scan never triggers an alert on someone else's planted token |
 | Active private-key verification | High | Where a safe check exists, derive the public key from a detected private key and confirm liveness/association; introduce a distinct "verified key material" status that does not overstate access |
 | Credential impact analysis | High | Opt-in: for a verified secret, enumerate its effective permissions and reachable resources, starting with the highest-value providers, so users understand blast radius — not just that a secret is live |
@@ -504,7 +539,7 @@ GitHub Release published with `v1.8.0` tag.
 
 ### Acceptance Criteria
 
-- [ ] Per-provider limits and response caching are verified under load; transient failures retry with backoff
+- [ ] Provider-specific policies and response caching are verified under load; eligible transient failures retry with bounded backoff
 - [ ] Known canary credential formats are never sent to a live endpoint
 - [ ] Private-key findings can reach a "verified key material" status without implying broader access
 - [ ] Impact analysis produces a permission/resource summary for at least the top-priority providers
@@ -512,7 +547,7 @@ GitHub Release published with `v1.8.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.9.0` tag.
+GitHub Release published with `v1.10.0` tag.
 
 ---
 
@@ -520,7 +555,7 @@ GitHub Release published with `v1.9.0` tag.
 
 **Goal:** Reach secrets wherever they live — collaboration platforms and org-scale code hosting — now that the detection/verification core is strong.
 
-**Duration:** 5-6 weeks | **Version:** `v1.10.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.11.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -532,7 +567,7 @@ GitHub Release published with `v1.9.0` tag.
 | `scan confluence` command | Critical | Space filtering, attachment scanning |
 | `scan jira` command | Critical | Project filtering, JQL support |
 | Org-scale repository enumeration | High | Scan every repository (and its history) under an organization/group via the hosting API, instead of a single local/remote repo at a time |
-| Slack file content scanning | Medium | Fetch and scan file attachments via the Files API, completing the `--include-files` flag that is currently accepted but a no-op |
+| Slack file content scanning | Delivered after `v1.7.0` | Fetch and scan bounded text-like attachments via the Files API when `--include-files` is set |
 | SourceMetadata fields | High | Space, page, issue key, org/repo context in findings |
 | Additional platform sources | Low | API-collection platforms, CI systems, and search clusters as demand warrants |
 | Tests | High | `httptest.NewServer` mocks |
@@ -545,11 +580,11 @@ GitHub Release published with `v1.9.0` tag.
 - [ ] Both Cloud and Server editions supported
 - [ ] HTML content properly extracted from Confluence storage format
 - [ ] An entire organization's repositories can be enumerated and scanned from a single command
-- [ ] Slack file attachments are fetched and scanned when `--include-files` is set
+- [x] Slack file attachments are fetched and scanned when `--include-files` is set (post-`v1.7.0` hardening wave)
 
 ### Exit Criteria
 
-GitHub Release published with `v1.10.0` tag.
+GitHub Release published with `v1.11.0` tag.
 
 ---
 
@@ -557,7 +592,7 @@ GitHub Release published with `v1.10.0` tag.
 
 **Goal:** Persistent SQLite-based inventory tracking secrets across scans.
 
-**Duration:** 4-5 weeks | **Version:** `v1.11.0` | **Status:** Planned
+**Duration:** 4-5 weeks | **Version:** `v1.12.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -584,7 +619,7 @@ GitHub Release published with `v1.10.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.11.0` tag.
+GitHub Release published with `v1.12.0` tag.
 
 ---
 
@@ -592,7 +627,7 @@ GitHub Release published with `v1.11.0` tag.
 
 **Goal:** Generate and deploy decoy credentials that alert on unauthorized use.
 
-**Duration:** 3-4 weeks | **Version:** `v1.12.0` | **Status:** Planned
+**Duration:** 3-4 weeks | **Version:** `v1.13.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -618,7 +653,7 @@ GitHub Release published with `v1.11.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.12.0` tag.
+GitHub Release published with `v1.13.0` tag.
 
 ---
 
@@ -633,8 +668,8 @@ Earlier reviews recorded behaviors that the documentation or public interface pr
 | Supabase service-role JWT not detected (only management PAT) | Phase 9 |
 | Unbounded in-memory result buffering | Phase 9 |
 | `--remediation-format brief\|full` flag not implemented | Phase 9 (minor) |
-| Per-provider rate limiting, verification caching, exponential backoff/retry | Phase 11 |
-| Slack file scanning (`--include-files` is a no-op) | Phase 12 |
+| Provider-specific verification policy, caching, and broader bounded transient backoff | Phase 11 |
+| Slack file scanning | Delivered after `v1.7.0`; `--include-files` is explicit opt-in |
 
 > **Minor item — `--remediation-format`:** today only a boolean `--remediation` flag exists; the `brief|full` variant referenced in the Phase 6 deliverables and the verification guide is unimplemented. Small UX task, folded into Phase 9.
 
@@ -765,12 +800,13 @@ Source packages (no formal standard, but visible gaps):
 | `v1.4.0` | Phase 8.3 | Scan summary, `init` command, colored table, security patches | 2026-04-08 |
 | `v1.5.0` | Phase 8.4 | False positive reduction, ADO.NET support | 2026-04-09 |
 | `v1.6.0` | Phase 8.5 | GitHub Marketplace Action, `github` output format, config wiring | 2026-05-25 |
-| `v1.7.0` | Phase 9 | Detection accuracy & false-positive reduction | — |
-| `v1.8.0` | Phase 10 | Detector library expansion | — |
-| `v1.9.0` | Phase 11 | Verification depth & credential impact | — |
-| `v1.10.0` | Phase 12 | Source expansion (Confluence/Jira, org-scale) | — |
-| `v1.11.0` | Phase 13 | Secrets inventory (SQLite) | — |
-| `v1.12.0` | Phase 14 | Honeytokens | — |
+| `v1.7.0` | Review Remediation | Full-project review remediation, correctness, security, and CI hardening | 2026-07-20 |
+| `v1.8.0` | Phase 9 | Detection accuracy & false-positive reduction | 2026-08-11 |
+| `v1.9.0` | Phase 10 | Detector library expansion | — |
+| `v1.10.0` | Phase 11 | Verification depth & credential impact | — |
+| `v1.11.0` | Phase 12 | Source expansion (Confluence/Jira, org-scale) | — |
+| `v1.12.0` | Phase 13 | Secrets inventory (SQLite) | — |
+| `v1.13.0` | Phase 14 | Honeytokens | — |
 | `v2.x.x` | Future | ML detection, SaaS platform, Vault | Ongoing |
 
 > **Note on v1.1.0 / v1.2.0:** Phase 6 (Remediation Guidance) and Phase 7 (Slack Scanning) were completed and merged into `main`, but no `v1.1.0` or `v1.2.0` git tags were ever created. The features shipped as part of the `v1.3.0` release. The version slots are preserved here to keep the phase-to-version mapping consistent.
@@ -796,7 +832,7 @@ Source packages (no formal standard, but visible gaps):
 |--------|----------------|-----------------|
 | GitHub Stars | 500+ | 2,000+ |
 | Contributors | 5+ | 15+ |
-| Detector count | 64 (achieved) | 120+ |
+| Detector count | 65 (achieved) | 120+ |
 | Verifier count | 54 (achieved) | 80+ |
 | Source count | 6 (fs, git, container, S3, GCS, Slack) | 9+ |
 
@@ -816,14 +852,18 @@ Source packages (no formal standard, but visible gaps):
 
 ## Master Review — Documented-but-Unimplemented Gaps
 
-> This section is the **detailed reference** for the gaps found in the 2026-05-22 full-project review. Each item is now scheduled into a planned phase (see the concise [Documented Gap Traceability](#documented-gap-traceability) index); the "Owning phase" column below shows where each is delivered. Each remains **not yet implemented** — the documentation or public interface promises the feature but the code does not deliver it.
+> **Historical snapshot — superseded 2026-08-11:** this inventory preserves the findings as they were recorded during the 2026-05-22 review; it is not a current implementation-status dashboard. The `v1.7.0` release and subsequent review-remediation wave commits have closed or reclassified multiple rows. Current behavior is defined by the executable registry/capability contracts, their CI tests, the user manuals, and the changelog. Future audits must create a new dated snapshot rather than silently rewriting this one.
+>
+> The working `review/FIX-PLAN.md` remains an untracked audit artifact and is intentionally not treated as release metadata. Git commits are the authoritative closure record for the remediation waves.
+
+> At capture time, this section was the **detailed reference** for gaps found in the 2026-05-22 full-project review. The "Owning phase" column records the scheduling decision made in that snapshot; "not implemented" statements below describe the code at that date and must not be read as current status.
 
 | # | Gap | One-line description | Area affected | Owning phase |
 |---|-----|----------------------|---------------|--------------|
-| 1 | **Slack file scanning** | `--include-files` flag is accepted and documented but is a no-op; the `SlackSource` never fetches file content from the Slack Files API. | `internal/source/slack/slack.go`, `docs/guides/slack-scanning.md`, CHANGELOG v1.2.0 | Phase 12 |
-| 2 | **Per-provider rate limiting, verification caching, exponential backoff/retry** | The verifier engine has a single global token-bucket rate limiter; there is no per-provider limit, no response caching, and no retry with backoff. Phase 8 deliverables and the ROADMAP claim per-provider rate limiting is implemented. | `internal/verifier/engine.go`, Phase 8 deliverables table, v1.3.0 highlights | Phase 11 |
+| 1 | **Slack file scanning** | Historical 2026-05-22 finding: `--include-files` was a no-op. Closed after `v1.7.0` with explicit opt-in, bounded text downloads, and `files:read`. | `internal/source/slack/slack.go`, `docs/guides/slack-scanning.md`, CHANGELOG Unreleased | Delivered |
+| 2 | **Provider-specific verification policy, caching, and broader bounded transient backoff** | Historical snapshot: the engine formerly had only one global limiter and no retry. It now enforces global plus per-detector admission and one bounded safe `Retry-After` replay; response caching, provider-tuned policies, and wider eligible transient backoff remain planned. | `internal/verifier/engine.go`, Phase 8 deliverables table, v1.3.0 highlights | Phase 11 |
 | 3 | **`--remediation-format brief\|full` flag** | Only a boolean `--remediation` flag exists; the two-value `brief\|full` variant mentioned in Phase 6 deliverables and `docs/guides/secret-verification.md` is not implemented. | `cmd/scan_common.go`, Phase 6 deliverables table | Phase 9 (minor) |
 | 4 | **Engine-level entropy-threshold gating** | The `detection.entropy.threshold` config value is read and displayed in scan summaries, but the detection engine does not gate findings on it; only custom YAML rules apply their own per-rule entropy threshold. | `internal/engine/`, `internal/config/`, `docs/guides/configuration.md` | Phase 9 |
-| 5 | **okta / shopify / bitbucket live verification** | The verifiers for these three providers exist and compile, but their `Verify()` implementations read `ExtraData` keys (`domain`, `store_domain`, `username` respectively) that no detector currently emits. The findings will always produce a `StatusUnverified` result until the corresponding detectors are updated to populate those `ExtraData` fields. | `internal/verifier/okta/`, `internal/verifier/shopify/`, `internal/verifier/bitbucket/`, and their matching detectors | Phase 9 |
+| 5 | **Shopify trusted-store configuration** | Shopify access-token formats do not identify their issuing store. The verifier deliberately ignores finding-controlled domains and remains `StatusUnverified` until a validated, operator-controlled store origin is available. The read-only 2026-07 GraphQL verifier contract is prepared; Okta and Bitbucket companion context is already wired. | `internal/verifier/shopify/`, `internal/detector/shopify/`, and scan configuration | Phase 9 |
 | 6 | **Supabase real service-role JWT detection** | The `supabase` detector matches the `sbp_` prefix which identifies Supabase Management PATs, not service-role JWTs. Service-role JWTs (`eyJ...` with `role: service_role`) are not detected; the name `supabase-service-key` implies broader coverage than is implemented. | `internal/detector/supabase/supabase_key.go`, README detector table | Phase 9 |
 | 7 | **Unbounded in-memory result buffering** | The scan engine collects all raw findings into a single in-memory slice before passing them to the verification phase — there is no streaming path and no cap on the buffer size. This is acceptable for typical inputs but is a known limitation for very large or adversarial inputs (e.g., a repository engineered to maximise regex matches) where memory consumption could become excessive. Streaming verification or an explicit buffer cap is planned. | `internal/engine/engine.go` | Phase 9 |

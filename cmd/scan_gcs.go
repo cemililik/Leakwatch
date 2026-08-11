@@ -61,5 +61,5 @@ func runScanGCS(cmd *cobra.Command, args []string) error {
 	cfg.ScanTarget = "gs://" + args[0]
 	src := gcssource.New(args[0], opts...)
 
-	return runScan(cmd, cfg, src, nil)
+	return runScan(cmd, cfg, src, src)
 }

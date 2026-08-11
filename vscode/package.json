@@ -4,6 +4,11 @@
   "description": "Detect leaked secrets in your code with Leakwatch",
   "version": "0.1.0",
   "publisher": "HodeTech",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#111316",
+    "theme": "dark"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -70,7 +75,12 @@
         "leakwatch.minSeverity": {
           "type": "string",
           "default": "low",
-          "enum": ["low", "medium", "high", "critical"],
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
           "description": "Minimum severity level to report"
         },
         "leakwatch.showInlineHints": {
@@ -102,6 +112,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "webpack --mode production",
+    "package:vsix": "vsce package --no-dependencies",
     "watch": "webpack --mode development --watch",
     "lint": "eslint src",
     "pretest": "tsc -p ./",
@@ -113,6 +124,7 @@
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",
+    "@vscode/vsce": "3.9.2",
     "eslint": "^9.18.0",
     "ts-loader": "^9.5.0",
     "typescript": "^5.3.0",

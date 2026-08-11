@@ -11,9 +11,11 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -59,6 +61,16 @@ type Config struct {
 	VerifyTimeout     time.Duration
 	VerifyConcurrency int
 	VerifyRateLimit   float64
+	// GrafanaInstanceURL is accepted only from the explicit command-line flag,
+	// never from repository config or detector ExtraData. It is therefore a
+	// trusted operator choice rather than scan-controlled input.
+	GrafanaInstanceURL string
+	// TrustedVerifierOrigins maps a context-required detector ID to an HTTPS
+	// origin explicitly supplied by the operator on this invocation. The cmd
+	// layer never resolves this map from project configuration or environment
+	// variables, preventing scanned repositories from choosing credential
+	// destinations.
+	TrustedVerifierOrigins map[string]string
 
 	// CustomRules are user-defined YAML custom rules from the `custom-rules:`
 	// config block. BuildEngineConfig compiles them into detectors threaded
@@ -125,6 +137,11 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 		slog.Warn("--only-verified has no effect when --no-verify is set")
 	}
 
+	verifiers, err := configuredVerifiers(cfg)
+	if err != nil {
+		return engine.Config{}, err
+	}
+
 	return engine.Config{
 		Concurrency:      cfg.Concurrency,
 		Detectors:        detectors,
@@ -132,10 +149,43 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 		EntropyThreshold: cfg.EntropyThreshold,
 		ShowRaw:          cfg.ShowRaw,
 		VerifierConfig:   verifierCfg,
-		Verifiers:        verifier.All(),
+		Verifiers:        verifiers,
 		OnlyVerified:     cfg.OnlyVerified,
 		MinSeverity:      cfg.MinSeverity,
 	}, nil
+}
+
+func configuredVerifiers(cfg *Config) ([]verifier.Verifier, error) {
+	verifiers := verifier.All()
+	origins := make(map[string]string, len(cfg.TrustedVerifierOrigins)+1)
+	for detectorID, origin := range cfg.TrustedVerifierOrigins {
+		origins[detectorID] = origin
+	}
+	if cfg.GrafanaInstanceURL != "" {
+		if origin, exists := origins["grafana-api-key"]; exists && origin != cfg.GrafanaInstanceURL {
+			return nil, fmt.Errorf("configure trusted verification: conflicting Grafana origins were supplied")
+		}
+		origins["grafana-api-key"] = cfg.GrafanaInstanceURL
+	}
+	if len(origins) == 0 {
+		return verifiers, nil
+	}
+
+	ids := make([]string, 0, len(origins))
+	for detectorID := range origins {
+		ids = append(ids, detectorID)
+	}
+	sort.Strings(ids)
+
+	configured := verifiers
+	for _, detectorID := range ids {
+		var err error
+		configured, err = verifier.ConfigureTrustedInstance(configured, detectorID, origins[detectorID])
+		if err != nil {
+			return nil, fmt.Errorf("configure trusted verification for %q: %w", detectorID, err)
+		}
+	}
+	return configured, nil
 }
 
 // Run executes a single-source scan: it builds the engine, runs the scan under
@@ -146,7 +196,9 @@ func BuildEngineConfig(cfg *Config) (engine.Config, error) {
 // non-nil on interruption (ctx cancelled) or a terminal source failure; in the
 // interruption case a partial, non-nil result is still returned so the caller can
 // render partial findings and choose a distinct interrupted exit code. Only a
-// pre-scan failure (e.g. source validation) yields a nil result.
+// a non-cancellation pre-scan failure yields a nil result. Cancellation during
+// source validation returns an interrupted, non-nil result so the CLI can map
+// it to exit code 3 instead of a generic failure.
 func Run(ctx context.Context, cfg *Config, src source.Source) (*engine.ScanResult, error) {
 	engCfg, err := BuildEngineConfig(cfg)
 	if err != nil {
@@ -203,6 +255,7 @@ func ScanRepos(ctx context.Context, cfg *Config, repoURLs []string, srcOpts []gi
 		result, scanErr := eng.Scan(ctx, src)
 		if closeErr := src.Close(); closeErr != nil {
 			slog.Warn("failed to clean up repo", "url", displayURL, "error", closeErr)
+			scanErr = errors.Join(scanErr, fmt.Errorf("failed to clean up repo %s: %w", displayURL, closeErr))
 		}
 		if result != nil {
 			slog.Info("repository scan completed", "url", displayURL, "findings", len(result.Findings), "files", result.ScannedChunks)
@@ -229,7 +282,7 @@ func ScanRepos(ctx context.Context, cfg *Config, repoURLs []string, srcOpts []gi
 
 	var aggErr error
 	if len(scanErrors) > 0 {
-		aggErr = fmt.Errorf("%d repository scans failed", len(scanErrors))
+		aggErr = fmt.Errorf("%d repository scans failed: %w", len(scanErrors), errors.Join(scanErrors...))
 	}
 	return combined, aggErr
 }
@@ -273,10 +326,10 @@ func scanReposParallel(
 
 			mu.Lock()
 			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+			}
 			if result == nil {
-				if err != nil {
-					errs = append(errs, err)
-				}
 				return
 			}
 			findings = append(findings, result.Findings...)

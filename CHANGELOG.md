@@ -7,11 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Nothing yet._
+## [v1.8.0] - 2026-08-11
+
+### Added
+
+- A default-on `structured-config-secret` detector for JSON, YAML, TOML, INI,
+  dotenv, and XML configuration values, bringing the catalog to **65
+  detectors**. It can be disabled explicitly with
+  `--exclude-detectors structured-config-secret`.
+- Repeatable `--verifier-origin detector-id=https://host` routing for
+  operator-trusted verifier targets, plus the backward-compatible
+  `--grafana-instance-url` alias.
+- Opt-in Slack text-attachment scanning with Slack-owned HTTPS enforcement,
+  operation-scoped request limiting, byte-bounded backpressure, bounded file
+  size/retries, UTF-8 text classification, token-safe errors/logs, and file-ID
+  de-duplication.
+- Best-effort GitHub scope/expiration and GitLab PAT standard or GitLab 19.2+ granular scope/expiration metadata
+  after authoritative active verification.
+- A reviewable VSIX artifact, 256×256 Marketplace icon, main-only manual VS Code
+  publication workflow with executable environment-policy and environment-secret
+  provenance audits, and a scheduled provider-contract freshness/link gate.
+
+### Changed
+
+- Auth0, Datadog, GitHub, GitHub OAuth, GitLab, Grafana, Shopify, Snyk, and
+  Twilio verification now requires an explicit operator-trusted origin. Without
+  one, Leakwatch sends no credential and reports the finding as `unverified`.
+- Slack's `--rate-limit` default changed from `1` to `0`; zero preserves the
+  provider-safe, operation-specific limits instead of imposing one global
+  request rate on every Slack method.
+- Source cleanup or partial-scan failures are now visible and non-clean. A
+  cleanup failure without findings exits `2`; partial results still exit `1`
+  while retaining and reporting the source error.
+- Finding JSON now distinguishes calculated zero entropy from absent entropy and
+  omits an unset detection timestamp; terminal tables use Unicode display width,
+  visibly escape bidi controls, and render `--show-raw` as a reversible quoted
+  value instead of passing terminal controls through or dropping secret bytes.
+- Detector/verifier registries fail closed on invalid or duplicate registration,
+  matcher results are explicitly stable, and obsolete global custom-rule APIs
+  were removed.
 
 ---
 
-## [v1.7.0] - 2026-07-19
+## [v1.7.0] - 2026-07-20
 
 > A comprehensive, multi-dimensional review of the entire project (code, tests, docs, CI/CD, VS Code extension, and website) was completed and its findings remediated across the changes below.
 

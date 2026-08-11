@@ -13,15 +13,15 @@
   var detCountEl = document.getElementById("detCount");
 
   var MIN_MATCH = 8;          // ignore matches shorter than this (kills context-gate noise)
-  var INPUT_CAP = 64 * 1024;  // guard against pathological input
+  var INPUT_CAP = 64 * 1024;  // UTF-8 byte cap guarding pathological input
 
   function t(k, fb) {
     return (window.LWI18n && window.LWI18n.t(k)) || fb || k;
   }
 
   // Compile the usable detector set from the build-extracted patterns.
-  var DETS = (window.LW_DETECTORS || []).map(function (d) {
-    var res = (d.patterns || []).map(function (p) {
+  function compilePatterns(patterns) {
+    return (patterns || []).map(function (p) {
       try {
         var flags = "g" + (p.flags || "").replace(/g/g, "");
         return new RegExp(p.src, flags);
@@ -29,7 +29,21 @@
         return null;
       }
     }).filter(Boolean);
-    return { id: d.id, sev: d.severity, kw: d.keywords || [], res: res };
+  }
+
+  var DETS = (window.LW_DETECTORS || []).map(function (d) {
+    var correlation = d.correlation || {};
+    return {
+      id: d.id,
+      sev: d.severity,
+      kw: d.keywords || [],
+      res: compilePatterns(d.patterns),
+      required: compilePatterns(correlation.requiredNearby),
+      proximity: correlation.proximityBytes || 0,
+      sameBlock: correlation.sameLogicalBlock === true,
+      rejectPlaceholders: correlation.rejectPlaceholders === true,
+      oneToOne: correlation.oneToOne === true,
+    };
   }).filter(function (d) { return d.res.length; });
 
   if (detCountEl) detCountEl.textContent = String(DETS.length);
@@ -78,43 +92,197 @@
     });
   }
 
+  function utf8Width(codePoint) {
+    if (codePoint <= 0x7f) return 1;
+    if (codePoint <= 0x7ff) return 2;
+    if (codePoint <= 0xffff) return 3;
+    return 4;
+  }
+
+  function truncateUTF8(value, byteCap) {
+    var bytes = 0, index = 0;
+    while (index < value.length) {
+      var codePoint = value.codePointAt(index);
+      var units = codePoint > 0xffff ? 2 : 1;
+      var width = utf8Width(codePoint);
+      if (bytes + width > byteCap) break;
+      bytes += width;
+      index += units;
+    }
+    return { text: value.slice(0, index), truncated: index < value.length };
+  }
+
+  function utf8PrefixOffsets(value) {
+    var offsets = new Uint32Array(value.length + 1);
+    var bytes = 0, index = 0;
+    while (index < value.length) {
+      offsets[index] = bytes;
+      var codePoint = value.codePointAt(index);
+      var units = codePoint > 0xffff ? 2 : 1;
+      if (units === 2) offsets[index + 1] = bytes;
+      bytes += utf8Width(codePoint);
+      index += units;
+      offsets[index] = bytes;
+    }
+    return offsets;
+  }
+
+  function rangeGap(byteOffsets, a, b) {
+    if (a.end <= b.start) return byteOffsets[b.start] - byteOffsets[a.end];
+    if (b.end <= a.start) return byteOffsets[a.start] - byteOffsets[b.end];
+    return 0;
+  }
+
+  function sameLogicalBlock(text, a, b) {
+    var start = a.end, end = b.start;
+    if (b.end <= a.start) { start = b.end; end = a.start; }
+    if (start > end) return false;
+    var between = text.slice(start, end);
+    return !/(?:\r?\n[ \t]*\r?\n|\r?\n[ \t]*\[[^\r\n]+\][ \t]*(?:\r?\n|$))/.test(between) &&
+      !/[{}]/.test(between);
+  }
+
+  function correlatedAssignmentStart(match) {
+    var whole = match[0];
+    if (!whole || /^[0-9A-Za-z]/.test(whole)) return match.index;
+    return match.index + (whole.codePointAt(0) > 0xffff ? 2 : 1);
+  }
+
+  function allMatchRanges(regexes, text) {
+    var ranges = [];
+    regexes.forEach(function (re) {
+      re.lastIndex = 0;
+      var match;
+      while ((match = re.exec(text)) !== null) {
+        var whole = match[0], captured = "";
+        for (var i = 1; i < match.length; i++) {
+          if (match[i] && match[i].length > captured.length) captured = match[i];
+        }
+        var end = re.lastIndex;
+        if (captured) end = match.index + whole.lastIndexOf(captured) + captured.length;
+        ranges.push({ start: correlatedAssignmentStart(match), end: end, used: false });
+        if (match.index === re.lastIndex) re.lastIndex++;
+      }
+    });
+    return ranges;
+  }
+
+  function isPlaceholder(value) {
+    var lower = String(value || "").trim().toLowerCase();
+    var exact = {
+      "change-me": true, "change_me": true, "changeme": true, "dummy": true,
+      "example": true, "example-secret": true, "example_secret": true, "fixme": true,
+      "foobar": true, "not-a-real-secret": true, "not_a_real_secret": true,
+      "placeholder": true, "redacted": true, "replace-me": true, "replace_me": true,
+      "secret": true, "string": true, "test": true, "todo": true,
+      "api-key-secret": true, "api_key_secret": true,
+      "twilio-api-key-secret": true, "twilio_api_key_secret": true, "twilioapikeysecret": true,
+      "your-api-key-secret": true, "your_api_key_secret": true,
+      "your-twilio-api-key-secret": true, "your_twilio_api_key_secret": true, "xxxxxxxx": true,
+    };
+    if (!lower || exact[lower]) return true;
+    var prefixes = ["${", "$", "{{", "%", "<", "vault://", "op://", "secret://", "file://", "/run/secrets/", "@microsoft.keyvault"];
+    if (prefixes.some(function (prefix) { return lower.indexOf(prefix) === 0; })) return true;
+    return lower.length >= 4 && /^[x*0-]+$/.test(lower);
+  }
+
+  function escapedAt(value, index) {
+    var backslashes = 0;
+    for (var i = index - 1; i >= 0 && value[i] === "\\"; i--) backslashes++;
+    return backslashes % 2 === 1;
+  }
+
   var lastFound = [], lastTruncated = false;
 
-  function scan() {
-    var text = codeEl.value;
-    var truncated = false;
-    if (text.length > INPUT_CAP) { text = text.slice(0, INPUT_CAP); truncated = true; }
+  function capturedDisplay(match, detector) {
+    var captured = "";
+    for (var i = 1; i < match.length; i++) {
+      if (match[i] && match[i].length > captured.length && (detector.required.length || match[i].length >= MIN_MATCH)) {
+        captured = match[i];
+      }
+    }
+    return captured || match[0];
+  }
+
+  function closestCompanionIndex(detector, text, byteOffsets, primaryRange, companions) {
+    var companionIndex = -1, bestDistance = -1;
+    companions.forEach(function (companion, index) {
+      if (detector.oneToOne && companion.used) return;
+      var distance = rangeGap(byteOffsets, primaryRange, companion);
+      if (distance > detector.proximity || (detector.sameBlock && !sameLogicalBlock(text, primaryRange, companion))) return;
+      if (bestDistance === -1 || distance < bestDistance) {
+        bestDistance = distance;
+        companionIndex = index;
+      } else if (distance === bestDistance) {
+        var current = companionIndex >= 0 ? companions[companionIndex] : null;
+        var candidatePrecedes = companion.end <= primaryRange.start;
+        var currentPrecedes = current && current.end <= primaryRange.start;
+        if (candidatePrecedes && !currentPrecedes) companionIndex = index;
+      }
+    });
+    return companionIndex;
+  }
+
+  function recordDetectorMatch(detector, text, byteOffsets, companions, match, found, seen) {
+    var whole = match[0];
+    var display = capturedDisplay(match, detector);
+    var valueOffset = whole.lastIndexOf(display);
+    var primaryRange = { start: correlatedAssignmentStart(match), end: match.index + valueOffset + display.length };
+    var closing = valueOffset + display.length;
+    var truncatedQuotedValue = closing < whole.length && (whole[closing] === '"' || whole[closing] === "'") && escapedAt(whole, closing);
+    var companionIndex = closestCompanionIndex(detector, text, byteOffsets, primaryRange, companions);
+    var correlated = !detector.required.length || companionIndex >= 0;
+    if (!correlated || truncatedQuotedValue || whole.length < MIN_MATCH || (detector.rejectPlaceholders && isPlaceholder(display))) return;
+    if (detector.oneToOne && companionIndex >= 0) companions[companionIndex].used = true;
+    var line = lineOf(text, match.index);
+    var key = detector.id + "|" + display + "|" + line;
+    if (!seen[key]) {
+      seen[key] = true;
+      found.push({ id: detector.id, sev: detector.sev, line: line, val: display });
+    }
+  }
+
+  function scanDetectorPattern(detector, re, text, byteOffsets, companions, found, seen) {
+    re.lastIndex = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      recordDetectorMatch(detector, text, byteOffsets, companions, match, found, seen);
+      if (match.index === re.lastIndex) re.lastIndex++; // avoid zero-width loop
+    }
+  }
+
+  function detectText(input) {
+    var bounded = truncateUTF8(String(input || ""), INPUT_CAP);
+    var text = bounded.text;
+    var truncated = bounded.truncated;
+    var byteOffsets = utf8PrefixOffsets(text);
     var lower = text.toLowerCase();
     var found = [], seen = {};
 
     DETS.forEach(function (d) {
       // Aho-Corasick-style keyword pre-filter (faithful to the engine).
       if (d.kw.length && !d.kw.some(function (k) { return lower.indexOf(k.toLowerCase()) !== -1; })) return;
+      var companions = allMatchRanges(d.required, text);
       d.res.forEach(function (re) {
-        re.lastIndex = 0;
-        var m;
-        while ((m = re.exec(text)) !== null) {
-          var whole = m[0];
-          if (whole.length >= MIN_MATCH) {
-            // Prefer the longest capture group (the secret) for display.
-            var disp = whole;
-            for (var i = 1; i < m.length; i++) {
-              if (m[i] && m[i].length >= MIN_MATCH && m[i].length < disp.length) disp = m[i];
-            }
-            var line = lineOf(text, m.index);
-            var key = d.id + "|" + disp + "|" + line;
-            if (!seen[key]) { seen[key] = true; found.push({ id: d.id, sev: d.sev, line: line, val: disp }); }
-          }
-          if (m.index === re.lastIndex) re.lastIndex++; // avoid zero-width loop
-        }
+        scanDetectorPattern(d, re, text, byteOffsets, companions, found, seen);
       });
     });
 
     var order = { critical: 0, high: 1, medium: 2, low: 3 };
     found.sort(function (a, b) { return (order[a.sev] - order[b.sev]) || (a.line - b.line); });
-    lastFound = found; lastTruncated = truncated;
-    render(found, truncated);
+    return { found: found, truncated: truncated };
   }
+
+  function scan() {
+    var result = detectText(codeEl.value);
+    lastFound = result.found; lastTruncated = result.truncated;
+    render(result.found, result.truncated);
+  }
+
+  // A side-effect-free hook used by the generated-detector contract test. It
+  // also makes the playground's preview semantics independently auditable.
+  window.LW_PLAYGROUND_DETECT = function (text) { return detectText(text).found; };
+  window.LW_PLAYGROUND_SCAN = detectText;
 
   function render(found, truncated) {
     countEl.textContent = found.length

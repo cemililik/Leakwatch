@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/HodeTech/leakwatch/internal/meta"
 )
 
 var initCmd = &cobra.Command{
@@ -32,7 +35,7 @@ func init() {
 	initCmd.Flags().Bool("force", false, "overwrite existing config file")
 }
 
-const defaultConfig = `# Leakwatch Configuration
+const defaultConfigTemplate = `# Leakwatch Configuration
 # Documentation: https://github.com/HodeTech/Leakwatch/blob/main/docs/guides/configuration.md
 
 scan:
@@ -47,10 +50,10 @@ detection:
 verification:
   enabled: true            # Enable secret verification via API
   rate-limit: 10           # Max verification requests per second
-  timeout: 10s             # Per-request timeout
+  timeout: 10s             # Per-finding verification-operation timeout
 
 output:
-  format: json             # Output format: json, sarif, csv, table, github
+  format: json             # Output format: {{OUTPUT_FORMATS}}
   show-raw: false          # Never show raw secret values
 
 filter:
@@ -71,6 +74,8 @@ filter:
 #     keywords: ["mycompany_"]
 #     severity: critical
 `
+
+var defaultConfig = strings.Replace(defaultConfigTemplate, "{{OUTPUT_FORMATS}}", meta.OutputFormatList, 1)
 
 func runInit(cmd *cobra.Command, _ []string) error {
 	outputPath, err := cmd.Flags().GetString("output")

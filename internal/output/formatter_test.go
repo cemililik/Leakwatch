@@ -53,6 +53,16 @@ func TestSanitizeForDisplay(t *testing.T) {
 			in:   "config-é.yaml",
 			want: "config-é.yaml",
 		},
+		{
+			name: "bidi controls are visibly escaped without reordering text",
+			in:   "safe.go\u202ecod.exe\u2066tail",
+			want: "safe.go\\u202Ecod.exe\\u2066tail",
+		},
+		{
+			name: "emoji ZWJ and combining marks are preserved",
+			in:   "family-👩\u200d💻-cafe\u0301",
+			want: "family-👩\u200d💻-cafe\u0301",
+		},
 	}
 
 	for _, tt := range tests {

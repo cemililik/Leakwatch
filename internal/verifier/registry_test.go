@@ -51,6 +51,15 @@ func TestRegister_DuplicateType_Panics(t *testing.T) {
 	})
 }
 
+func TestRegister_NilOrEmptyType_PanicsWithoutMutatingRegistry(t *testing.T) {
+	Reset()
+	var typedNil *mockVerifier
+	assert.Panics(t, func() { Register(nil) })
+	assert.Panics(t, func() { Register(typedNil) })
+	assert.Panics(t, func() { Register(newMock("")) })
+	assert.Empty(t, All())
+}
+
 func TestGet_UnregisteredType_ReturnsFalse(t *testing.T) {
 	t.Cleanup(func() { Reset() })
 

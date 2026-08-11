@@ -7,12 +7,11 @@ package detector_test
 // (each subpackage imports the detector package under test).
 //
 // Counts measured from the codebase:
-//   - 64 detectors registered at compile time via init() (detector.Register).
-//   - 59 packages register statically; azure, github, slack, stripe and
-//     discord each register two detectors (59 + 5 = 64).
-//   - 60 detector subpackages exist in total; the 60th, "custom", registers its
-//     rules at runtime (detector.RegisterIfAbsent) and is therefore not part of
-//     the compile-time count.
+//   - 65 detectors registered at compile time via init() (detector.Register).
+//   - 59 packages register statically; azure, github, slack, stripe, discord
+//     and generic each register two detectors (59 + 6 = 65).
+//   - 60 detector subpackages exist in total; the 60th, "custom", is compiled
+//     into the per-scan detector slice and never mutates this global registry.
 //
 // If you add or remove a detector, update internal/meta.Detectors (the single
 // source of truth for the published count) and keep the blank-import block in
@@ -24,9 +23,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
+	"github.com/HodeTech/leakwatch/internal/detector/testutil"
 	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +56,7 @@ import (
 	_ "github.com/HodeTech/leakwatch/internal/detector/figma"        // register figma detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/ftp"          // register ftp credentials detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/gcp"          // register gcp service-account detector
-	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic api-key detector
+	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic API-key and structured-config detectors
 	_ "github.com/HodeTech/leakwatch/internal/detector/github"       // register github detectors (pat + oauth)
 	_ "github.com/HodeTech/leakwatch/internal/detector/gitlab"       // register gitlab detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/grafana"      // register grafana detector
@@ -119,16 +120,76 @@ func TestAll_RegisteredDetectorCount_MatchesGolden(t *testing.T) {
 	}
 }
 
+// TestAll_RegisteredDetectors_HaveMatcherParity is the registry-wide recall
+// contract. Every compile-time detector must have an explicit, synthetic
+// positive fixture that reaches the detector through the same matcher gate the
+// engine uses in production. Keeping the fixture catalog keyed by detector ID
+// makes a newly registered detector fail closed until its matcher contract is
+// reviewed and documented here.
+func TestAll_RegisteredDetectors_HaveMatcherParity(t *testing.T) {
+	fixtures := testutil.RegisteredDetectorFixtures()
+	require.Len(t, fixtures, len(registeredAtInit),
+		"every registered detector needs exactly one matcher-contract fixture")
+
+	registered := make(map[string]detector.Detector, len(registeredAtInit))
+	for _, det := range registeredAtInit {
+		registered[det.ID()] = det
+	}
+	for id := range fixtures {
+		assert.Contains(t, registered, id, "stale fixture for an unregistered detector")
+	}
+
+	for id, det := range registered {
+		det := det
+		fixture, ok := fixtures[id]
+		require.True(t, ok, "registered detector %q has no matcher-contract fixture", id)
+		t.Run(id, func(t *testing.T) {
+			direct := det.Scan(t.Context(), fixture.Input)
+			require.Len(t, direct, 1, "canonical fixture must exercise exactly one unambiguous finding")
+			assert.Equal(t, id, direct[0].DetectorID, "detector returned a finding owned by a different capability")
+			assert.Equal(t, fixture.ExpectedRaw, direct[0].Raw, "detector widened or changed the canonical raw credential")
+			assert.Equal(t, fixture.ExpectedRawV2, direct[0].RawV2, "detector companion/raw-v2 contract drifted")
+			assert.Equal(t, fixture.ExpectedExtraData, direct[0].ExtraData, "detector context metadata contract drifted")
+			assert.NotEqual(t, string(direct[0].Raw), direct[0].Redacted, "redacted output must not equal the raw credential")
+			assert.NotContains(t, direct[0].Redacted, string(direct[0].Raw), "redacted output leaked the raw credential")
+			for key, value := range direct[0].ExtraData {
+				if !fixture.NonSecretRawExtraKeys[key] {
+					assert.NotContains(t, value, string(direct[0].Raw), "ExtraData[%q] leaked the raw credential", key)
+				}
+				if len(direct[0].RawV2) > 0 {
+					assert.NotContains(t, value, string(direct[0].RawV2), "ExtraData[%q] leaked RawV2", key)
+				}
+			}
+			if fixture.RequireExactSpan {
+				require.Greater(t, direct[0].ByteEnd, direct[0].ByteStart, "explicit source span must be non-empty")
+				assert.Equal(t, direct[0].Raw, fixture.Input[direct[0].ByteStart:direct[0].ByteEnd],
+					"explicit source span must select the exact raw finding bytes")
+			} else {
+				assert.Zero(t, direct[0].ByteStart, "span contract is explicitly absent for this detector")
+				assert.Zero(t, direct[0].ByteEnd, "span contract is explicitly absent for this detector")
+			}
+
+			viaMatcher := testutil.ScanViaMatcher(det, fixture.Input)
+			require.NotEmpty(t, viaMatcher,
+				"matcher gated out a fixture accepted by Scan; review Keywords and case/boundary variants")
+			assert.True(t, reflect.DeepEqual(direct, viaMatcher),
+				"direct Scan and matcher-routed Scan returned different findings\ndirect: %#v\nmatcher: %#v",
+				direct, viaMatcher)
+		})
+	}
+}
+
 // playgroundSkippedIDs are registered detectors intentionally absent from the
 // generated site/js/detectors.js bundle. tools/site-build skips the "generic",
 // "custom", and "testutil" detector packages because the in-browser regex
 // scanner cannot reproduce their detection faithfully (see
 // tools/site-build/detectors.go detectorSkipDirs). Of those, only the generic
-// detector is registered at compile time, so it is the sole expected omission;
-// "custom" registers at runtime (not in detector.All()) and "testutil" is a test
-// helper, not a detector.
+// package is registered at compile time with two detectors, so both are
+// expected omissions; "custom" registers at runtime (not in detector.All())
+// and "testutil" is a test helper, not a detector.
 var playgroundSkippedIDs = map[string]bool{
-	"generic-api-key": true,
+	"generic-api-key":          true,
+	"structured-config-secret": true,
 }
 
 // TestDetectorsJS_CoversEveryRegisteredDetector guards the generated playground

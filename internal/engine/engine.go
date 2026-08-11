@@ -48,10 +48,13 @@ type Config struct {
 	// to be reported. When EnableEntropy is set the engine computes
 	// Finding.Entropy for every match (informational), but only drops a finding
 	// when its detector opts into the gate via EntropyBased() — i.e. the generic
-	// API-key detector and other high-entropy-string heuristics. Structural
-	// detectors (AWS, GitHub, Stripe, …) are never entropy-gated, so a valid but
-	// low-entropy key is always reported. When EnableEntropy is false no entropy
-	// is computed and no gating is applied. Defaulted to defaultEntropyThreshold.
+	// API-key detector and other high-entropy-string heuristics. A mixed detector
+	// may refine that decision per finding via EntropyGated(raw), preserving the
+	// gate for heuristic matches while exempting strong structural context.
+	// Structural detectors (AWS, GitHub, Stripe, …) are never entropy-gated, so a
+	// valid but low-entropy key is always reported. When EnableEntropy is false no
+	// entropy is computed and no gating is applied. Defaulted to
+	// defaultEntropyThreshold.
 	EntropyThreshold float64
 	ShowRaw          bool
 	Clock            func() time.Time // Optional; defaults to time.Now
@@ -106,19 +109,49 @@ type entropyBased interface {
 	EntropyBased() bool
 }
 
+// findingEntropyGate is an optional refinement for mixed detectors that emit
+// both heuristic and structurally contextual findings. It lets the detector
+// retain the global entropy gate for heuristic matches while exempting only a
+// specific raw finding backed by strong structure.
+type findingEntropyGate interface {
+	EntropyGated(raw detector.RawFinding) bool
+}
+
+type locatedVerifyPair struct {
+	pair        verifier.VerifyPair
+	start, end  int
+	isFallback  bool
+	isAuthority bool
+}
+
 // isEntropyBased reports whether the detector opts into the engine entropy gate.
 func isEntropyBased(d detector.Detector) bool {
 	eb, ok := d.(entropyBased)
 	return ok && eb.EntropyBased()
 }
 
+func isEntropyGated(d detector.Detector, raw detector.RawFinding) bool {
+	if !isEntropyBased(d) {
+		return false
+	}
+	if policy, ok := d.(findingEntropyGate); ok {
+		return policy.EntropyGated(raw)
+	}
+	return true
+}
+
 // Scan scans the given source and returns results.
 func (e *Engine) Scan(ctx context.Context, src source.Source) (*ScanResult, error) {
-	if err := src.Validate(); err != nil {
+	start := time.Now()
+	if err := ctx.Err(); err != nil {
+		return interruptedResult(start), err
+	}
+	if err := src.Validate(ctx); err != nil {
+		if ctx.Err() != nil {
+			return interruptedResult(start), ctx.Err()
+		}
 		return nil, fmt.Errorf("source validation failed: %w", err)
 	}
-
-	start := time.Now()
 
 	slog.Info(
 		"scan started",
@@ -129,123 +162,16 @@ func (e *Engine) Scan(ctx context.Context, src source.Source) (*ScanResult, erro
 
 	jobs := make(chan source.Chunk, e.config.Concurrency*channelBufferMultiplier)
 	results := make(chan verifier.VerifyPair, e.config.Concurrency*channelBufferMultiplier)
-
-	// Start workers.
-	var wg sync.WaitGroup
-	for i := 0; i < e.config.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			e.worker(ctx, jobs, results)
-		}()
-	}
-
-	// Collect and verify results incrementally (bounded streaming).
-	//
-	// Raw secret byte lifetime: each VerifyPair carries the raw secret bytes
-	// (p.Raw) in memory only so that verification can re-present them to the
-	// relevant API. These bytes are never logged, written to disk, or otherwise
-	// persisted (per the project's secret-safety rule).
-	//
-	// Memory bound (ENG-M-02, resolved): rather than accumulating every detected
-	// pair for the whole scan before verifying, the collector buffers at most
-	// maxPairsInFlight pairs, streams that batch into verification, appends the
-	// resulting findings, and drops its references to the raw bytes so they
-	// become garbage-collectable immediately. Peak raw-secret memory is therefore
-	// bounded by maxPairsInFlight rather than by the total number of findings.
-	var findings []finding.Finding
-	var collectWg sync.WaitGroup
-	collectWg.Add(1)
-	go func() {
-		defer collectWg.Done()
-		batch := make([]verifier.VerifyPair, 0, maxPairsInFlight)
-		flush := func() {
-			if len(batch) == 0 {
-				return
-			}
-			findings = append(findings, e.verifyBatch(ctx, batch)...)
-			// Drop references to raw secret bytes so they are GC-eligible now
-			// instead of living until the whole scan completes.
-			for i := range batch {
-				batch[i] = verifier.VerifyPair{}
-			}
-			batch = batch[:0]
-		}
-		for p := range results {
-			batch = append(batch, p)
-			if len(batch) >= maxPairsInFlight {
-				flush()
-			}
-		}
-		flush()
-	}()
-
-	// Send chunks to the jobs channel.
-	// NOTE: Context cancellation during this loop depends on the source implementation
-	// closing its Chunks channel promptly when ctx is cancelled. If a source blocks
-	// indefinitely on send, this loop may not exit until the source returns.
-	scannedChunks := 0
-	// fullyDrained is true only when the range below exits because the source
-	// closed its chunks channel (normal completion), false when we break out
-	// early on cancellation. It gates the src.Err() read below: reading the
-	// source's terminal error is only race-free once its channel is closed.
-	fullyDrained := true
-loop:
-	for chunk := range src.Chunks(ctx) {
-		select {
-		case <-ctx.Done():
-			fullyDrained = false
-			break loop
-		case jobs <- chunk:
-			scannedChunks++
-		}
-	}
+	workers := e.startScanWorkers(ctx, jobs, results)
+	collected := e.startResultCollector(ctx, results)
+	scannedChunks, fullyDrained := enqueueSourceChunks(ctx, src, jobs)
 	close(jobs)
-
-	// Surface the source's terminal outcome. src.Err() is only valid to read
-	// after the source's chunks channel is fully drained (closed); that close is
-	// the happens-before edge publishing the error the source recorded before
-	// closing. On the cancellation break path the source goroutine may still be
-	// running, so we skip the read and let the interrupt path below report the
-	// outcome instead.
-	var srcErr error
-	if fullyDrained {
-		srcErr = src.Err()
-		if srcErr == nil && scannedChunks == 0 {
-			// A clean scan that produced nothing: make the silently-empty result
-			// visible so "0 findings, nothing scanned" is not mistaken for a
-			// verified-clean target.
-			slog.Warn("scan target yielded no scannable content", "source", src.Type())
-		}
-	}
-
-	// Wait for workers to finish
-	wg.Wait()
+	srcErr := completedSourceError(src, fullyDrained, scannedChunks)
+	workers.Wait()
 	close(results)
-
-	// Wait for the collector (which also ran verification) to finish.
-	collectWg.Wait()
-
-	// Apply post-scan filters.
-	findings = e.applyFilters(findings)
-
-	// Impose a single deterministic order so output is stable run-to-run.
+	findings := e.applyFilters(<-collected)
 	sortFindings(findings)
-
-	result := &ScanResult{
-		Findings:      findings,
-		ScannedChunks: scannedChunks,
-		Duration:      time.Since(start),
-		Interrupted:   ctx.Err() != nil,
-	}
-
-	slog.Info(
-		"scan completed",
-		"findings", len(findings),
-		"chunks", scannedChunks,
-		"duration", result.Duration,
-		"interrupted", result.Interrupted,
-	)
+	result := completedScanResult(start, findings, scannedChunks, ctx.Err() != nil)
 
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("scan interrupted: %w", ctx.Err())
@@ -259,6 +185,93 @@ loop:
 	}
 
 	return result, nil
+}
+
+func (e *Engine) startScanWorkers(
+	ctx context.Context,
+	jobs <-chan source.Chunk,
+	results chan<- verifier.VerifyPair,
+) *sync.WaitGroup {
+	workers := &sync.WaitGroup{}
+	for range e.config.Concurrency {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			e.worker(ctx, jobs, results)
+		}()
+	}
+	return workers
+}
+
+// startResultCollector keeps raw-secret memory bounded to maxPairsInFlight and
+// clears every processed batch before accepting the next one.
+func (e *Engine) startResultCollector(ctx context.Context, results <-chan verifier.VerifyPair) <-chan []finding.Finding {
+	collected := make(chan []finding.Finding, 1)
+	go func() {
+		var findings []finding.Finding
+		batch := make([]verifier.VerifyPair, 0, maxPairsInFlight)
+		for pair := range results {
+			batch = append(batch, pair)
+			if len(batch) >= maxPairsInFlight {
+				findings = append(findings, e.verifyBatch(ctx, batch)...)
+				batch = clearVerificationBatch(batch)
+			}
+		}
+		findings = append(findings, e.verifyBatch(ctx, batch)...)
+		clearVerificationBatch(batch)
+		collected <- findings
+		close(collected)
+	}()
+	return collected
+}
+
+func clearVerificationBatch(batch []verifier.VerifyPair) []verifier.VerifyPair {
+	for index := range batch {
+		batch[index] = verifier.VerifyPair{}
+	}
+	return batch[:0]
+}
+
+func enqueueSourceChunks(ctx context.Context, src source.Source, jobs chan<- source.Chunk) (int, bool) {
+	scanned := 0
+	for chunk := range src.Chunks(ctx) {
+		select {
+		case <-ctx.Done():
+			return scanned, false
+		case jobs <- chunk:
+			scanned++
+		}
+	}
+	return scanned, true
+}
+
+func completedSourceError(src source.Source, fullyDrained bool, scannedChunks int) error {
+	if !fullyDrained {
+		return nil
+	}
+	err := src.Err()
+	if err == nil && scannedChunks == 0 {
+		slog.Warn("scan target yielded no scannable content", "source", src.Type())
+	}
+	return err
+}
+
+func completedScanResult(start time.Time, findings []finding.Finding, scannedChunks int, interrupted bool) *ScanResult {
+	result := &ScanResult{
+		Findings: findings, ScannedChunks: scannedChunks,
+		Duration: time.Since(start), Interrupted: interrupted,
+	}
+	slog.Info("scan completed", "findings", len(findings), "chunks", scannedChunks,
+		"duration", result.Duration, "interrupted", result.Interrupted)
+	return result
+}
+
+func interruptedResult(start time.Time) *ScanResult {
+	return &ScanResult{
+		Findings:    []finding.Finding{},
+		Duration:    time.Since(start),
+		Interrupted: true,
+	}
 }
 
 // verifyBatch verifies a bounded batch of collected pairs and returns the
@@ -326,6 +339,15 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 
 		// Aho-Corasick pre-filtering: only run matched detectors.
 		matchedDetectors := e.matcher.Match(chunk.Data)
+		// Broad fallback detectors run first and buffer only their bounded result
+		// set. Other findings can then stream immediately; only explicitly
+		// authoritative provider findings may remove overlapping fallbacks. This
+		// preserves the bounded raw-secret memory model instead of accumulating
+		// every provider finding in a chunk.
+		sort.SliceStable(matchedDetectors, func(i, j int) bool {
+			return detectorIsOverlapFallback(matchedDetectors[i]) && !detectorIsOverlapFallback(matchedDetectors[j])
+		})
+		fallbackPairs := make([]locatedVerifyPair, 0, 8)
 
 		for _, det := range matchedDetectors {
 			select {
@@ -343,10 +365,9 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			rawFindings := det.Scan(ctx, chunk.Data)
 
 			// Track the search position per raw value so repeated matches of the
-			// same bytes resolve to distinct offsets. Detectors emit findings in
-			// left-to-right match order (regexp.FindAll guarantees this; this
-			// engine-level assumption is documented here because the Detector
-			// interface does not encode it), so the Nth occurrence of a raw value
+			// same bytes resolve to distinct offsets. The Detector interface requires
+			// stable left-to-right output (regexp.FindAll naturally guarantees it),
+			// so the Nth occurrence of a raw value
 			// maps to its Nth position in the chunk. The cursor map is allocated
 			// only when a detector returns more than one finding — the common
 			// zero/one-finding case uses a plain index scan.
@@ -356,12 +377,7 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 			}
 
 			for _, raw := range rawFindings {
-				var offset int
-				if offsetCursor != nil {
-					offset = nextMatchOffset(chunk.Data, raw.Raw, offsetCursor)
-				} else {
-					offset = firstMatchOffset(chunk.Data, raw.Raw)
-				}
+				offset := rawFindingOffset(chunk.Data, raw, offsetCursor)
 
 				// Resolve the 1-based line number and its text in a single pass;
 				// both the ID/line derivation and the inline-ignore check reuse it
@@ -372,12 +388,12 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 
 				// Entropy gating: the Shannon-entropy floor applies ONLY to
 				// heuristic detectors that opt in via EntropyBased() (e.g. the
-				// generic API-key detector). Structural detectors — AWS, GitHub,
-				// Stripe, etc. — have precise formats and are never dropped on
-				// entropy, so a valid but low-entropy key (an AWS access-key ID
-				// is ~3.9 bits) is always reported.
+				// generic API-key detector), subject to an optional per-finding
+				// EntropyGated refinement for mixed structural/heuristic detectors.
+				// Structural findings — AWS, GitHub, Stripe, explicit provider
+				// header contexts, etc. — are never dropped on entropy.
 				if e.config.EnableEntropy && len(raw.Raw) > 0 &&
-					isEntropyBased(det) && f.Entropy < e.config.EntropyThreshold {
+					isEntropyGated(det, raw) && f.Entropy < e.config.EntropyThreshold {
 					continue
 				}
 
@@ -388,15 +404,97 @@ func (e *Engine) worker(ctx context.Context, jobs <-chan source.Chunk, results c
 					continue
 				}
 
-				pair := verifier.VerifyPair{Finding: f, Raw: raw}
+				candidate := locatedVerifyPair{
+					pair:        verifier.VerifyPair{Finding: f, Raw: raw},
+					start:       offset,
+					end:         rawFindingEnd(chunk.Data, raw, offset),
+					isFallback:  detectorIsOverlapFallback(det),
+					isAuthority: detectorIsOverlapAuthority(det),
+				}
+				if candidate.isFallback {
+					fallbackPairs = append(fallbackPairs, candidate)
+					continue
+				}
+
+				fallbackPairs = suppressFallbacksForSpecialized(fallbackPairs, candidate)
 				select {
 				case <-ctx.Done():
 					return
-				case results <- pair:
+				case results <- candidate.pair:
 				}
 			}
 		}
+
+		for _, candidate := range fallbackPairs {
+			select {
+			case <-ctx.Done():
+				return
+			case results <- candidate.pair:
+			}
+		}
 	}
+}
+
+func detectorIsOverlapFallback(det detector.Detector) bool {
+	fallback, ok := det.(detector.OverlapFallback)
+	return ok && fallback.FallbackOnSpecializedOverlap()
+}
+
+func detectorIsOverlapAuthority(det detector.Detector) bool {
+	authority, ok := det.(detector.OverlapAuthority)
+	return ok && authority.AuthoritativeOnOverlap()
+}
+
+// suppressFallbacksForSpecialized drops a buffered broad-context finding only
+// when the newly produced authoritative, equal-or-higher-severity finding
+// intersects its source bytes. Provider-provider overlaps and repeated values
+// at distinct locations remain separate findings.
+func suppressFallbacksForSpecialized(
+	fallbacks []locatedVerifyPair,
+	specialized locatedVerifyPair,
+) []locatedVerifyPair {
+	if len(fallbacks) == 0 || !specialized.isAuthority ||
+		specialized.start < 0 || specialized.end <= specialized.start {
+		return fallbacks
+	}
+	result := fallbacks[:0]
+	for _, candidate := range fallbacks {
+		if candidate.start < 0 || candidate.end <= candidate.start {
+			result = append(result, candidate)
+			continue
+		}
+		if specialized.pair.Finding.Severity < candidate.pair.Finding.Severity ||
+			candidate.start >= specialized.end || specialized.start >= candidate.end {
+			result = append(result, candidate)
+		}
+	}
+	return result
+}
+
+// rawFindingOffset returns a detector-provided exact byte span when it is
+// internally consistent, otherwise it preserves the legacy raw-value search.
+// Exact spans prevent a same-valued decoy earlier in the chunk from stealing a
+// finding's line number or inline-ignore decision.
+func rawFindingOffset(data []byte, raw detector.RawFinding, cursor map[string]int) int {
+	if raw.ByteEnd > raw.ByteStart && raw.ByteStart >= 0 && raw.ByteEnd <= len(data) &&
+		bytes.Equal(data[raw.ByteStart:raw.ByteEnd], raw.Raw) {
+		return raw.ByteStart
+	}
+	if cursor != nil {
+		return nextMatchOffset(data, raw.Raw, cursor)
+	}
+	return firstMatchOffset(data, raw.Raw)
+}
+
+func rawFindingEnd(data []byte, raw detector.RawFinding, offset int) int {
+	if raw.ByteEnd > raw.ByteStart && raw.ByteStart == offset && raw.ByteEnd <= len(data) &&
+		bytes.Equal(data[raw.ByteStart:raw.ByteEnd], raw.Raw) {
+		return raw.ByteEnd
+	}
+	if offset < 0 || len(raw.Raw) == 0 || offset > len(data)-len(raw.Raw) {
+		return -1
+	}
+	return offset + len(raw.Raw)
 }
 
 // firstMatchOffset returns the byte offset of the first occurrence of raw in
@@ -532,7 +630,7 @@ func (e *Engine) rawToFinding(raw detector.RawFinding, chunk source.Chunk, det d
 	}
 
 	if e.config.EnableEntropy && len(raw.Raw) > 0 {
-		f.Entropy = entropy.Calculate(raw.Raw)
+		f.SetEntropy(entropy.Calculate(raw.Raw))
 	}
 
 	// Deterministic ID: detectorID + redacted + filePath + line + offset.

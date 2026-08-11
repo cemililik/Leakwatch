@@ -90,8 +90,14 @@ func TestDetector_Scan_RoutableTokenPrefixes(t *testing.T) {
 	}{
 		{name: "deploy token", prefix: "gldt-", redacted: "gldt-****xyzW"},
 		{name: "runner token", prefix: "glrt-", redacted: "glrt-****xyzW"},
+		{name: "runner authentication token", prefix: "glrtr-", redacted: "glrtr-****xyzW"},
 		{name: "ci build token", prefix: "glcbt-", redacted: "glcbt-****xyzW"},
 		{name: "pipeline trigger token", prefix: "glptt-", redacted: "glptt-****xyzW"},
+		{name: "incoming mail token", prefix: "glimt-", redacted: "glimt-****xyzW"},
+		{name: "agent token", prefix: "glagent-", redacted: "glagent-****xyzW"},
+		{name: "workhorse token", prefix: "glwt-", redacted: "glwt-****xyzW"},
+		{name: "service account token", prefix: "glsoat-", redacted: "glsoat-****xyzW"},
+		{name: "feature flags client token", prefix: "glffct-", redacted: "glffct-****xyzW"},
 		{name: "oauth app secret", prefix: "gloas-", redacted: "gloas-****xyzW"},
 		{name: "feed token", prefix: "glft-", redacted: "glft-****xyzW"},
 	}
@@ -107,46 +113,18 @@ func TestDetector_Scan_RoutableTokenPrefixes(t *testing.T) {
 	}
 }
 
-func TestDetector_Scan_CapturesSelfHostedHost(t *testing.T) {
+func TestDetector_Scan_NeverTreatsRepositoryHostAsTrustedContext(t *testing.T) {
 	token := "glpat-abcDEF1234567890xyzW"
-
-	tests := []struct {
-		name     string
-		input    string
-		wantHost string
-	}{
-		{
-			name:     "self-hosted instance url",
-			input:    "CI_SERVER_URL=https://gitlab.example.com\n" + token,
-			wantHost: "gitlab.example.com",
-		},
-		{
-			name:     "self-hosted with port",
-			input:    "remote https://gitlab.corp.internal:8443/group/proj.git " + token,
-			wantHost: "gitlab.corp.internal:8443",
-		},
-		{
-			name:     "gitlab.com url",
-			input:    "https://gitlab.com/acme/repo " + token,
-			wantHost: "gitlab.com",
-		},
-		{
-			name:     "no url co-located",
-			input:    token,
-			wantHost: "",
-		},
+	inputs := []string{
+		"CI_SERVER_URL=https://gitlab.attacker.example\n" + token,
+		"CI_SERVER_URL=http://127.0.0.1:8080/gitlab\n" + token,
+		"CI_SERVER_URL=https://gitlab.corp.internal:8443\n" + token,
+		"CI_SERVER_URL=https://gitlab.com\n" + token,
 	}
-
 	d := &Detector{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			findings := d.Scan(context.Background(), []byte(tt.input))
-			require.Len(t, findings, 1)
-			if tt.wantHost == "" {
-				assert.Empty(t, findings[0].ExtraData["host"])
-				return
-			}
-			assert.Equal(t, tt.wantHost, findings[0].ExtraData["host"])
-		})
+	for _, input := range inputs {
+		findings := d.Scan(context.Background(), []byte(input))
+		require.Len(t, findings, 1)
+		assert.Empty(t, findings[0].ExtraData)
 	}
 }

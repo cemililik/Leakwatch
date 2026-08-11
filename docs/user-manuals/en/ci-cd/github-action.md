@@ -88,7 +88,7 @@ SARIF upload requires the job to declare `permissions: security-events: write`. 
 | `working-directory` | `.` | Directory to run the scan from. |
 | `sarif-upload` | `false` | Upload SARIF results to GitHub Code Scanning after the scan. |
 | `fail-on-findings` | `true` | Fail the workflow step when findings are reported (exit code 1). When `false`, a `::warning::` annotation is emitted instead so the scan does not block the pipeline. Hard errors (exit code ≥ 2) always fail the step regardless of this setting. |
-| `version` | `latest` | Leakwatch version to install: `latest`, or a release tag such as `v1.5.0` to pin a specific release. |
+| `version` | `latest` | Leakwatch version to install: `latest`, or a release tag such as `v1.8.0` to pin a specific release. |
 | `release-repo` | `HodeTech/Leakwatch` | Repository (`owner/name`) to download the release binary from. Override only for forks or self-hosted mirrors. |
 
 ## Outputs
@@ -144,10 +144,10 @@ For reproducible builds, pin `version` to a specific tag:
 ```yaml
 - uses: HodeTech/Leakwatch@v1
   with:
-    version: "v1.5.0"
+    version: "v1.8.0"
 ```
 
-This downloads the prebuilt `v1.5.0` binary from the [Leakwatch releases](https://github.com/HodeTech/Leakwatch/releases) and verifies its SHA-256 checksum before running. For maximum supply-chain safety you can also pin the action itself to a commit SHA, e.g. `uses: HodeTech/Leakwatch@<sha>`.
+This downloads the prebuilt `v1.8.0` binary from the [Leakwatch releases](https://github.com/HodeTech/Leakwatch/releases) and verifies its SHA-256 checksum before running. For maximum supply-chain safety you can also pin the action itself to a commit SHA, e.g. `uses: HodeTech/Leakwatch@<sha>`.
 
 ## Scanning only changed code (pull-request diff)
 

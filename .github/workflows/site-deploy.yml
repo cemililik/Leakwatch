@@ -6,6 +6,7 @@ on:
     paths:
       - "site/**"
       - "docs/user-manuals/**"
+      - "internal/meta/release.go"
       - "tools/site-build/**"
       - ".github/workflows/site-deploy.yml"
   workflow_dispatch:

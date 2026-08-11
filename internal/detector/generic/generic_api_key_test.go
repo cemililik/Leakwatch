@@ -1,10 +1,17 @@
 package generic
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/detector/testutil"
+	"github.com/HodeTech/leakwatch/internal/engine"
+	"github.com/HodeTech/leakwatch/internal/source"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +85,111 @@ func TestAPIKeyDetector_Scan(t *testing.T) {
 			name:     "base64 value",
 			input:    `api_key = "dGhpcyBpcyBhIHRlc3Qga2V5IGZvciBsZWFrd2F0Y2g="`,
 			expected: 1,
+		},
+		{
+			name:     "SDK constructor quoted value",
+			input:    `client = OpenAI(api_key="Q7mN2pL9rT4vW8xYzC6bH3kF")`,
+			expected: 1,
+		},
+		{
+			name:     "URL query unquoted value",
+			input:    `https://api.example.test/?api_key=Q7mN2pL9rT4vW8xYzC6bH3kF&next=1`,
+			expected: 1,
+		},
+		{
+			name:     "curl double quoted header",
+			input:    `curl -H "x-api-key: Q7mN2pL9rT4vW8xYzC6bH3kF" https://api.example.test`,
+			expected: 1,
+		},
+		{
+			name:     "curl single quoted header",
+			input:    `curl -H 'X-API-Key: Q7mN2pL9rT4vW8xYzC6bH3kF' https://api.example.test`,
+			expected: 1,
+		},
+		{
+			name:     "embedded shell command",
+			input:    `run: "curl -H \"x-api-key: Q7mN2pL9rT4vW8xYzC6bH3kF\" https://api.example.test"`,
+			expected: 1,
+		},
+		{
+			name:     "XML attribute quoted value",
+			input:    `<cfg apiKey="Q7mN2pL9rT4vW8xYzC6bH3kF"/>`,
+			expected: 1,
+		},
+		{
+			name:     "double quoted JSON key",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV"}`,
+			expected: 1,
+		},
+		{
+			name:     "single quoted object key",
+			input:    `{'x-apisix-key' : 'Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV'}`,
+			expected: 1,
+		},
+		{
+			name:     "official APISIX header with independent context and low entropy hex value",
+			input:    `{"Gateway": "Apache APISIX", "X-API-KEY": "01234567012345670123456701234567"}`,
+			expected: 1,
+		},
+		{
+			name:     "generic X-API-KEY without APISIX context retains entropy filters",
+			input:    `{"X-API-KEY": "01234567012345670123456701234567"}`,
+			expected: 0,
+		},
+		{
+			name:     "generic X-API-KEY natural language value is not structural",
+			input:    `{"X-API-KEY": "development_environment"}`,
+			expected: 0,
+		},
+		{
+			name:     "multiline JSON whitespace",
+			input:    "{\r\n  \"Gateway\": \"APISIX\",\r\n  \"X-API-KEY\"\r\n  :\r\n  \"01234567012345670123456701234567\"\r\n}",
+			expected: 1,
+		},
+		{
+			name:     "sensitive header list entry is not an assignment",
+			input:    `{"SensitiveHeaders": ["Authorization", "X-APISIX-KEY"]}`,
+			expected: 0,
+		},
+		{
+			name:     "mismatched key quotes",
+			input:    `{"X-APISIX-KEY': "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV"}`,
+			expected: 0,
+		},
+		{
+			name:     "mismatched value quotes",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV'}`,
+			expected: 0,
+		},
+		{
+			name:     "unterminated quoted value",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV}`,
+			expected: 0,
+		},
+		{
+			name:     "disallowed value suffix",
+			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY.invalid"}`,
+			expected: 0,
+		},
+		{
+			name:     "unquoted disallowed value suffix",
+			input:    `X-APISIX-KEY = Q7mN2pL9rT4vW8xY.invalid`,
+			expected: 0,
+		},
+		{
+			name:     "overlong allowed value is rejected not truncated",
+			input:    `{"X-APISIX-KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"}`,
+			expected: 0,
+		},
+		{
+			name:     "degenerate explicit APISIX value",
+			input:    `{"X-APISIX-KEY": "0000000000000000"}`,
+			expected: 0,
+		},
+		{
+			name:     "bare environment reference in explicit APISIX field",
+			input:    `{"X-APISIX-KEY": "APISIX_ADMIN_KEY"}`,
+			expected: 0,
 		},
 	}
 
@@ -270,9 +382,165 @@ func TestAPIKeyDetector_ScanViaMatcher_KeywordRegexAlignment(t *testing.T) {
 	assert.Equal(t, "generic-api-key", findings[0].DetectorID)
 }
 
+type fixtureSource struct {
+	data []byte
+}
+
+func (s *fixtureSource) Type() string                   { return "fixture" }
+func (s *fixtureSource) Validate(context.Context) error { return nil }
+func (s *fixtureSource) Err() error                     { return nil }
+func (s *fixtureSource) Chunks(_ context.Context) <-chan source.Chunk {
+	chunks := make(chan source.Chunk, 1)
+	chunks <- source.Chunk{
+		Data: s.data,
+		SourceMetadata: finding.SourceMetadata{
+			SourceType: "filesystem",
+			FilePath:   "appsettings.synthetic.json",
+		},
+	}
+	close(chunks)
+	return chunks
+}
+
+func readSyntheticAppsettings(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "appsettings.synthetic.json"))
+	require.NoError(t, err)
+	return data
+}
+
+func TestAPIKeyDetector_AppsettingsJSON_DirectAndMatcherParity(t *testing.T) {
+	data := readSyntheticAppsettings(t)
+	d := &APIKeyDetector{}
+
+	direct := d.Scan(context.Background(), data)
+	viaMatcher := testutil.ScanViaMatcher(d, data)
+
+	require.Len(t, direct, 3, "the three APISIX assignments must be detected")
+	require.Equal(t, direct, viaMatcher, "quoted JSON assignments must survive the production matcher gate")
+	for _, got := range direct {
+		assert.Equal(t, "X-APISIX-KEY", got.ExtraData["key_name"])
+		assert.NotEqual(t, string(got.Raw), got.Redacted)
+	}
+}
+
+func TestAPIKeyDetector_APISIXSpellings_IsolatedMatcherParity(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "official header hyphen", key: "X-API-KEY"},
+		{name: "official header underscore", key: "X_API_KEY"},
+		{name: "local header", key: "X-APISIX-KEY"},
+		{name: "admin key underscore", key: "APISIX_ADMIN_KEY"},
+		{name: "admin key compact", key: "APISIXADMINKEY"},
+		{name: "apisix key mixed separators", key: "APISIX-KEY"},
+	}
+
+	d := &APIKeyDetector{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(`{"Gateway": "Apache APISIX", "` + tt.key + `": "01234567012345670123456701234567"}`)
+			direct := d.Scan(context.Background(), input)
+			viaMatcher := testutil.ScanViaMatcher(d, input)
+			require.Len(t, direct, 1)
+			require.Equal(t, direct, viaMatcher, "each accepted spelling must independently select the detector")
+			assert.Equal(t, tt.key, direct[0].ExtraData["key_name"])
+			assert.Equal(t, "apisix", direct[0].ExtraData["key_context"])
+			assert.False(t, d.EntropyGated(direct[0]), "explicit APISIX context must bypass entropy gating")
+			assert.Equal(t, string(direct[0].Raw), string(input[direct[0].ByteStart:direct[0].ByteEnd]))
+		})
+	}
+}
+
+func TestAPIKeyDetector_XAPIKey_ValueCannotProvideItsOwnAPISIXContext(t *testing.T) {
+	data := []byte(`{"X-API-KEY": "aB3kAPISIX9mN2pQ7rT4vW8xY0zC5dF"}`)
+	d := &APIKeyDetector{}
+	findings := d.Scan(context.Background(), data)
+	require.Len(t, findings, 1, "high-entropy generic header remains detectable")
+	assert.Empty(t, findings[0].ExtraData["key_context"])
+	assert.True(t, d.EntropyGated(findings[0]), "candidate bytes must not establish their own structural context")
+}
+
+func TestAPIKeyDetector_AppsettingsJSON_FullEngine(t *testing.T) {
+	data := readSyntheticAppsettings(t)
+	d := &APIKeyDetector{}
+	eng := engine.New(engine.Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{d},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+		Clock: func() time.Time {
+			return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 3, "all APISIX assignments must survive matcher, detector, and entropy gates")
+
+	lines := make([]int, 0, len(result.Findings))
+	for _, got := range result.Findings {
+		assert.Equal(t, "generic-api-key", got.DetectorID)
+		assert.Empty(t, got.Raw, "raw values must not be exposed by the default engine result")
+		lines = append(lines, got.SourceMetadata.Line)
+	}
+	assert.Equal(t, linesContaining(data, []byte(`"X-APISIX-KEY":`)), lines)
+}
+
+func TestAPIKeyDetector_APISIXLowEntropy_SurvivesFullEngine(t *testing.T) {
+	data := []byte("{\n  \"Gateway\": \"Apache APISIX\",\n  \"X-API-KEY\": \"01234567012345670123456701234567\"\n}\n")
+	d := &APIKeyDetector{}
+	eng := engine.New(engine.Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{d},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1, "strong APISIX context must survive the generic entropy thresholds")
+	assert.Less(t, result.Findings[0].Entropy, 3.8, "fixture must prove the low-entropy structural path")
+	assert.Equal(t, 3, result.Findings[0].SourceMetadata.Line)
+}
+
+func TestAPIKeyDetector_ExactSpan_PreventsDecoyLineAndIgnore(t *testing.T) {
+	value := "01234567012345670123456701234567"
+	data := []byte("{\n" +
+		`  "DocumentationExample": "` + value + `", // leakwatch:ignore:generic-api-key` + "\n" +
+		`  "X-APISIX-KEY": "` + value + `"` + "\n}\n")
+	d := &APIKeyDetector{}
+	eng := engine.New(engine.Config{
+		Concurrency:      1,
+		Detectors:        []detector.Detector{d},
+		EnableEntropy:    true,
+		EntropyThreshold: 4.0,
+	})
+
+	result, err := eng.Scan(context.Background(), &fixtureSource{data: data})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1, "an ignored same-value decoy must not suppress the actual assignment")
+	assert.Equal(t, 3, result.Findings[0].SourceMetadata.Line)
+}
+
+func linesContaining(data, marker []byte) []int {
+	var lines []int
+	for i, line := range bytes.Split(data, []byte{'\n'}) {
+		if bytes.Contains(line, marker) {
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
+}
+
 func TestAPIKeyDetector_EntropyBased(t *testing.T) {
 	// The generic detector is heuristic (matches arbitrary high-entropy
 	// strings), so it must opt into the engine's entropy floor.
 	assert.True(t, (&APIKeyDetector{}).EntropyBased(),
 		"generic-api-key must be entropy-based so the engine gates it on entropy")
+
+	d := &APIKeyDetector{}
+	heuristic := detector.RawFinding{ExtraData: map[string]string{"key_name": "api_key"}}
+	assert.True(t, d.EntropyGated(heuristic), "ordinary generic assignments must retain engine entropy gating")
 }

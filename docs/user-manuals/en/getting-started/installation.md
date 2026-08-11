@@ -28,7 +28,7 @@ go install github.com/HodeTech/leakwatch@latest
 The binary is placed in `$(go env GOPATH)/bin`. Make sure that directory is on your `PATH`.
 
 :::note
-`go install` always fetches the latest tagged release. To pin a specific version, replace `@latest` with a tag such as `@v1.5.0`.
+`go install` always fetches the latest tagged release. To pin a specific version, replace `@latest` with the current release tag, `@v1.8.0`.
 :::
 
 ## Docker
@@ -47,8 +47,8 @@ Available tags:
 | Tag | Description |
 |-----|-------------|
 | `:latest` | Most recent release |
-| `:v1.5.0` | Exact version pin |
-| `:v1.5` | Minor-version pin (tracks patch releases) |
+| `:v1.8.0` | Exact current-release pin |
+| `:v1.7` | Current minor-version pin (tracks patch releases) |
 
 Mount the directory you want to scan to `/scan` inside the container. Flags and options work identically to the native binary — see [CLI Reference](#/reference/cli-reference) for the full list.
 
@@ -86,7 +86,7 @@ leakwatch version
 Expected output:
 
 ```text
-leakwatch v1.5.0 (commit: a3f9c12, built: 2026-05-10T08:22:00Z)
+leakwatch v1.8.0 (commit: 1a2b3c4, built: 2026-08-11T12:00:00Z)
 ```
 
 If the command is not found, check that the install directory is on your `PATH`.

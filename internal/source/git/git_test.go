@@ -2,7 +2,10 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type cancelAfterErrChecks struct {
+	context.Context
+	remaining int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	c.remaining--
+	if c.remaining <= 0 {
+		return context.Canceled
+	}
+	return nil
+}
 
 // initTestRepo creates a temporary git repository for testing.
 func initTestRepo(t *testing.T, files map[string]string) (string, *gogit.Repository) {
@@ -81,18 +97,18 @@ func TestGitSource_Validate_ValidRepo(t *testing.T) {
 	dir, _ := initTestRepo(t, map[string]string{"README.md": "hello"})
 
 	s := New(dir)
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestGitSource_Validate_NonExistentRepo(t *testing.T) {
 	s := New("/nonexistent/repo")
-	assert.Error(t, s.Validate())
+	assert.Error(t, s.Validate(context.Background()))
 }
 
 func TestGitSource_Validate_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	assert.Error(t, s.Validate())
+	assert.Error(t, s.Validate(context.Background()))
 }
 
 func TestGitSource_Chunks_ReadsCommitHistory(t *testing.T) {
@@ -102,7 +118,7 @@ func TestGitSource_Chunks_ReadsCommitHistory(t *testing.T) {
 	})
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var chunks []string
@@ -121,7 +137,7 @@ func TestGitSource_Chunks_IncludesCommitMetadata(t *testing.T) {
 	})
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	for chunk := range s.Chunks(ctx) {
@@ -149,7 +165,7 @@ func TestGitSource_Chunks_MultipleCommits(t *testing.T) {
 	}, "third commit")
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	seen := make(map[string]bool)
@@ -183,7 +199,7 @@ func TestGitSource_Chunks_SinceCommit(t *testing.T) {
 	}, "new commit 2")
 
 	s := New(dir, WithSinceCommit(sinceHash))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -202,7 +218,7 @@ func TestGitSource_Validate_SinceCommitNotFound_ReturnsError(t *testing.T) {
 
 	// A well-formed but non-existent commit hash.
 	s := New(dir, WithSinceCommit("0123456789abcdef0123456789abcdef01234567"))
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -232,7 +248,7 @@ func TestGitSource_Validate_SinceCommitNotAncestor_ReturnsError(t *testing.T) {
 
 	// sideHash lives only on sidebranch, so it is not an ancestor of HEAD (main).
 	s := New(dir, WithSinceCommit(sideHash))
-	err = s.Validate()
+	err = s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not an ancestor")
 }
@@ -247,7 +263,7 @@ func TestGitSource_Validate_SinceCommitIsAncestor_ReturnsNil(t *testing.T) {
 	addCommit(t, dir, repo, map[string]string{"b.txt": "more"}, "second commit")
 
 	s := New(dir, WithSinceCommit(baseHash))
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestGitSource_Validate_SinceCommitEqualsHead_ReturnsNil(t *testing.T) {
@@ -258,7 +274,7 @@ func TestGitSource_Validate_SinceCommitEqualsHead_ReturnsNil(t *testing.T) {
 	headHash := headRef.Hash().String()
 
 	s := New(dir, WithSinceCommit(headHash))
-	assert.NoError(t, s.Validate())
+	assert.NoError(t, s.Validate(context.Background()))
 }
 
 func TestGitSource_Chunks_WithExcludePaths_SkipsMatching(t *testing.T) {
@@ -269,7 +285,7 @@ func TestGitSource_Chunks_WithExcludePaths_SkipsMatching(t *testing.T) {
 	})
 
 	s := New(dir, WithExcludePaths([]string{"vendor/**", "node_modules/**"}))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -321,7 +337,7 @@ func TestGitSource_Chunks_WithSince(t *testing.T) {
 	require.NoError(t, err)
 
 	s := New(dir, WithSince(cutoff))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -336,7 +352,7 @@ func TestGitSource_Err_SuccessfulChunks_ReturnsNil(t *testing.T) {
 	dir, _ := initTestRepo(t, map[string]string{"README.md": "hello"})
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	for range s.Chunks(context.Background()) {
 	}
@@ -346,7 +362,7 @@ func TestGitSource_Err_SuccessfulChunks_ReturnsNil(t *testing.T) {
 
 func TestGitSource_Err_HistoryWalkFailure_ReturnsError(t *testing.T) {
 	// A freshly-initialized repository has no commits, so HEAD does not resolve.
-	// Validate() succeeds (the repo opens), but the history walk in Chunks fails
+	// Validate(ctx) succeeds (the repo opens), but the history walk in Chunks fails
 	// to resolve a start commit — a terminal error that must be reported via Err
 	// rather than silently yielding a clean, empty scan.
 	dir := t.TempDir()
@@ -354,7 +370,7 @@ func TestGitSource_Err_HistoryWalkFailure_ReturnsError(t *testing.T) {
 	require.NoError(t, err)
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	var count int
 	for range s.Chunks(context.Background()) {
@@ -397,7 +413,7 @@ func TestGitSource_Chunks_ContextCancellation(t *testing.T) {
 	})
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately.
@@ -422,7 +438,7 @@ func TestGitSource_Chunks_SkipsLargeFiles(t *testing.T) {
 	})
 
 	s := New(dir, WithMaxFileSize(512))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -440,7 +456,9 @@ func TestGitSource_IsRemote(t *testing.T) {
 		expected bool
 	}{
 		{"https://github.com/org/repo.git", true},
+		{"HTTPS://github.com/org/repo.git", true},
 		{"http://github.com/org/repo.git", true},
+		{"SSH://git@github.com/org/repo.git", true},
 		{"git@github.com:org/repo.git", true},
 		{"ssh://git@github.com/org/repo.git", true},
 		{"/local/path/to/repo", false},
@@ -453,6 +471,53 @@ func TestGitSource_IsRemote(t *testing.T) {
 			assert.Equal(t, tt.expected, s.isRemote())
 		})
 	}
+}
+
+func TestClassifyGitTarget_RejectsUnsupportedScheme(t *testing.T) {
+	remote, normalized, err := classifyGitTarget("ftp://user:wave9-canary@example.test/repo.git")
+	require.Error(t, err)
+	assert.False(t, remote)
+	assert.Empty(t, normalized)
+	assert.NotContains(t, err.Error(), "wave9-canary")
+}
+
+func TestClassifyGitTarget_LocalPathContainingColonRemainsLocal(t *testing.T) {
+	remote, normalized, err := classifyGitTarget("repo:with-colon")
+	require.NoError(t, err)
+	assert.False(t, remote)
+	assert.Equal(t, "repo:with-colon", normalized)
+}
+
+func TestGitSource_Validate_NonexistentRelativeTargetDoesNotOpenParentRepo(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"README.md": "parent repo"})
+	t.Chdir(dir)
+
+	s := New("definitely-not-existing-wave9")
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to inspect git target")
+	assert.Nil(t, s.repo, "a typo must never silently select and scan the parent repository")
+}
+
+func TestGitSource_Validate_LocalFileTargetIsRejected(t *testing.T) {
+	dir, _ := initTestRepo(t, map[string]string{"README.md": "parent repo"})
+	s := New(filepath.Join(dir, "README.md"))
+
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+	assert.Nil(t, s.repo)
+}
+
+func TestGitSource_Validate_UppercaseHTTPSSchemeNeverLeaksUserinfo(t *testing.T) {
+	const canary = "wave9-canary-not-a-secret"
+	s := New("HTTPS://user:" + canary + "@127.0.0.1:1/repo.git")
+
+	err := s.Validate(context.Background())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), canary)
+	assert.NotContains(t, err.Error(), "user:")
+	assert.Empty(t, s.tmpDir, "failed remote clone must clean its temporary directory")
 }
 
 func TestGitSource_Close_RemovesTmpDir(t *testing.T) {
@@ -486,6 +551,99 @@ func TestGitSource_Close_NoTmpDir(t *testing.T) {
 	// Close on a non-cloned source should be a no-op.
 	err := s.Close()
 	assert.NoError(t, err)
+}
+
+func TestGitSource_Close_FailedCleanupRemainsRetryable(t *testing.T) {
+	tmpDir := t.TempDir()
+	cleanupErr := errors.New("synthetic cleanup failure")
+	s := &GitSource{
+		tmpDir:    tmpDir,
+		removeAll: func(string) error { return cleanupErr },
+	}
+
+	err := s.Close()
+	require.ErrorIs(t, err, cleanupErr)
+	assert.Equal(t, tmpDir, s.tmpDir, "failed cleanup must retain ownership for a retry")
+
+	s.removeAll = os.RemoveAll
+	require.NoError(t, s.Close())
+	assert.Empty(t, s.tmpDir)
+	_, err = os.Stat(tmpDir)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestGitSource_ResolveCommitHash_CancellationStopsEnumeration(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"base.txt": "base"})
+	head, err := repo.Head()
+	require.NoError(t, err)
+	basePrefix := head.Hash().String()[:8]
+	for i := range 20 {
+		addCommit(t, dir, repo, map[string]string{
+			fmt.Sprintf("file-%d.txt", i): fmt.Sprintf("content-%d", i),
+		}, fmt.Sprintf("commit-%d", i))
+	}
+
+	s := New(dir)
+	require.NoError(t, s.openLocal())
+	ctx := &cancelAfterErrChecks{Context: context.Background(), remaining: 2}
+
+	_, err = s.resolveCommitHash(ctx, basePrefix)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestIsAncestorContext_CancellationStopsHistoryWalk(t *testing.T) {
+	dir, repo := initTestRepo(t, map[string]string{"base.txt": "base"})
+	baseRef, err := repo.Head()
+	require.NoError(t, err)
+	base, err := repo.CommitObject(baseRef.Hash())
+	require.NoError(t, err)
+
+	for i := range 20 {
+		addCommit(t, dir, repo, map[string]string{
+			fmt.Sprintf("history-%d.txt", i): fmt.Sprintf("content-%d", i),
+		}, fmt.Sprintf("history-%d", i))
+	}
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	head, err := repo.CommitObject(headRef.Hash())
+	require.NoError(t, err)
+
+	ctx := &cancelAfterErrChecks{Context: context.Background(), remaining: 2}
+	_, err = isAncestorContext(ctx, base, head)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestGitSource_Validate_RemoteCloneCancellationIsPromptAndCleansUp(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	s := New(server.URL + "/repo.git")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Validate(ctx) }()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("clone did not start an HTTP request")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, s.tmpDir, "cancelled clone must clean up its temporary directory")
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote validation did not stop promptly after cancellation")
+	}
 }
 
 func TestSafeDisplayURL_StripsCredentials(t *testing.T) {
@@ -609,7 +767,7 @@ func TestGitSource_Chunks_RepositoryMetadataHasNoCredential(t *testing.T) {
 	// credential-stripped remote form that should appear in metadata.
 	s := New(dir)
 	s.displayTarget = SafeDisplayURL("https://user:" + fakeToken + "@github.com/org/repo.git")
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var sawChunk bool
@@ -637,7 +795,7 @@ func TestGitSource_Chunks_FullHistory_AttributesIntroducingCommit(t *testing.T) 
 	addCommit(t, dir, repo, map[string]string{"b.txt": "bbb"}, "third commit")
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var configCommit string
@@ -662,7 +820,7 @@ func TestGitSource_Chunks_FullHistory_ReportsBothPathsForIdenticalContent(t *tes
 	}, "add duplicate content under a different path")
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -699,7 +857,7 @@ func TestGitSource_Chunks_Branch_ScansRequestedBranchLocally(t *testing.T) {
 	addCommit(t, dir, repo, map[string]string{"main-only.txt": "main content"}, "main commit")
 
 	s := New(dir, WithBranch("feature"))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -718,7 +876,7 @@ func TestGitSource_Validate_Branch_NotFound_ReturnsError(t *testing.T) {
 	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
 
 	s := New(dir, WithBranch("does-not-exist"))
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does-not-exist")
 }
@@ -733,7 +891,7 @@ func TestGitSource_Validate_SinceCommit_AbbreviatedHash_Resolves(t *testing.T) {
 	addCommit(t, dir, repo, map[string]string{"b.txt": "more"}, "second commit")
 
 	s := New(dir, WithSinceCommit(shortHash))
-	require.NoError(t, s.Validate(), "an abbreviated since-commit hash should resolve, not fail as 'not found'")
+	require.NoError(t, s.Validate(context.Background()), "an abbreviated since-commit hash should resolve, not fail as 'not found'")
 
 	ctx := context.Background()
 	var files []string
@@ -749,7 +907,7 @@ func TestGitSource_Validate_SinceCommit_TooShort_ReturnsClearError(t *testing.T)
 	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
 
 	s := New(dir, WithSinceCommit("ab"))
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "since-commit")
 	assert.Contains(t, err.Error(), "too short")
@@ -759,7 +917,7 @@ func TestGitSource_Validate_SinceCommit_NonHex_ReturnsClearError(t *testing.T) {
 	dir, _ := initTestRepo(t, map[string]string{"a.txt": "content"})
 
 	s := New(dir, WithSinceCommit("zzzzzzz"))
-	err := s.Validate()
+	err := s.Validate(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid commit hash")
 }
@@ -791,7 +949,7 @@ func TestGitSource_Chunks_SinceCommitWithSince_HonorsSince(t *testing.T) {
 	// since-commit excludes base; --since additionally drops the 2024 commit.
 	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := New(dir, WithSinceCommit(base.String()), WithSince(cutoff))
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	ctx := context.Background()
 	var files []string
@@ -817,7 +975,7 @@ func TestGitSource_ResolveBranch_DetachedHead_ReportsShortCommit(t *testing.T) {
 	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{Hash: baseHash}))
 
 	s := New(dir)
-	require.NoError(t, s.Validate())
+	require.NoError(t, s.Validate(context.Background()))
 
 	branch := s.resolveBranch()
 	assert.True(t, strings.HasPrefix(branch, "detached@"),

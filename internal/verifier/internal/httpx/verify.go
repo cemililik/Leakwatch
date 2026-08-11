@@ -3,10 +3,17 @@ package httpx
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
@@ -14,9 +21,49 @@ import (
 // userAgent is the User-Agent every verifier request carries.
 const userAgent = "leakwatch-verifier"
 
-// Request describes the single HTTP request a verifier sends to a provider.
+const (
+	max429Attempts  = 2
+	max429RetryWait = 2 * time.Second
+	maxJitterRatio  = 0.10
+)
+
+type retryGateKey struct{}
+
+type requestGateKey struct{}
+
+// RequestGate is installed by the verification engine for standard httpx
+// verifiers. It admits each actual send through both provider and global rate
+// limiters. Returning a non-nil result rejects the request before client.Do.
+type RequestGate func() *finding.VerificationResult
+
+// WithRequestGate returns a child context carrying the engine-owned admission
+// gate used immediately before every HTTP attempt, including a bounded retry.
+func WithRequestGate(ctx context.Context, gate RequestGate) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestGateKey{}, gate)
+}
+
+// RetryGate is installed by the verification engine and admits one retry at
+// its actual send point through both the provider and global rate limiters.
+// Returning a non-nil result rejects the retry without sending it.
+type RetryGate func() *finding.VerificationResult
+
+// WithRetryGate returns a child context carrying an engine-owned admission gate
+// used only for an HTTP 429 retry. It supports manually gated multi-request
+// verifiers whose initial/fallback sends call their verifier.RequestGate
+// directly; standard httpx verifiers use WithRequestGate instead.
+func WithRetryGate(ctx context.Context, gate RetryGate) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, retryGateKey{}, gate)
+}
+
+// Request describes the logical HTTP probe a verifier sends to a provider.
 // VerifyToken builds and performs it through the shared, security-hardened
-// client, so callers only declare what differs between providers.
+// client; a safe GET/HEAD probe may be replayed once after a bounded HTTP 429.
 type Request struct {
 	// Method defaults to GET when empty.
 	Method string
@@ -42,8 +89,21 @@ type Request struct {
 // The reader passed to a DecodeFunc is already bounded by LimitReader.
 type DecodeFunc func(body io.Reader) (extra map[string]string, downgradeMessage string, err error)
 
-// TokenSpec describes a standard single-request token verification: the request
-// to send and how each response status maps to a VerificationResult.
+// ResponseDecodeFunc is the header-aware counterpart to DecodeFunc. It is for
+// provider metadata that is available only in response headers (for example
+// GitHub OAuth scopes and token expiry). Header values are untrusted provider
+// input and must never be copied wholesale into ExtraData.
+type ResponseDecodeFunc func(header http.Header, body io.Reader) (extra map[string]string, downgradeMessage string, err error)
+
+// InactiveDecodeFunc validates that an inactive-status response is definitive
+// for the provider. A nil error permits verified-inactive; an error keeps the
+// outcome fail-conservative as StatusVerifyError. It is intended for providers
+// whose 401 class also includes challenges such as DPoP that do not prove a
+// credential is invalid.
+type InactiveDecodeFunc func(body io.Reader) error
+
+// TokenSpec describes a standard token verification probe: the request to send
+// and how each response status maps to a VerificationResult.
 //
 // The shared flow — User-Agent, no-redirect handling, bounded body, error
 // redaction, and the canonical "unexpected status code" / "failed to decode"
@@ -57,9 +117,9 @@ type TokenSpec struct {
 	// Request is the provider request to send.
 	Request Request
 
-	// Redact, when non-empty, is stripped from any error text before it is
-	// logged or returned. Set it to the secret when the credential appears in
-	// the request URL (token-in-path verifiers such as telegram and infura).
+	// Redact is an optional additional sensitive value stripped from error text.
+	// VerifyToken always redacts its token argument; use this field only when a
+	// request contains another credential-bearing representation.
 	Redact string
 
 	// ActiveStatuses are the HTTP status codes mapped to verified-active.
@@ -86,6 +146,26 @@ type TokenSpec struct {
 	// extract ExtraData (and optionally downgrade the result). When nil, an
 	// active-status response yields a bare active result without reading the body.
 	Decode DecodeFunc
+
+	// DecodeResponse is mutually exclusive with Decode and receives both the
+	// active response headers and bounded body. Use it only for explicitly
+	// validated, non-secret provider metadata.
+	DecodeResponse ResponseDecodeFunc
+
+	// DecodeInactive, when non-nil, must positively validate an inactive-status
+	// response body before the credential is classified as inactive. The body is
+	// read completely through the same strict size bound used for active bodies.
+	DecodeInactive InactiveDecodeFunc
+
+	// RequireCompleteBody reads the full active response through a strict
+	// MaxBodyBytes+1 bound before Decode runs. Responses over the bound are
+	// rejected instead of letting a truncated prefix appear valid.
+	RequireCompleteBody bool
+
+	// RequireJSONContentType rejects an active response unless its media type is
+	// application/json or an application/*+json subtype. The raw header is never
+	// reflected into logs or result messages.
+	RequireJSONContentType bool
 }
 
 // BaseURL returns override when it is non-empty, otherwise fallback. Verifiers
@@ -109,29 +189,71 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 		}
 	}
 
-	resp, errResult := spec.send(ctx, client)
-	if errResult != nil {
-		return *errResult
-	}
-	defer func() {
-		// Drain the remaining body (bounded by MaxBodyBytes so a misbehaving
-		// endpoint cannot exhaust memory) before closing, so the underlying
-		// connection can be returned to the shared client's keep-alive pool
-		// instead of being discarded.
-		_, _ = io.Copy(io.Discard, LimitReader(resp.Body))
-		_ = resp.Body.Close()
-	}()
+	for attempt := 1; attempt <= max429Attempts; attempt++ {
+		resp, errResult := spec.send(ctx, client, token)
+		if errResult != nil {
+			return *errResult
+		}
 
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < max429Attempts && spec.retrySafe() {
+			rawRetryAfter := resp.Header.Get("Retry-After")
+			delay, ok := retryAfterDelay(rawRetryAfter, time.Now())
+			closeResponse(resp)
+			if ok && delay <= max429RetryWait {
+				delay = addRetryJitter(delay, max429RetryWait, retryJitterUnit())
+				if retryFitsContext(ctx, delay) {
+					slog.DebugContext(ctx, spec.Name+" verifier: scheduling bounded HTTP 429 retry",
+						slog.Int("next_attempt", attempt+1),
+						slog.Int("max_attempts", max429Attempts),
+						slog.Duration("retry_wait", delay),
+						slog.Duration("max_total_wait", max429RetryWait),
+					)
+					if result := waitForRetry(ctx, spec.Name, delay); result != nil {
+						return *result
+					}
+					if gate, _ := ctx.Value(retryGateKey{}).(RetryGate); gate != nil {
+						if rejection := gate(); rejection != nil {
+							return *rejection
+						}
+					}
+					continue
+				}
+			}
+			slog.DebugContext(ctx, spec.Name+" verifier: bounded HTTP 429 retry skipped",
+				slog.Int("attempt", attempt),
+				slog.Int("max_attempts", max429Attempts),
+				slog.Duration("max_total_wait", max429RetryWait),
+			)
+			return RateLimited(ctx, spec.Name, rawRetryAfter)
+		}
+
+		return func() finding.VerificationResult {
+			// Decode callbacks are provider-specific code. Preserve response-body
+			// cleanup even if one panics and the outer verification engine recovers.
+			defer closeResponse(resp)
+			return spec.handleResponse(ctx, resp)
+		}()
+	}
+
+	return finding.VerificationResult{
+		Status:  finding.StatusVerifyError,
+		Message: "bounded verification attempts exhausted",
+	}
+}
+
+func (spec TokenSpec) handleResponse(ctx context.Context, resp *http.Response) finding.VerificationResult {
 	code := resp.StatusCode
 	switch {
 	case containsStatus(spec.activeStatuses(), code):
-		return spec.handleActive(ctx, resp.Body)
-	case containsStatus(spec.inactiveStatuses(), code):
-		slog.DebugContext(ctx, spec.Name+" verifier: secret is inactive")
-		return finding.VerificationResult{
-			Status:  finding.StatusVerifiedInactive,
-			Message: spec.InactiveMessage,
+		if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: "200 OK but response Content-Type is not JSON",
+			}
 		}
+		return spec.handleActive(ctx, resp)
+	case containsStatus(spec.inactiveStatuses(), code):
+		return spec.handleInactive(ctx, resp)
 	case code == http.StatusTooManyRequests:
 		// A provider-side rate limit must be distinguishable from a genuine
 		// verification bug: report an actionable message rather than a generic
@@ -142,10 +264,114 @@ func VerifyToken(ctx context.Context, client *http.Client, token string, spec To
 	}
 }
 
+func (spec TokenSpec) retrySafe() bool {
+	method := strings.ToUpper(strings.TrimSpace(spec.Request.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+func retryAfterDelay(raw string, now time.Time) (time.Duration, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		if seconds > uint64(max429RetryWait/time.Second) {
+			return max429RetryWait + time.Nanosecond, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := retryAt.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
+}
+
+func addRetryJitter(base, maxDelay time.Duration, unit float64) time.Duration {
+	if base <= 0 || maxDelay <= base {
+		return base
+	}
+	if unit < 0 {
+		unit = 0
+	}
+	if unit > 1 {
+		unit = 1
+	}
+	jitter := time.Duration(float64(base) * maxJitterRatio * unit)
+	if base+jitter > maxDelay {
+		return maxDelay
+	}
+	return base + jitter
+}
+
+func retryJitterUnit() float64 {
+	var random [8]byte
+	if _, err := cryptorand.Read(random[:]); err != nil {
+		// Jitter improves herd behavior but is not required for correctness. A
+		// secure-random failure therefore falls back to the provider's exact wait
+		// instead of introducing a weak pseudo-random source.
+		return 0
+	}
+	const precisionBits = 53
+	value := binary.LittleEndian.Uint64(random[:]) >> (64 - precisionBits)
+	return float64(value) / float64((uint64(1)<<precisionBits)-1)
+}
+
+func retryFitsContext(ctx context.Context, delay time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Now().Add(delay).Before(deadline)
+}
+
+func waitForRetry(ctx context.Context, name string, delay time.Duration) *finding.VerificationResult {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		slog.DebugContext(ctx, name+" verifier: HTTP 429 retry cancelled",
+			slog.String("reason", ctx.Err().Error()))
+		return &finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: "rate-limit retry cancelled: " + ctx.Err().Error(),
+		}
+	}
+}
+
+func closeResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	// Drain only a bounded amount before closing so keep-alive can be reused
+	// without trusting a provider-controlled response size.
+	_, _ = io.Copy(io.Discard, LimitReader(resp.Body))
+	_ = resp.Body.Close()
+}
+
+func isJSONContentType(header string) bool {
+	mediaType, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	return mediaType == "application/json" ||
+		(strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json"))
+}
+
 // send builds and performs the request, applying the shared safety policy. On a
 // build, transport, or redirect failure it returns a non-nil result describing
 // the StatusVerifyError; otherwise it returns the response (caller closes Body).
-func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Response, *finding.VerificationResult) {
+func (spec TokenSpec) send(ctx context.Context, client *http.Client, token string) (*http.Response, *finding.VerificationResult) {
 	method := spec.Request.Method
 	if method == "" {
 		method = http.MethodGet
@@ -158,7 +384,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 
 	req, err := http.NewRequestWithContext(ctx, method, spec.Request.URL, body)
 	if err != nil {
-		safeErr := RedactError(err, spec.Redact)
+		safeErr := redactTransportError(err, spec.redactionSecrets(token)...)
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to create request", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -177,10 +403,15 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 	if client == nil {
 		client = Client()
 	}
+	if gate, _ := ctx.Value(requestGateKey{}).(RequestGate); gate != nil {
+		if rejection := gate(); rejection != nil {
+			return nil, rejection
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		safeErr := RedactError(err, spec.Redact)
+		safeErr := redactTransportError(err, spec.redactionSecrets(token)...)
 		slog.ErrorContext(ctx, spec.Name+" verifier: request failed", slog.String("error", safeErr))
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
@@ -191,7 +422,7 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 	// The shared client does not follow redirects: a 3xx from an API endpoint
 	// means the credential context is wrong, never that the secret is active.
 	if IsRedirect(resp.StatusCode) {
-		_ = resp.Body.Close()
+		closeResponse(resp)
 		return nil, &finding.VerificationResult{
 			Status:  finding.StatusVerifyError,
 			Message: fmt.Sprintf("unexpected redirect (status %d)", resp.StatusCode),
@@ -201,10 +432,38 @@ func (spec TokenSpec) send(ctx context.Context, client *http.Client) (*http.Resp
 	return resp, nil
 }
 
+func (spec TokenSpec) redactionSecrets(token string) []string {
+	secrets := []string{token, spec.Redact}
+	if spec.Request.BasicAuthUser != "" || spec.Request.BasicAuthPass != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(
+			spec.Request.BasicAuthUser + ":" + spec.Request.BasicAuthPass,
+		))
+		secrets = append(secrets, spec.Request.BasicAuthUser, spec.Request.BasicAuthPass, encoded)
+	}
+	return secrets
+}
+
+func redactTransportError(err error, secrets ...string) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	for _, secret := range secrets {
+		message = redactText(message, secret)
+	}
+	return message
+}
+
 // handleActive maps an active-status response to a result, decoding the body for
 // ExtraData (and any downgrade) when a DecodeFunc is configured.
-func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.VerificationResult {
-	if spec.Decode == nil {
+func (spec TokenSpec) handleActive(ctx context.Context, resp *http.Response) finding.VerificationResult {
+	if spec.Decode != nil && spec.DecodeResponse != nil {
+		return finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: "verification contract configured multiple active response decoders",
+		}
+	}
+	if spec.Decode == nil && spec.DecodeResponse == nil {
 		slog.InfoContext(ctx, spec.Name+" verifier: secret is active")
 		return finding.VerificationResult{
 			Status:    finding.StatusVerifiedActive,
@@ -213,7 +472,32 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 		}
 	}
 
-	extra, downgrade, err := spec.Decode(LimitReader(body))
+	decodeBody := LimitReader(resp.Body)
+	if spec.RequireCompleteBody {
+		contents, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
+		if err != nil {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("200 OK but failed to read response body: %v", err),
+			}
+		}
+		if int64(len(contents)) > MaxBodyBytes {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("200 OK but response body exceeds %d bytes", MaxBodyBytes),
+			}
+		}
+		decodeBody = bytes.NewReader(contents)
+	}
+
+	var extra map[string]string
+	var downgrade string
+	var err error
+	if spec.DecodeResponse != nil {
+		extra, downgrade, err = spec.DecodeResponse(resp.Header.Clone(), decodeBody)
+	} else {
+		extra, downgrade, err = spec.Decode(decodeBody)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, spec.Name+" verifier: failed to decode response", slog.String("error", err.Error()))
 		return finding.VerificationResult{
@@ -238,12 +522,50 @@ func (spec TokenSpec) handleActive(ctx context.Context, body io.Reader) finding.
 	}
 }
 
+func (spec TokenSpec) handleInactive(ctx context.Context, resp *http.Response) finding.VerificationResult {
+	if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
+		return finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: fmt.Sprintf("HTTP %d inactive response Content-Type is not JSON", resp.StatusCode),
+		}
+	}
+	if spec.DecodeInactive != nil {
+		contents, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
+		if err != nil {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d but failed to read response body: %v", resp.StatusCode, err),
+			}
+		}
+		if int64(len(contents)) > MaxBodyBytes {
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d but response body exceeds %d bytes", resp.StatusCode, MaxBodyBytes),
+			}
+		}
+		if err := spec.DecodeInactive(bytes.NewReader(contents)); err != nil {
+			slog.DebugContext(ctx, spec.Name+" verifier: inactive response was not definitive")
+			return finding.VerificationResult{
+				Status:  finding.StatusVerifyError,
+				Message: fmt.Sprintf("HTTP %d did not definitively prove the secret inactive", resp.StatusCode),
+			}
+		}
+	}
+
+	slog.DebugContext(ctx, spec.Name+" verifier: secret is inactive")
+	return finding.VerificationResult{
+		Status:  finding.StatusVerifiedInactive,
+		Message: spec.InactiveMessage,
+	}
+}
+
 // RateLimited returns a distinguished StatusVerifyError result for an HTTP 429
 // (Too Many Requests) response, so a provider-side rate limit is never conflated
-// with a genuine verification bug or an inactive secret. retryAfter is the raw
-// Retry-After header value (may be empty); it is echoed into the message to make
-// the outcome actionable and never contains secret material.
+// with a genuine verification bug or an inactive secret. Only a syntactically
+// valid delta-seconds or HTTP-date Retry-After value is emitted; arbitrary
+// provider-controlled header text is never copied into logs or results.
 func RateLimited(ctx context.Context, name, retryAfter string) finding.VerificationResult {
+	retryAfter = canonicalRetryAfter(retryAfter)
 	msg := "rate limited by provider (HTTP 429), retry later"
 	if retryAfter != "" {
 		msg = fmt.Sprintf("%s (Retry-After: %s)", msg, retryAfter)
@@ -254,6 +576,20 @@ func RateLimited(ctx context.Context, name, retryAfter string) finding.Verificat
 		Status:  finding.StatusVerifyError,
 		Message: msg,
 	}
+}
+
+func canonicalRetryAfter(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return strconv.FormatUint(seconds, 10)
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		return retryAt.UTC().Format(http.TimeFormat)
+	}
+	return ""
 }
 
 // UnexpectedStatus returns the canonical StatusVerifyError result for a response

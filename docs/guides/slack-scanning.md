@@ -1,10 +1,12 @@
 # Leakwatch - Slack Workspace Scanning Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental Slack operations deep dive. The [Slack user manual](../user-manuals/en/scanning/slack.md) is authoritative for current flags and supported content.
 
 ## Table of Contents
 
@@ -62,7 +64,9 @@ To scan a Slack workspace, you need a Slack Bot Token (`xoxb-...`) with the appr
 | `channels:read` | List public channels |
 | `groups:history` | Read messages in private channels the bot is a member of |
 | `groups:read` | List private channels the bot is a member of |
+| `im:read` | List direct-message conversations (only if `--include-dms` is used) |
 | `im:history` | Read direct messages (only if `--include-dms` is used) |
+| `mpim:read` | List group direct-message conversations (only if `--include-dms` is used) |
 | `mpim:history` | Read group direct messages (only if `--include-dms` is used) |
 | `files:read` | Read uploaded file content (only if `--include-files` is used) |
 
@@ -170,19 +174,19 @@ By default, Leakwatch scans only public and private channels. To include direct 
 leakwatch scan slack --include-dms
 ```
 
-> **Privacy note:** Scanning direct messages has significant privacy implications. Ensure you have organizational approval and that your employees are aware that DMs may be scanned for security purposes. Many organizations restrict DM scanning to incident response scenarios or require explicit consent. The bot's OAuth scopes `im:history` and `mpim:history` must be granted for this feature to work.
+> **Privacy note:** Scanning direct messages has significant privacy implications. Ensure you have organizational approval and that your employees are aware that DMs may be scanned for security purposes. Many organizations restrict DM scanning to incident response scenarios or require explicit consent. The bot's OAuth scopes `im:read`, `im:history`, `mpim:read`, and `mpim:history` must be granted for this feature to work.
 
 ---
 
 ## 7. File Scanning
 
-> **Not yet implemented — planned for a future release.**
+File scanning is opt-in. Add `--include-files` and grant the bot `files:read` to download and scan text-like attachments:
 
-File scanning is **not currently implemented**. The current `scan slack` command scans only message text (channel messages, DMs if `--include-dms` is used). Uploaded file content is not fetched or scanned.
+```bash
+leakwatch scan slack --include-files --max-file-size 5242880
+```
 
-The `--include-files` flag is accepted by the CLI for forward-compatibility but has **no effect** — it is a no-op in the current release. The `files:read` OAuth scope listed in §2.2 is required only when file scanning is eventually enabled.
-
-File scanning (downloading and scanning the content of files uploaded to Slack channels — configuration files, scripts, logs, etc.) is a planned capability. See the [Roadmap "Documented-but-Unimplemented Gaps" §1](../05-ROADMAP.md#master-review--documented-but-unimplemented-gaps) for tracking status.
+Leakwatch only sends the bot token to Slack-owned HTTPS download URLs. File metadata and downloads use separate limiter buckets and bounded 429 retry policies without consuming each other's or history capacity. Attachment chunks transfer with direct backpressure; content that exceeds `--max-file-size` or fails the conservative UTF-8 text classifier is skipped even when MIME metadata is empty or spoofed. The same Slack file ID is downloaded at most once per scan.
 
 ---
 
@@ -190,31 +194,26 @@ File scanning (downloading and scanning the content of files uploaded to Slack c
 
 ### 8.1 Slack API Rate Limits
 
-The Slack API enforces rate limits organized into tiers:
-
-| Tier | Limit | Affected Methods |
-|------|-------|------------------|
-| **Tier 1** | 1 request per minute | Rarely used |
-| **Tier 2** | 20 requests per minute | `conversations.list` |
-| **Tier 3** | 50 requests per minute | `conversations.history` |
-| **Tier 4** | 100 requests per minute | Most read methods |
+Slack assigns limits per method and app distribution model. Its current
+`conversations.history` contract is Tier 3 for Marketplace and internal
+customer-built apps, but one request per minute with a 15-item page limit for
+new commercially distributed non-Marketplace apps. Consult Slack's current
+method documentation for your app rather than assuming one workspace-wide
+tier.
 
 ### 8.2 Configuring the Rate Limit
 
-The `--rate-limit` flag controls the maximum number of Slack API requests per second. The default is 20 requests per second:
+Leakwatch keeps independent operation buckets because Slack applies Web API limits per method/workspace/app. Defaults are one request/minute for the special `conversations.history` profile, Tier 2 (20+/minute) for `conversations.list`, Tier 4 (100+/minute) for `files.info`, and a separate conservative 100/minute client-side cap for attachment downloads. The `--rate-limit` flag explicitly replaces every bucket with one common **per-operation** requests-per-second ceiling:
 
 ```bash
-# Default rate (20 req/s)
+# Default rate (one request/minute)
 leakwatch scan slack
 
-# Conservative rate for shared workspaces
-leakwatch scan slack --rate-limit 5
-
-# Higher rate if your Slack plan allows it
-leakwatch scan slack --rate-limit 50
+# Higher rate for a Marketplace/internal app with Tier 3 history access
+leakwatch scan slack --rate-limit 0.8
 ```
 
-> **Recommendation:** If you encounter rate-limiting errors (`slack_rate_limited`), reduce the rate limit. For Enterprise Grid workspaces with higher API quotas, you may safely increase it.
+Leakwatch also honors Slack's `Retry-After` response and performs bounded retries. Raising the local cap does not override Slack's server-side contract; reduce it if you still receive rate limits.
 
 ---
 
@@ -337,7 +336,10 @@ flowchart TD
     L -->|"No"| N["Process all messages"]
     M --> N
 
-    N --> R["Secret Detection Engine\n(message text only; file scanning not yet implemented)"]
+    N --> O{"--include-files?"}
+    O -->|"Yes"| P["Fetch bounded text attachments"]
+    O -->|"No"| R
+    P --> R["Secret Detection Engine"]
 
     R --> S["Verification"]
     S --> T["Apply Severity Filter"]
@@ -369,7 +371,7 @@ flowchart TD
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `slack_rate_limited` errors in logs | API rate limit exceeded | Lower `--rate-limit` (e.g., `--rate-limit 5`) |
+| `slack_rate_limited` errors in logs | API rate limit exceeded | Use `--rate-limit 0` to restore Slack-safe operation defaults, or reduce an explicit positive override |
 | Scan is very slow | Rate limit set too low | Increase `--rate-limit` if your Slack plan allows higher quotas |
 | Intermittent timeouts | Network instability or Slack API issues | Retry the scan; consider running from a stable network |
 

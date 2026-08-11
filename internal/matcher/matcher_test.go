@@ -74,6 +74,27 @@ func TestMatch_MultipleDetectors_ReturnsOnlyMatched(t *testing.T) {
 	assert.Equal(t, "github", result[0].ID())
 }
 
+func TestMatch_ReturnsDetectorsInDeterministicIDOrder(t *testing.T) {
+	m := New([]detector.Detector{
+		&stubDetector{id: "z-detector", keywords: []string{"shared"}},
+		&stubDetector{id: "a-detector", keywords: []string{"shared"}},
+		&stubDetector{id: "m-detector", keywords: nil},
+	})
+
+	want := []string{"a-detector", "m-detector", "z-detector"}
+	for iteration := 0; iteration < 50; iteration++ {
+		assert.Equal(t, want, detectorIDs(m.Match([]byte("SHARED"))))
+	}
+}
+
+func TestMatch_NoKeywordOnly_ReturnsDetectorsInDeterministicIDOrder(t *testing.T) {
+	m := New([]detector.Detector{
+		&stubDetector{id: "z-detector"},
+		&stubDetector{id: "a-detector"},
+	})
+	assert.Equal(t, []string{"a-detector", "z-detector"}, detectorIDs(m.Match([]byte("anything"))))
+}
+
 func TestMatch_MultipleKeywordsHit_ReturnsUniqueDetectors(t *testing.T) {
 	m := New([]detector.Detector{
 		&stubDetector{id: "aws", keywords: []string{"AKIA", "ASIA"}},

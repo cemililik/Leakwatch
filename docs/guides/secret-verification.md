@@ -1,17 +1,20 @@
 # Leakwatch - Secret Verification Guide
 
-> **Document Version:** 1.1
-> **Date:** 2026-03-25
+> **Document Version:** 1.3
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
 
+> **Documentation role:** Supplemental verifier-contract deep dive. The [verification user manual](../user-manuals/en/verification/how-verification-works.md) and its generated capability table are authoritative for current user-facing behavior.
+
 ## 1. What is Secret Verification?
 
-Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **54 verifiers (51 packages)** covering **84.4% of its 64 detectors (60 packages)**, making it one of the most comprehensive verification systems available under an MIT license.
+Secret verification is the process of checking whether a detected secret is actually active and valid. Leakwatch ships with **65 detectors (61 packages)** and **54 registered verifier implementations (51 packages)**. Registry presence is not live capability: **39** detectors support a direct live check, **9** require trusted issuer, region, or companion context, **6** are format-only, and **11** have no verifier.
 
-Verification is performed through two methods:
-- **Live API verification** (48 detectors) -- controlled, non-destructive API calls to the service that issued the credential
+Verification is classified into three methods:
+- **Direct live API verification** (39 detectors) -- controlled, non-destructive API calls available in the normal production path
+- **Context-required verification** (9 detectors) -- a trusted issuer, region, or paired credential is required before any safe request
 - **Format validation** (6 detectors) -- structural checks (decode, parse, validate format) without network calls
 
 **Why it matters:**
@@ -50,8 +53,8 @@ Every finding in Leakwatch carries a verification status. Understanding these st
 | Status | Description | Action Required |
 |--------|-------------|-----------------|
 | `verified_active` | Secret is **valid and active** -- the provider confirmed it works | **Immediate rotation required** |
-| `verified_inactive` | Secret is **invalid or revoked** -- the provider rejected it | Low priority; may still warrant cleanup |
-| `unverified` | Verification was not performed (no verifier available, or `--no-verify` was used) | Manual review recommended |
+| `verified_inactive` | Secret is **invalid or revoked** -- the provider gave a definitive authentication rejection under that verifier's contract | Low priority; may still warrant cleanup |
+| `unverified` | Verification was not performed (no verifier, missing context, format-only capability, or `--no-verify`) | Manual review recommended |
 | `verify_error` | An error occurred during verification (network timeout, rate limit, etc.) | Retry or verify manually |
 
 ```mermaid
@@ -68,9 +71,9 @@ stateDiagram-v2
 
 ## 3. Verified Detectors
 
-Leakwatch provides 54 verifiers (51 packages) across three verification types. The following table shows all verified detectors grouped by verification method.
+Leakwatch provides 54 registered verifier implementations (51 packages) across three verification types. The following tables classify capability rather than equating registry count with live coverage.
 
-### Live API Verification (48 detectors)
+### Direct Live API Verification (39 detectors)
 
 These verifiers make a controlled, non-destructive API call to the provider to confirm whether the secret is active or inactive. The majority use HTTP GET; a small number (e.g., the Teams webhook verifier) use a non-destructive POST to a validation endpoint.
 
@@ -85,9 +88,6 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **AI/ML** | Anthropic API Key | `anthropic-api-key` | `api.anthropic.com/v1/models` |
 | **AI/ML** | Hugging Face Token | `huggingface-token` | `huggingface.co/api/whoami-v2` |
 | **AI/ML** | DeepSeek API Key | `deepseek-api-key` | `api.deepseek.com/models` |
-| **DevTools** | GitHub PAT | `github-token` | `api.github.com/user` |
-| **DevTools** | GitHub OAuth Token | `github-oauth-token` | `api.github.com/user` |
-| **DevTools** | GitLab PAT | `gitlab-pat` | `{host}/api/v4/user` (defaults to `gitlab.com`; honors a co-located self-hosted instance host) |
 | **DevTools** | Bitbucket App Password | `bitbucket-app-password` | `api.bitbucket.org/2.0/user` |
 | **DevTools** | NPM Token | `npm-token` | `registry.npmjs.org/-/npm/v1/user` |
 | **DevTools** | PyPI Token | `pypi-api-token` | `upload.pypi.org/legacy/` |
@@ -99,31 +99,43 @@ These verifiers make a controlled, non-destructive API call to the provider to c
 | **Communication** | Discord Bot Token | `discord-bot-token` | `discord.com/api/v10/users/@me` |
 | **Communication** | Telegram Bot Token | `telegram-bot-token` | `api.telegram.org/bot{token}/getMe` |
 | **Communication** | MS Teams Webhook | `teams-webhook` | `{webhook-url}` (non-destructive empty `{}` POST; 400 = active, 404 = inactive) |
-| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/scopes` (needs no specific scope, so a restricted-permission key is not misread as revoked) |
+| **Email** | SendGrid API Key | `sendgrid-api-key` | `api.sendgrid.com/v3/scopes` (`401` is inactive; `403`, including permission denial, remains `verify_error`) |
 | **Email** | Mailgun API Key | `mailgun-api-key` | `api.mailgun.net/v3/domains`, retrying `api.eu.mailgun.net/v3/domains` if the US host reports inactive (US/EU are separate tenants) |
 | **Email** | Postmark Server Token | `postmark-server-token` | `api.postmarkapp.com/server` |
 | **Payment** | Stripe Live Key | `stripe-api-key-live` | `api.stripe.com/v1/charges?limit=1` |
 | **Payment** | Stripe Test Key | `stripe-api-key-test` | `api.stripe.com/v1/charges?limit=1` |
-| **Database** | Supabase Service Key | `supabase-service-key` | `api.supabase.com/v1/projects` (Bearer token only; no project ref or `apikey` header) |
+| **DevTools** | Supabase Personal Access Token | `supabase-service-key` | Supabase Management API `api.supabase.com/v1/projects` (`sbp_` Bearer PAT; `401` is inactive, `403` remains inconclusive) |
 | **Infrastructure** | Databricks PAT | `databricks-token` | `{workspace-host}/api/2.0/preview/scim/v2/Me` (workspace host captured alongside the token; no host means unverified) |
 | **Identity** | Okta API Token | `okta-api-token` | `{domain}/api/v1/users/me` (org domain captured alongside the token) |
-| **Identity** | Auth0 Management Token | `auth0-management-token` | `{tenant}/api/v2/` (tenant host decoded from the token's own `iss` JWT claim) |
-| **Monitoring** | Datadog API Key | `datadog-api-key` | `api.datadoghq.com/api/v1/validate` |
-| **Monitoring** | Grafana API Key | `grafana-api-key` | `grafana.com/api/user` -- self-hosted/per-stack tokens are not verifiable against this central host (no per-instance URL is captured) |
 | **Monitoring** | PagerDuty API Key | `pagerduty-api-key` | `api.pagerduty.com/users/me` |
-| **Monitoring** | New Relic API Key | `newrelic-api-key` | `api.newrelic.com/v2/users.json` |
+| **Monitoring** | New Relic user API key | `newrelic-api-key` | Read-only NerdGraph `requestContext { userId }`; fixed official US/EU endpoints with bounded fallback. Only all-region 401 is inactive; 403 and partial failures remain inconclusive. |
 | **Monitoring** | Sentry Auth Token | `sentry-token` | `sentry.io/api/0/` |
-| **Security** | Snyk API Key | `snyk-api-key` | `api.snyk.io/rest/self` |
-| **Security** | Twilio API Key | `twilio-api-key` | `api.twilio.com/2010-04-01/Accounts.json` (Basic auth paired as API Key SID + API Key Secret, not Account SID + Auth Token) |
 | **Secrets Mgmt** | Doppler Service Token | `doppler-token` | `api.doppler.com/v3/me` |
 | **Feature Flags** | LaunchDarkly SDK Key | `launchdarkly-sdk-key` | `app.launchdarkly.com/api/v2/caller-identity` |
 | **Code Quality** | SonarCloud Token | `sonarcloud-token` | `sonarcloud.io/api/authentication/validate` |
-| **SaaS** | Shopify Access Token | `shopify-access-token` | `{shop}.myshopify.com/admin/api/2024-01/shop.json` -- requires a store domain the detector does not currently capture, so findings resolve to `unverified` until this wiring lands (see [ROADMAP](../05-ROADMAP.md)) |
 | **SaaS** | Notion Token | `notion-token` | `api.notion.com/v1/users/me` |
 | **SaaS** | Linear API Key | `linear-api-key` | `api.linear.app/graphql` |
 | **SaaS** | Figma PAT | `figma-pat` | `api.figma.com/v1/me` |
 | **SaaS** | Airtable PAT | `airtable-pat` | `api.airtable.com/v0/meta/whoami` |
 | **Blockchain** | Infura API Key | `infura-api-key` | `mainnet.infura.io/v3/{key}` |
+
+### Requires Trusted or Companion Context (9 detectors)
+
+These implementations are registered, but a bare detector finding cannot safely select the issuer or authenticate the verification request. Missing context produces `unverified` without a network request.
+
+Use the repeatable command-line-only form `--verifier-origin detector-id=https://host` to provide trusted origins. Project configuration and environment variables cannot set these targets. `--grafana-instance-url` remains a backward-compatible Grafana alias.
+
+| Detector | Detector ID | Required context and behavior |
+|----------|-------------|-------------------------------|
+| Auth0 Management Token | `auth0-management-token` | Operator-trusted Auth0 tenant/custom HTTPS origin; configure with `--verifier-origin auth0-management-token=https://tenant`. JWT claims from scanned content never select a request target; only `401` on the trusted origin is inactive |
+| Grafana service-account token | `grafana-api-key` | Trusted HTTPS instance origin from `--grafana-instance-url`; repository content cannot choose the target, and `401` is inactive only on that trusted issuer |
+| Twilio API Key Secret | `twilio-api-key` | The detector treats the secret as opaque and reports it only with a one-to-one nearby `SK...` SID; bare SIDs are not findings. Configure the trusted US1/IE1/AU1 origin explicitly; `403` is permission-ambiguous and never inactive |
+| Shopify Access Token | `shopify-access-token` | Configure the operator-trusted `*.myshopify.com` store origin explicitly. Finding-controlled domains are ignored; the verifier uses the pinned 2026-07 Admin GraphQL shop identity query |
+| GitHub PAT | `github-token` | Configure a trusted GitHub.com or GHES API origin explicitly. Both issuers use `ghp_`/`github_pat_`; repository metadata never chooses the issuer. Safe scope/count and expiry headers enrich active findings when present |
+| GitHub OAuth/App Token | `github-oauth-token` | Trusted GitHub.com or GHES API origin; `gho_`/`ghu_` use `/user` with safe scope/expiry enrichment, `ghs_` uses `/installation/repositories`, and side-effectful `ghr_` refresh-token exchange is never attempted |
+| GitLab PAT | `gitlab-pat` | Configure an operator-trusted GitLab.com or self-managed HTTPS origin. Only `glpat-` uses `/api/v4/user`; after active proof a best-effort self-metadata request adds bounded, validated standard or GitLab 19.2+ granular scopes and expiry. Other recognized subtypes remain `unverified`. Only GitLab's standard invalid-token JSON `401` is inactive; DPoP challenges are inconclusive |
+| Datadog API Key | `datadog-api-key` | Configure one of the exact official US1/US3/US5/EU/AP1/AP2/UK1/US1-FED/US2-FED API origins; arbitrary hosts are rejected |
+| Snyk API Key | `snyk-api-key` | Configure the trusted regional, government, or private API origin; only `401` is inactive, while permission/plan `403` remains `verify_error` |
 
 ### Format Validation (6 detectors)
 
@@ -138,7 +150,7 @@ These verifiers perform structural validation without making network calls. They
 | Snowflake Credentials | `snowflake-credentials` | Connection string format and credential structure validation |
 | Coinbase API Key | `coinbase-api-key` | Key-shape validation only; live verification needs HMAC-SHA256 request signing with the paired secret, which the detector cannot reliably supply, so the result is always `unverified` -- never a false active/inactive |
 
-### Not Verifiable (10 detectors)
+### Not Verifiable (11 detectors)
 
 These detectors have no registered verifier, so their findings are always reported as `unverified`.
 
@@ -154,6 +166,7 @@ These detectors have no registered verifier, so their findings are always report
 | LDAP Credentials | `ldap-credentials` | Requires direct connection to LDAP directory server |
 | Slack Webhook | `slack-webhook` | Verification would send a message (side effect) |
 | Discord Webhook URL | `discord-webhook-url` | Verification would post a message (side effect) |
+| Structured Configuration Secret | `structured-config-secret` | Field context can identify a secret role but cannot determine the credential provider or issuer |
 
 ---
 
@@ -218,11 +231,13 @@ If the Secret Access Key is not found alongside the Access Key ID, verification 
 
 ### How It Works
 
-The GitHub verifier sends a `GET /user` request to the GitHub API using the discovered token as a Bearer token. This is a read-only call that returns information about the authenticated user.
+GitHub.com and GitHub Enterprise Server (GHES) issue credentials with the same token prefixes. A token alone therefore cannot identify its issuer. Leakwatch sends a `GET /user` request only after a trusted GitHub API origin has been selected with the command-line-only `--verifier-origin` flag. Without that explicit origin, GitHub token findings return `unverified` without making a network request.
 
-- **Detector ID:** `github-token`
-- **API endpoint:** `https://api.github.com/user`
+- **Detector IDs:** `github-token`, `github-oauth-token`
+- **API endpoints:** trusted GitHub.com or GHES API origin plus `/user` for PAT/`gho_`/`ghu_`; `/installation/repositories` for `ghs_`
 - **Headers:** `Authorization: Bearer <token>`, `User-Agent: leakwatch-verifier`
+
+This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. Refresh tokens (`ghr_`) are detected but never exchanged because exchange rotates them; they remain `unverified` even when an issuer is trusted. Only a strict authentication rejection from the selected issuer and subtype-appropriate endpoint may produce `verified_inactive`.
 
 ### What It Reveals
 
@@ -236,8 +251,9 @@ When the token is active, the verifier returns:
 
 | HTTP Status | Verification Result |
 |-------------|-------------------|
-| `200 OK` | `verified_active` -- token is valid |
-| `401 Unauthorized` | `verified_inactive` -- token is invalid or revoked |
+| No trusted API origin | `unverified` -- no request is made |
+| `200 OK` from trusted origin | `verified_active` -- token is valid |
+| `401 Unauthorized` from trusted origin | `verified_inactive` -- token is invalid or revoked for that issuer |
 | Other | `verify_error` -- unexpected response |
 
 ### Example Output
@@ -291,16 +307,17 @@ The verification engine manages API calls carefully to avoid overwhelming provid
 |-----------|---------|-------------|
 | Concurrency | 4 workers | Number of parallel verification goroutines |
 | Rate limit | 10 req/sec | Maximum verification requests per second (token bucket) |
-| Timeout | 10 seconds | Per-request timeout for each verification API call |
+| Timeout | 10 seconds | Per-finding timeout for the complete verification operation, including bounded provider-region fallback |
 
 ### How It Works
 
 The verification engine uses a worker pool pattern with a shared rate limiter:
 
 1. **Worker pool** -- A fixed number of goroutines (default 4) process verification jobs concurrently.
-2. **Token bucket rate limiter** -- Before each API call, the worker acquires a token from a `golang.org/x/time/rate` limiter. If the bucket is empty, the worker waits until a token becomes available.
-3. **Per-request timeout** -- Each verification call has its own context timeout (default 10s). If the provider does not respond in time, the finding is marked `verify_error`.
+2. **Global + provider token buckets** -- Immediately before each actual API call, the worker acquires admission from both the global ceiling and the finding's provider/detector bucket. Format-only and missing-context paths consume no token. The detector bucket limits that provider's own send rate and the shared global bucket bounds aggregate traffic; the current single configured rate does not guarantee fair scheduling between providers.
+3. **Per-finding timeout** -- Each finding's complete verification operation has one context timeout (default 10s), including bounded provider-region fallback. If the provider does not respond in time, the finding is marked `verify_error`.
 4. **Context cancellation** -- If the parent context is cancelled (e.g., the user presses Ctrl+C), all pending verifications are abandoned gracefully.
+5. **Bounded HTTP 429 recovery** -- Safe GET/HEAD probes may retry once when the provider supplies a valid `Retry-After` no greater than 2 seconds. The delay includes bounded jitter; the retry passes through both limiter buckets again and never exceeds the per-finding context deadline. POST and other potentially unsafe methods, missing/invalid headers, and longer requested waits are not retried; they remain `verify_error`.
 
 ### Configuration
 
@@ -320,7 +337,7 @@ verification:
 
 Verification involves sending discovered credentials to provider APIs. Keep the following in mind:
 
-- **Credentials are transmitted over the network** -- The raw secret value is sent to the provider's API endpoint (e.g., `sts.amazonaws.com`, `api.github.com`) over HTTPS. Ensure your network allows outbound HTTPS traffic to these endpoints.
+- **Credentials are transmitted over the network** -- The raw secret value is sent only to the verifier's fixed provider endpoint, credential-derived endpoint, or explicitly trusted operator-selected origin over HTTPS. Context-dependent verifiers make no request when a trustworthy destination is unavailable.
 - **Leakwatch never logs raw secrets** -- Verifiers are designed to never log, persist, or cache the raw credential values. Only redacted values appear in logs.
 - **Non-destructive operations only** -- All verification calls are controlled and non-destructive. The majority use HTTP GET; where a POST is required (e.g., the Teams webhook verifier), it targets a validation endpoint and does not cause state changes or side effects.
 - **Network requirements** -- Verification requires outbound HTTPS access. In air-gapped or restricted environments, use `--no-verify` to skip verification entirely.

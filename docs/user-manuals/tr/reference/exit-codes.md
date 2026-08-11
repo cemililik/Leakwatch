@@ -26,7 +26,7 @@ Leakwatch, CI pipeline'larının ve kabuk betiklerinin çıktıyı ayrıştırma
 Bu, çıkış kodu `0`'ın "mevcut filtre ayarlarınızla eşleşen bulgu yok" anlamına geldiği anlamına gelir — kod tabanının hiçbir sır içermediği değil.
 
 :::warn
-`--only-verified` altında temiz `0` çıkışı, kod tabanının sırdan arındırılmış olduğunu garanti etmez. Doğrulamanın mevcut olmadığı sır türleri (10 dedektör türü) her zaman doğrulanmamış olarak raporlanır ve `--only-verified` tarafından bastırılır. Tam kapsam için `--only-verified` ile birlikte ayrı bir filtresiz tarama yapın.
+`--only-verified` altında temiz `0` çıkışı, kod tabanının sırdan arındırılmış olduğunu garanti etmez. Doğrulamanın mevcut olmadığı sır türleri (11 dedektör türü) her zaman doğrulanmamış olarak raporlanır ve `--only-verified` tarafından bastırılır. Tam kapsam için `--only-verified` ile birlikte ayrı bir filtresiz tarama yapın.
 :::
 
 ## Kabuk betiklerinde çıkış kodlarını kullanma

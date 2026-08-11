@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,8 +16,42 @@ import (
 
 	"github.com/HodeTech/leakwatch/internal/engine"
 	"github.com/HodeTech/leakwatch/internal/scanner"
+	"github.com/HodeTech/leakwatch/internal/source"
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
+
+type cancelDuringValidationSource struct {
+	cancel context.CancelFunc
+}
+
+type emptyTestSource struct{}
+
+func (*emptyTestSource) Type() string                   { return "empty-test" }
+func (*emptyTestSource) Err() error                     { return nil }
+func (*emptyTestSource) Validate(context.Context) error { return nil }
+func (*emptyTestSource) Chunks(context.Context) <-chan source.Chunk {
+	ch := make(chan source.Chunk)
+	close(ch)
+	return ch
+}
+
+type failingCloser struct{ err error }
+
+func (c *failingCloser) Close() error { return c.err }
+
+func (*cancelDuringValidationSource) Type() string { return "validation-cancel" }
+func (*cancelDuringValidationSource) Err() error   { return nil }
+func (s *cancelDuringValidationSource) Validate(ctx context.Context) error {
+	s.cancel()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (*cancelDuringValidationSource) Chunks(context.Context) <-chan source.Chunk {
+	ch := make(chan source.Chunk)
+	close(ch)
+	return ch
+}
 
 // executeRoot runs the real root command with the given args, capturing cobra's
 // own output so it does not leak into the test log, and returns the RunE error.
@@ -160,6 +195,28 @@ func TestRunScanSlack_TokenFromEnv_ReachesDateValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid --since date")
 }
 
+func TestScanSlackHelp_DocumentsRequiredOAuthScopes(t *testing.T) {
+	for _, scope := range []string{
+		"channels:read", "channels:history", "groups:read", "groups:history",
+		"im:read", "im:history", "mpim:read", "mpim:history", "files:read",
+	} {
+		assert.Contains(t, scanSlackCmd.Long, scope)
+	}
+	rateFlag := scanSlackCmd.Flags().Lookup("rate-limit")
+	require.NotNil(t, rateFlag)
+	assert.Contains(t, rateFlag.Usage, "per-operation")
+	assert.Equal(t, "0", rateFlag.DefValue)
+}
+
+func TestRunScanSlack_RejectsNegativeRateLimitBeforeNetwork(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("LEAKWATCH_SLACK_TOKEN", "xoxb-fake-test-token")
+
+	err := executeRoot(t, "scan", "slack", "--rate-limit", "-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--rate-limit must be zero or greater")
+}
+
 func TestRunScanRepos_AllReposFail_ReturnsAggregateError(t *testing.T) {
 	isolateConfig(t)
 	// Two local paths that are not git repositories fail to open locally (no
@@ -201,12 +258,76 @@ func TestFinishScan_ExitCodeContract(t *testing.T) {
 		err := finishScan(base, result, "fs", context.Canceled)
 		var fErr *FindingsExitError
 		require.ErrorAs(t, err, &fErr)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "partial results")
+	})
+
+	t.Run("findings preserve a non-interruption source error", func(t *testing.T) {
+		scanErr := errors.New("source pagination failed")
+		result := &engine.ScanResult{Findings: []finding.Finding{{ID: "x"}}}
+		err := finishScan(base, result, "slack", scanErr)
+		var findingsErr *FindingsExitError
+		require.ErrorAs(t, err, &findingsErr)
+		assert.ErrorIs(t, err, scanErr)
+		assert.Contains(t, err.Error(), "partial results")
 	})
 
 	t.Run("clean completed scan returns nil", func(t *testing.T) {
 		result := &engine.ScanResult{Findings: []finding.Finding{}}
 		require.NoError(t, finishScan(base, result, "fs", nil))
 	})
+}
+
+func TestRunScan_CancelledValidationReturnsInterruptedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	src := &cancelDuringValidationSource{cancel: cancel}
+	cfg := &scanner.Config{
+		Concurrency: 1,
+		NoVerify:    true,
+		Format:      "json",
+		OutputFile:  filepath.Join(t.TempDir(), "result.json"),
+	}
+
+	err := runScan(cmd, cfg, src, nil)
+	var interrupted *InterruptedExitError
+	require.ErrorAs(t, err, &interrupted)
+	assert.Equal(t, 3, exitCodeForError(err), "cancelled validation must reach the process exit-3 contract")
+}
+
+func TestRunScan_CleanupFailureCannotReturnSuccess(t *testing.T) {
+	cleanupErr := errors.New("synthetic cleanup failure")
+	cfg := &scanner.Config{
+		Concurrency: 1,
+		NoVerify:    true,
+		Format:      "json",
+		OutputFile:  filepath.Join(t.TempDir(), "result.json"),
+	}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	err := runScan(cmd, cfg, &emptyTestSource{}, &failingCloser{err: cleanupErr})
+	require.ErrorIs(t, err, cleanupErr)
+	assert.Equal(t, 2, exitCodeForError(err))
+}
+
+func TestExitCodeForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "clean", want: 0},
+		{name: "findings", err: fmt.Errorf("wrapped: %w", &FindingsExitError{Count: 2}), want: 1},
+		{name: "generic failure", err: errors.New("boom"), want: 2},
+		{name: "interrupted", err: fmt.Errorf("wrapped: %w", &InterruptedExitError{}), want: 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, exitCodeForError(tc.err))
+		})
+	}
 }
 
 func TestLoadScanConfig_InvalidMinSeverity_ReturnsError(t *testing.T) {

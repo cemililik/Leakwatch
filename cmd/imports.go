@@ -29,7 +29,7 @@ import (
 	_ "github.com/HodeTech/leakwatch/internal/detector/figma"        // register figma detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/ftp"          // register ftp credentials detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/gcp"          // register gcp service-account detector
-	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic api-key detector
+	_ "github.com/HodeTech/leakwatch/internal/detector/generic"      // register generic API-key and structured-config detectors
 	_ "github.com/HodeTech/leakwatch/internal/detector/github"       // register github detectors (pat + oauth)
 	_ "github.com/HodeTech/leakwatch/internal/detector/gitlab"       // register gitlab detector
 	_ "github.com/HodeTech/leakwatch/internal/detector/grafana"      // register grafana detector

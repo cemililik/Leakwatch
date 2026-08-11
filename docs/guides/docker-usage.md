@@ -1,10 +1,12 @@
 # Leakwatch - Docker Usage Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental Docker operations deep dive. The [Docker user manual](../user-manuals/en/ci-cd/docker-usage.md) is authoritative for current image usage and examples.
 
 ## 1. Quick Start
 
@@ -504,7 +506,7 @@ flowchart TD
         subgraph LW["Leakwatch Process (non-root)"]
             CMD["CLI Command\n(scan fs/git/image/s3/gcs)"]
             ENG["Detection Engine\n(Aho-Corasick + Regex + Entropy)"]
-            VER["Verification Engine\n(54 verifiers (51 packages), 84.4% coverage)"]
+            VER["Verification Engine\n(39 direct-live + 9 context-required + 6 format-only)"]
             FMT["Output Formatter"]
         end
     end

@@ -28,6 +28,7 @@ const (
 // managedFiles are rewritten relative to the repository root.
 var managedFiles = []string{
 	"docs/assets/banner.html",
+	"docs/assets/banner.svg",
 	"site/assets/og.svg",
 }
 
@@ -40,9 +41,10 @@ type replacement struct {
 }
 
 func replacements() []replacement {
+	capabilities := meta.VerificationCapabilityCounts()
 	return []replacement{
 		{regexp.MustCompile(`\d+ detectors`), fmt.Sprintf("%d detectors", meta.Detectors)},
-		{regexp.MustCompile(`\d+ live verifiers`), fmt.Sprintf("%d live verifiers", meta.Verifiers)},
+		{regexp.MustCompile(`\d+ (?:live verifiers|direct-live checks)`), fmt.Sprintf("%d direct-live checks", capabilities.Live)},
 		{regexp.MustCompile(`\d+ sources`), fmt.Sprintf("%d sources", meta.Sources)},
 		{regexp.MustCompile(`\d+ output formats`), fmt.Sprintf("%d output formats", meta.OutputFormats)},
 	}
@@ -82,7 +84,7 @@ func main() {
 	}
 
 	if len(stale) > 0 {
-		fail(fmt.Errorf("stat blocks out of date in: %s\nrun `go generate ./...` and re-render the PNGs",
+		fail(fmt.Errorf("stat blocks out of date in: %s\nrun `go generate ./...`",
 			strings.Join(stale, ", ")))
 	}
 }

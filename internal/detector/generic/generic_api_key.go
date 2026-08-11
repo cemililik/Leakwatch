@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"regexp"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/entropy"
@@ -18,7 +19,18 @@ import (
 // vendor-specific secret in the codebase gets its own package, so a future
 // cleanup extracting `apisix` into its own detector would be consistent with
 // that convention, but is not required by this change.
-var apiKeyPattern = regexp.MustCompile(`(?i)(api[_\-]?key|api[_\-]?secret|secret[_\-]?key|x[_\-]?apisix[_\-]?key|apisix[_\-]?key|apisix[_\-]?admin[_\-]?key)[ \t]*[:=][ \t]*['"]?([a-zA-Z0-9/+=\-_]{16,64})['"]?`)
+// apiKeyPattern accepts shell/YAML assignments and quoted object keys while
+// capturing the character before the key and the closing key quote separately.
+// This prevents an enclosing shell-string quote from being mistaken for a key
+// quote while still validating JSON/TOML quoted keys. Scan also validates that
+// the value ends at a real assignment
+// boundary; keeping those checks in Go avoids unsupported regexp
+// backreferences and prevents prefix matches on malformed or overlong values.
+//
+// Capture groups: key-prefix, key, key-close, value-open, value, value-close.
+var apiKeyPattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_])(x[_\-]?apisix[_\-]?key|x[_\-]?api[_\-]?key|apisix[_\-]?admin[_\-]?key|apisix[_\-]?key|api[_\-]?key|api[_\-]?secret|secret[_\-]?key)(['"]?)[ \t\r\n]*[:=][ \t\r\n]*(['"]?)([a-zA-Z0-9/+=\-_]{16,64})(['"]?)`)
+
+var apiKeyNameReplacer = strings.NewReplacer("-", "", "_", "")
 
 // APIKeyDetector detects generic API key assignments.
 type APIKeyDetector struct{}
@@ -31,7 +43,11 @@ func (d *APIKeyDetector) Keywords() []string {
 		"api_key", "api-key", "apikey",
 		"api_secret", "api-secret", "apisecret",
 		"secret_key", "secret-key", "secretkey",
-		"apisix-key", "apisix_key", "x-apisix-key", "x_apisix_key", "apisix-admin-key",
+		// The common "apisix" stem aligns every separator variation accepted by
+		// the regexp (for example APISIX_ADMIN_KEY and APISIXADMINKEY) with the
+		// matcher. Official X-API-KEY spellings are already covered by the
+		// api-key/api_key/apikey substrings above.
+		"apisix",
 	}
 }
 func (d *APIKeyDetector) Severity() finding.Severity { return finding.SeverityMedium }
@@ -42,6 +58,15 @@ func (d *APIKeyDetector) Severity() finding.Severity { return finding.SeverityMe
 // its own baseline filter. Structural detectors do not implement this and are
 // never entropy-gated.
 func (d *APIKeyDetector) EntropyBased() bool { return true }
+
+// EntropyGated reports whether one raw finding should be subject to the
+// engine-level entropy threshold. Explicit APISIX Admin API header names are a
+// strong structural context and are therefore not entropy-gated; real APISIX
+// keys are commonly 32-character hex values whose Shannon entropy can be below
+// the generic threshold. Other generic assignments retain both entropy gates.
+func (d *APIKeyDetector) EntropyGated(raw detector.RawFinding) bool {
+	return raw.ExtraData["key_context"] != "apisix"
+}
 
 // minEntropy is the Shannon entropy floor a candidate value must clear to be
 // considered plausibly random secret material rather than an ordinary
@@ -69,45 +94,176 @@ const highVowelRatioThreshold = 0.35
 // natural-language text rather than random secret material, are skipped as
 // unlikely to be real secrets.
 func (d *APIKeyDetector) Scan(_ context.Context, data []byte) []detector.RawFinding {
-	matches := apiKeyPattern.FindAllSubmatch(data, -1)
+	matches := apiKeyPattern.FindAllSubmatchIndex(data, -1)
 	if len(matches) == 0 {
 		return nil
 	}
+	apisixPositions := asciiFoldPositions(data, []byte("apisix"))
 
 	findings := make([]detector.RawFinding, 0, len(matches))
 	for _, match := range matches {
-		if len(match) < 3 {
+		keyPrefix := submatchBytes(data, match, 1)
+		key := submatchBytes(data, match, 2)
+		keyClosingQuote := submatchBytes(data, match, 3)
+		valueOpen := submatchBytes(data, match, 4)
+		value := submatchBytes(data, match, 5)
+		valueClosingQuote := submatchBytes(data, match, 6)
+		if !validKeyQuoteContext(keyPrefix, keyClosingQuote) ||
+			!validValueQuoteContext(keyPrefix, keyClosingQuote, valueOpen, valueClosingQuote) {
 			continue
 		}
-		value := match[2]
+		if len(valueOpen) == 0 && len(valueClosingQuote) == 0 && !hasAssignmentBoundary(data, match[1]) {
+			continue
+		}
+
+		// Reject cheap, deterministic false positives before provider-context and
+		// entropy work. The package-level replacer and one APISIX position scan per
+		// chunk keep the detector O(file size + matches).
+		if isPlaceholder(value) || isDegenerateValue(value) || isBareReference(value) {
+			continue
+		}
+		strongContext := hasStrongAPISIXContext(string(key), match[10], match[11], apisixPositions)
 
 		// Skip low-entropy values — unlikely to be real secrets
-		if entropy.Calculate(value) < minEntropy {
+		if !strongContext && entropy.Calculate(value) < minEntropy {
 			continue
 		}
 
 		// Skip values whose letter composition reads as natural-language text
 		// (env var names, human-readable placeholders) rather than random
 		// secret material.
-		if hasHighVowelRatio(value) {
+		if !strongContext && hasHighVowelRatio(value) {
 			continue
 		}
 
-		// Skip placeholder/example values
-		if isPlaceholder(value) {
-			continue
+		extraData := map[string]string{"key_name": string(key)}
+		if strongContext {
+			extraData["key_context"] = "apisix"
 		}
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        value,
 			Redacted:   detector.RedactBytes(value),
-			ExtraData: map[string]string{
-				"key_name": string(match[1]),
-			},
+			ExtraData:  extraData,
+			ByteStart:  match[10],
+			ByteEnd:    match[11],
 		})
 	}
 	return findings
+}
+
+func submatchBytes(data []byte, indexes []int, group int) []byte {
+	start := indexes[group*2]
+	end := indexes[group*2+1]
+	return data[start:end]
+}
+
+func validQuotePair(open, closingQuote []byte) bool {
+	if len(open) == 0 || len(closingQuote) == 0 {
+		return len(open) == 0 && len(closingQuote) == 0
+	}
+	return len(open) == 1 && len(closingQuote) == 1 && open[0] == closingQuote[0]
+}
+
+func validKeyQuoteContext(prefix, closingQuote []byte) bool {
+	if len(closingQuote) == 0 {
+		return true
+	}
+	return len(prefix) == 1 && len(closingQuote) == 1 &&
+		(prefix[0] == '\'' || prefix[0] == '"') && prefix[0] == closingQuote[0]
+}
+
+func validValueQuoteContext(prefix, keyClosingQuote, open, closingQuote []byte) bool {
+	if validQuotePair(open, closingQuote) {
+		return true
+	}
+	// In `curl -H "x-api-key: value"`, the surrounding shell quote appears
+	// before the key and after the value. It is not a value quote pair.
+	return len(keyClosingQuote) == 0 && len(open) == 0 && len(closingQuote) == 1 &&
+		len(prefix) == 1 && prefix[0] == closingQuote[0] &&
+		(prefix[0] == '\'' || prefix[0] == '"')
+}
+
+// hasAssignmentBoundary rejects partial captures such as a 64-byte prefix of
+// a longer value or the prefix before a disallowed character. Quoted values
+// have already consumed their closing quote; both quoted and unquoted forms
+// must then end at a configuration-token boundary.
+func hasAssignmentBoundary(data []byte, end int) bool {
+	if end >= len(data) {
+		return true
+	}
+	return !isAPIKeyValueContinuation(data[end])
+}
+
+func isAPIKeyValueContinuation(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || strings.ContainsRune("/+=-_.", rune(value))
+}
+
+func hasStrongAPISIXContext(key string, valueStart, valueEnd int, apisixPositions []int) bool {
+	canonical := apiKeyNameReplacer.Replace(strings.ToLower(key))
+	switch canonical {
+	case "xapisixkey", "apisixkey", "apisixadminkey":
+		return true
+	case "xapikey":
+		// Context must be independent of the candidate value itself. Otherwise a
+		// generic X-API-KEY whose value happens to contain "apisix" could disable
+		// its own false-positive gates.
+		return apisixOutsideValue(apisixPositions, valueStart, valueEnd)
+	default:
+		return false
+	}
+}
+
+func asciiFoldPositions(data, needle []byte) []int {
+	var positions []int
+	for i := 0; i+len(needle) <= len(data); i++ {
+		if bytes.EqualFold(data[i:i+len(needle)], needle) {
+			positions = append(positions, i)
+		}
+	}
+	return positions
+}
+
+func apisixOutsideValue(positions []int, valueStart, valueEnd int) bool {
+	if len(positions) == 0 {
+		return false
+	}
+	return positions[0]+len("apisix") <= valueStart || positions[len(positions)-1] >= valueEnd
+}
+
+func isDegenerateValue(value []byte) bool {
+	if len(value) == 0 {
+		return true
+	}
+	for _, b := range value[1:] {
+		if b != value[0] {
+			return false
+		}
+	}
+	return true
+}
+
+// isBareReference rejects identifier-like indirections such as
+// APISIX_ADMIN_KEY. Braced environment/secret-manager references are already
+// outside the candidate character class; this covers the common unbraced form
+// without suppressing mixed-case or punctuation-rich real credentials.
+func isBareReference(value []byte) bool {
+	hasSeparator := false
+	hasLetter := false
+	for _, b := range value {
+		switch {
+		case b >= 'A' && b <= 'Z':
+			hasLetter = true
+		case b >= '0' && b <= '9':
+		case b == '_':
+			hasSeparator = true
+		default:
+			return false
+		}
+	}
+	return hasLetter && hasSeparator
 }
 
 // placeholderPatterns are common dummy values used in example configs. Every

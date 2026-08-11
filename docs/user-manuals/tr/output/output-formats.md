@@ -52,6 +52,10 @@ leakwatch scan fs ./src --format json --output findings.json
 
 `id`, düz 32 karakterlik küçük harfli bir hex dizesi olarak gösterilen, deterministik ve kısaltılmış bir SHA-256 değeridir — bir UUID **değildir** ve hiçbir zaman tire içermez. Nasıl hesaplandığı için [Nasıl Çalışır](#/getting-started/how-it-works) sayfasına bakın.
 
+`entropy` hesaplanmadığında atlanır; hesaplanan `0.0` değeri sıfır olarak yazılır. Zaman damgası olmayan kütüphane üretimi bulgularda `detected_at`, Go'nun 1. yıl sıfır zamanı yerine atlanır. Normal CLI bulguları zaman damgasını ayarlar.
+
+Sağlayıcı tarafından doğrulanmış kimlik, kapsam ve sona erme meta verisi mevcut olduğunda `verification.extra_data` altında görünür. Değerler sınırlı ve şema doğrulamalıdır; alanın olmaması token'ın izni veya sona ermesi olmadığı değil, sağlayıcının güvenli meta veri sunmadığı anlamına gelir.
+
 `--remediation` de ayarlandığında her bulgunun içine iç içe bir `"remediation"` nesnesi yerleştirilir. Bkz. [Düzeltme Rehberi](#/output/remediation).
 
 ## SARIF
@@ -110,7 +114,7 @@ e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws
 
 ## Tablo
 
-`table` formatı, insan tarafından okunabilir sekme hizalı bir tablo yazar; sonuçların hızlı görsel taramasını istediğiniz etkileşimli terminal oturumları için en uygun formattır.
+`table` formatı; CJK, birleşen işaretler ve emoji için doğru görüntü genişliği dahil, terminal hücrelerine göre hizalanmış insan tarafından okunabilir bir tablo yazar. Sonuçların hızlı görsel taramasını istediğiniz etkileşimli terminal oturumları için en uygun formattır.
 
 **Sütunlar:**
 
@@ -118,9 +122,9 @@ e6fa909746d7d5242309b64c33209fa9,aws-access-key-id,high,AKIA****K7NP,,config/aws
 SEVERITY | DETECTOR | FILE | LINE | REDACTED | STATUS | REMEDIATION
 ```
 
-`LINE` sütunu, satır numarası mevcut olmadığında (örneğin bir Slack veya konteyner imajı bulgusu için) `-` gösterir. `REMEDIATION` sütunu her zaman bulunur ve `--remediation` ayarlanmadıkça `-` gösterir. `--show-raw` ayarlandığında da, sona bir `RAW` sütunu eklenir. Tablonun altına bir özet satırı yazdırılır (örn. `Found 3 secrets (1 critical, 2 high).`).
+`LINE` sütunu, satır numarası mevcut olmadığında (örneğin bir Slack veya konteyner imajı bulgusu için) `-` gösterir. `REMEDIATION` sütunu her zaman bulunur ve `--remediation` ayarlanmadıkça `-` gösterir. `--show-raw` ayarlandığında da, sona bir `RAW` sütunu eklenir. Yalnızca tablo çıktısında bu değer geri çevrilebilir, Go-tırnaklı bir dize olarak gösterilir: `\\n`, `\\t` ve `\\x1b` gibi kaçışlar terminal kontrol baytlarını etkisiz tutarken `strconv.Unquote` özgün baytları eksiksiz geri yükleyebilir. JSON ve CSV ham değerleri mevcut makine-okunur gösterimlerini korur. Tablonun altına bir özet satırı yazdırılır (örn. `Found 3 secrets (1 critical, 2 high).`).
 
-Saldırgan tarafından etkilenebilecek alanlar (dedektör ID'si, dosya yolu, maskelenmiş değer), terminale yazılmadan önce kontrol karakterlerinden ve ANSI kaçış dizilerinden arındırılır; böylece kötü amaçlı biçimlendirilmiş bir dosya adı veya özel kural eşleşmesi terminal oturumunuza kaçış dizisi enjekte edemez.
+Saldırgan tarafından etkilenebilecek alanlar (dedektör ID'si, dosya yolu, maskelenmiş değer), terminale yazılmadan önce kontrol karakterlerinden ve ANSI kaçış dizilerinden arındırılır. Unicode çift yönlü metin (bidi) kontrol karakterleri görünür `\\uXXXX` kod noktaları olarak yazılır; böylece varlıkları gizlenmeden görsel sıralama saldırıları önlenir. CJK, birleşen işaretler ve emoji ZWJ dizileri dahil olağan uluslararası metin korunur.
 
 **ANSI rengi**, `SEVERITY` sütununa otomatik olarak uygulanır, ancak yalnızca dört koşulun tamamı sağlandığında:
 

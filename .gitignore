@@ -20,6 +20,7 @@ vendor/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
@@ -30,6 +31,7 @@ Thumbs.db
 
 # Code Reviews
 docs/code-reviews/
+review/
 
 # Marketing (internal, not published)
 docs/marketing/

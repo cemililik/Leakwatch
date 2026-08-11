@@ -1,11 +1,17 @@
-// Package twilio provides a verifier for Twilio API keys.
-// It uses the Twilio Accounts API GET /2010-04-01/Accounts.json endpoint
-// with Basic auth to check key validity.
+// Package twilio provides conservative verification for paired Twilio API Key
+// credentials. Production makes no request until a trusted regional API origin
+// is supplied by operator-controlled configuration.
 package twilio
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -15,16 +21,39 @@ import (
 
 const detectorID = "twilio-api-key"
 
-// defaultAPIURL is the base URL for the Twilio API.
-const defaultAPIURL = "https://api.twilio.com"
+var (
+	apiKeySIDPattern  = regexp.MustCompile(`^SK[0-9a-fA-F]{32}$`)
+	accountSIDPattern = regexp.MustCompile(`^AC[0-9a-fA-F]{32}$`)
+)
 
-// Verifier checks whether a Twilio API key is active by calling the
-// Twilio Accounts API. It NEVER logs or persists raw key values.
+// Verifier checks a Twilio API Key Secret with its paired API Key SID. apiURL
+// is an unexported trusted-origin seam; the production registration leaves it
+// empty because Twilio credentials are region-specific.
 type Verifier struct {
-	// apiURL overrides the Twilio API base URL (for testing).
-	apiURL string
-	// httpClient overrides the default HTTP client (for testing).
+	apiURL     string
 	httpClient *http.Client
+}
+
+// NewForTrustedInstance accepts an operator-selected official Twilio regional
+// API origin. Region selection is never inferred from scanned content.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	hostname := u.Hostname()
+	if err != nil || u.Port() != "" ||
+		(hostname != "api.twilio.com" &&
+			(!strings.HasPrefix(hostname, "api.") || !strings.HasSuffix(hostname, ".twilio.com"))) {
+		return nil, errors.New("invalid Twilio API origin: an official twilio.com host is required")
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {
@@ -32,63 +61,80 @@ func init() {
 }
 
 // Type returns the detector ID this verifier handles.
-func (v *Verifier) Type() string {
-	return detectorID
-}
+func (v *Verifier) Type() string { return detectorID }
 
-// Verify checks if the detected Twilio API key is valid/active.
-//
-// The detector emits the API Key SID ("SK...") as raw.Raw and the Account SID
-// ("AC...") as raw.ExtraData["account_sid"]. Twilio's REST API accepts exactly
-// two Basic-Auth pairs: (Account SID, Auth Token) or (API Key SID, API Key
-// Secret). Since raw.Raw is an API Key SID, the only valid pairing is
-// (API Key SID, API Key Secret): the SID is the Basic-Auth username and the
-// paired API Key Secret is the password. The API Key SID alone is a non-secret
-// identifier and cannot authenticate on its own, so when the paired secret is
-// not available (raw.ExtraData["api_key_secret"] is empty) the key is reported
-// as Unverified — never as inactive, which would misread a live but unpaired
-// credential as revoked.
+// Verify authenticates with API Key SID as the Basic username and API Key
+// Secret as the password. Main, Standard, and Restricted keys have different
+// permissions: only 401 proves inactive; a permission-denied 403 is
+// deliberately a verify_error.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
-	apiKeySID := string(raw.Raw)
-	if apiKeySID == "" {
-		return finding.VerificationResult{
-			Status:  finding.StatusUnverified,
-			Message: "empty token",
-		}
-	}
-
-	var accountSID, apiKeySecret string
-	if raw.ExtraData != nil {
-		accountSID = raw.ExtraData["account_sid"]
-		apiKeySecret = raw.ExtraData["api_key_secret"]
-	}
-
+	apiKeySecret := string(raw.Raw)
 	if apiKeySecret == "" {
-		// Without the paired API Key Secret the credential cannot be
-		// authenticated. Report Unverified rather than guessing at liveness.
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+
+	apiKeySID := ""
+	accountSID := ""
+	if raw.ExtraData != nil {
+		apiKeySID = raw.ExtraData["api_key_sid"]
+		accountSID = raw.ExtraData["account_sid"]
+	}
+	if !apiKeySIDPattern.MatchString(apiKeySID) {
 		return finding.VerificationResult{
 			Status:  finding.StatusUnverified,
-			Message: "API Key Secret unavailable; cannot verify",
+			Message: "paired Twilio API Key SID is required for verification",
+		}
+	}
+	if accountSID != "" && !accountSIDPattern.MatchString(accountSID) {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "invalid Twilio Account SID context",
+		}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted Twilio regional API origin is not configured",
 		}
 	}
 
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
-	// When the Account SID is known, scope the request to that account;
-	// otherwise fall back to the accounts collection, which an API Key can also
-	// reach.
 	path := "/2010-04-01/Accounts.json"
 	if accountSID != "" {
 		path = "/2010-04-01/Accounts/" + accountSID + ".json"
 	}
 
-	return httpx.VerifyToken(ctx, v.httpClient, apiKeySID, httpx.TokenSpec{
+	return httpx.VerifyToken(ctx, v.httpClient, apiKeySecret, httpx.TokenSpec{
 		Name: "twilio",
 		Request: httpx.Request{
-			URL:           apiURL + path,
+			URL:           v.apiURL + path,
 			BasicAuthUser: apiKeySID,
 			BasicAuthPass: apiKeySecret,
 		},
-		ActiveMessage:   "Twilio API key is active",
-		InactiveMessage: "Twilio API key is invalid or revoked",
+		InactiveStatuses:       []int{http.StatusUnauthorized},
+		ActiveMessage:          "Twilio API key is active for the trusted region and probe",
+		InactiveMessage:        "Twilio API key is invalid or revoked on the trusted region",
+		Decode:                 func(body io.Reader) (map[string]string, string, error) { return decodeAccountProbe(body, accountSID) },
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
+}
+
+func decodeAccountProbe(body io.Reader, expectedAccountSID string) (map[string]string, string, error) {
+	var response struct {
+		SID      string          `json:"sid"`
+		Accounts json.RawMessage `json:"accounts"`
+	}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		return nil, "", err
+	}
+	if expectedAccountSID != "" {
+		if response.SID != expectedAccountSID {
+			return nil, "", errors.New("twilio account probe returned an unexpected account")
+		}
+		return map[string]string{"account_sid": expectedAccountSID}, "", nil
+	}
+	if len(response.Accounts) == 0 || string(response.Accounts) == "null" {
+		return nil, "", errors.New("twilio account collection is missing")
+	}
+	return nil, "", nil
 }

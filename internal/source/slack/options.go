@@ -38,22 +38,32 @@ func WithIncludeDMs(include bool) Option {
 	}
 }
 
-// WithIncludeFiles requests scanning of file content.
-//
-// NOTE: Slack file scanning is not yet implemented. This option is currently a
-// no-op for actual scanning behavior (only message text is scanned); enabling
-// it causes a warning to be logged. See ROADMAP and the planned-feature note in slack.go.
+// WithIncludeFiles enables bounded scanning of text-like files attached to
+// messages. The token needs Slack's files:read scope.
 func WithIncludeFiles(include bool) Option {
 	return func(s *SlackSource) {
 		s.includeFiles = include
 	}
 }
 
-// WithRateLimit sets the Slack API rate limit in requests per second.
+// WithMaxFileSize sets the maximum attachment size buffered for scanning.
+func WithMaxFileSize(size int64) Option {
+	return func(s *SlackSource) {
+		if size > 0 {
+			s.maxFileSize = size
+		}
+	}
+}
+
+// WithRateLimit overrides each operation-scoped Slack limiter with the same
+// requests-per-second ceiling. Defaults remain operation-specific.
 func WithRateLimit(rps float64) Option {
 	return func(s *SlackSource) {
 		if rps > 0 {
-			s.rateLimit = rps
+			s.historyRateLimit = rps
+			s.listRateLimit = rps
+			s.fileInfoRateLimit = rps
+			s.fileDownloadRateLimit = rps
 		}
 	}
 }

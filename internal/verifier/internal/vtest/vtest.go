@@ -14,9 +14,16 @@
 package vtest
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,6 +50,15 @@ type Case struct {
 	// Raw is a representative finding to verify. Its Raw value should be a
 	// plausibly formatted secret so the verifier reaches the HTTP call.
 	Raw detector.RawFinding
+
+	// RawForURL optionally builds the finding after the hermetic endpoint is
+	// known. It is used by credentials whose request destination is the finding
+	// itself, such as provider webhook URLs.
+	RawForURL func(string) detector.RawFinding
+
+	// AdditionalSensitive lists credential-bearing representations that the
+	// verifier derives outside Raw/RawV2 and must redact from results and logs.
+	AdditionalSensitive [][]byte
 
 	// MalformedStatus is the status the verifier returns for a 200 response
 	// whose body is not valid JSON. Defaults to StatusVerifyError when zero
@@ -74,10 +90,35 @@ func Run(t *testing.T, c Case) {
 		server.Close() // Force a connection-refused transport error.
 
 		v := c.New(url, client)
-		result := v.Verify(context.Background(), c.Raw)
+		testCase := c.withURL(url)
+		result := v.Verify(context.Background(), testCase.Raw)
 
 		assert.Equal(t, finding.StatusVerifyError, result.Status,
 			"a transport error must be a verify error")
+		assertSecretAbsent(t, result, "", testCase)
+	})
+
+	t.Run(c.Name+"/transport_error_cannot_echo_secret", func(t *testing.T) {
+		var calls atomic.Int32
+		const endpoint = "https://api.example.invalid"
+		testCase := c.withURL(endpoint)
+		client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			echoed := []string{request.URL.String(), string(testCase.Raw.Raw), string(testCase.Raw.RawV2)}
+			for _, values := range request.Header {
+				echoed = append(echoed, values...)
+			}
+			return nil, fmt.Errorf("synthetic transport failure echoed request %q", echoed)
+		})}
+		v := c.New(endpoint, client)
+		result, logs := verifyWithCapturedLogs(t, func() finding.VerificationResult {
+			return v.Verify(context.Background(), testCase.Raw)
+		})
+
+		require.Equal(t, int32(1), calls.Load(), "injected transport must be exercised exactly once")
+		assert.Equal(t, finding.StatusVerifyError, result.Status,
+			"a transport error must be a verify error")
+		assertSecretAbsent(t, result, logs, testCase)
 	})
 
 	t.Run(c.Name+"/cancelled_context_is_not_inactive", func(t *testing.T) {
@@ -90,13 +131,15 @@ func Run(t *testing.T, c Case) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately.
 
+		testCase := c.withURL(server.URL)
 		v := c.New(server.URL, server.Client())
-		result := v.Verify(ctx, c.Raw)
+		result := v.Verify(ctx, testCase.Raw)
 
 		require.NotEqual(t, finding.StatusVerifiedInactive, result.Status,
 			"a cancelled context must NOT be reported as verified-inactive")
 		assert.Equal(t, finding.StatusVerifyError, result.Status,
 			"a cancelled context must be a verify error")
+		assertSecretAbsent(t, result, "", testCase)
 	})
 
 	if c.SkipMalformed {
@@ -104,7 +147,9 @@ func Run(t *testing.T, c Case) {
 	}
 
 	t.Run(c.Name+"/malformed_body_has_defined_status", func(t *testing.T) {
+		var calls atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{not valid json`))
@@ -119,12 +164,65 @@ func Run(t *testing.T, c Case) {
 			want = finding.StatusVerifyError
 		}
 
+		testCase := c.withURL(server.URL)
 		v := c.New(server.URL, server.Client())
-		result := v.Verify(context.Background(), c.Raw)
+		result := v.Verify(context.Background(), testCase.Raw)
 
+		require.Equal(t, int32(1), calls.Load(), "malformed-response transport must be exercised exactly once")
 		assert.Equal(t, want, result.Status,
 			"a 200 with a malformed body must have a defined status")
 		assert.NotEqual(t, finding.StatusVerifiedInactive, result.Status,
 			"a malformed 200 body must never be reported as verified-inactive")
+		assertSecretAbsent(t, result, "", testCase)
 	})
+}
+
+func (c Case) withURL(endpoint string) Case {
+	if c.RawForURL != nil {
+		c.Raw = c.RawForURL(endpoint)
+	}
+	return c
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func assertSecretAbsent(t *testing.T, result finding.VerificationResult, logs string, c Case) {
+	t.Helper()
+	secrets := append([][]byte{c.Raw.Raw, c.Raw.RawV2}, c.AdditionalSensitive...)
+	for _, secret := range secrets {
+		if len(secret) < 8 {
+			continue
+		}
+		for _, form := range sensitiveForms(string(secret)) {
+			assert.NotContains(t, result.Message, form, "verification message leaked credential")
+			assert.NotContains(t, logs, form, "verification log leaked credential")
+		}
+		for key, value := range result.ExtraData {
+			for _, form := range sensitiveForms(string(secret)) {
+				assert.False(t, strings.Contains(value, form),
+					"verification ExtraData[%q] leaked credential", key)
+			}
+		}
+	}
+}
+
+func sensitiveForms(secret string) []string {
+	return []string{secret, url.PathEscape(secret), url.QueryEscape(secret)}
+}
+
+var slogCaptureMu sync.Mutex
+
+func verifyWithCapturedLogs(t *testing.T, verify func() finding.VerificationResult) (finding.VerificationResult, string) {
+	t.Helper()
+	slogCaptureMu.Lock()
+	defer slogCaptureMu.Unlock()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+	return verify(), logs.String()
 }

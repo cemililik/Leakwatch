@@ -9,16 +9,8 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/HodeTech/leakwatch/internal/detector/custom"
+	"github.com/HodeTech/leakwatch/internal/meta"
 )
-
-// Supported output formats.
-var validFormats = map[string]bool{
-	"json":   true,
-	"sarif":  true,
-	"csv":    true,
-	"table":  true,
-	"github": true,
-}
 
 // Supported severity levels for output.severity-threshold.
 var validSeverities = map[string]bool{
@@ -141,7 +133,7 @@ func (c *Config) validate() error {
 	if c.Scan.MaxFileSize > maxFileSizeCeiling {
 		return fmt.Errorf("invalid max-file-size value: %d exceeds maximum of %d bytes (%dMB); per-file scanning is fully in-memory, so raising this limit risks large per-job memory usage", c.Scan.MaxFileSize, maxFileSizeCeiling, maxFileSizeCeiling/(1024*1024))
 	}
-	if !validFormats[c.Output.Format] {
+	if !meta.IsOutputFormat(c.Output.Format) {
 		return fmt.Errorf("unsupported output format: %s", c.Output.Format)
 	}
 	if c.Detection.Entropy.Threshold < 0 || c.Detection.Entropy.Threshold > 8.0 {

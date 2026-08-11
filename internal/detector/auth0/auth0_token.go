@@ -2,6 +2,7 @@
 package auth0
 
 import (
+	"bytes"
 	"context"
 	"regexp"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/HodeTech/leakwatch/pkg/finding"
 )
 
-var auth0TokenPattern = regexp.MustCompile(`(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)\s*[=:]\s*['"]?([A-Za-z0-9_-]{30,})['"]?`)
+var auth0TokenPattern = regexp.MustCompile(`(?:["']?(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)["']?)[ \t]*[=:][ \t]*["']?([A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,})`)
 
 // Detector detects Auth0 Management API Tokens.
 type Detector struct{}
@@ -31,24 +32,38 @@ func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical
 // Scan searches the data for Auth0 Management API Token patterns.
 // The token value is extracted from submatch group 1 and redacted to first 8 chars + ****.
 func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
-	allMatches := auth0TokenPattern.FindAllSubmatch(data, -1)
+	allMatches := auth0TokenPattern.FindAllSubmatchIndex(data, -1)
 	if len(allMatches) == 0 {
 		return nil
 	}
 
 	findings := make([]detector.RawFinding, 0, len(allMatches))
 	for _, groups := range allMatches {
-		fullMatch := groups[0]
-		tokenValue := groups[1]
+		if len(groups) < 4 || groups[2] < 0 || !auth0TokenBoundary(data, groups[3]) {
+			continue
+		}
+		fullMatch := bytes.Clone(data[groups[0]:groups[1]])
+		tokenValue := bytes.Clone(data[groups[2]:groups[3]])
 
 		findings = append(findings, detector.RawFinding{
 			DetectorID: d.ID(),
 			Raw:        tokenValue,
 			RawV2:      fullMatch,
 			Redacted:   detector.RedactBytes(tokenValue),
+			ByteStart:  groups[2],
+			ByteEnd:    groups[3],
 		})
 	}
 	return findings
+}
+
+func auth0TokenBoundary(data []byte, end int) bool {
+	if end >= len(data) {
+		return true
+	}
+	next := data[end]
+	return (next < 'A' || next > 'Z') && (next < 'a' || next > 'z') &&
+		(next < '0' || next > '9') && next != '_' && next != '-' && next != '.'
 }
 
 func init() {

@@ -1,5 +1,5 @@
-// Package supabase provides a verifier for Supabase service keys.
-// It uses the Supabase Management API GET /v1/projects endpoint to check key validity.
+// Package supabase provides a verifier for Supabase personal access tokens. It
+// uses the Supabase Management API GET /v1/projects endpoint to check validity.
 package supabase
 
 import (
@@ -17,8 +17,8 @@ const detectorID = "supabase-service-key"
 // defaultAPIURL is the base URL for the Supabase Management API.
 const defaultAPIURL = "https://api.supabase.com"
 
-// Verifier checks whether a Supabase service key is active by calling the
-// Supabase Management API. It NEVER logs or persists raw key values.
+// Verifier checks whether a Supabase personal access token is active by calling
+// the Supabase Management API. It NEVER logs or persists raw token values.
 type Verifier struct {
 	// apiURL overrides the Supabase API base URL (for testing).
 	apiURL string
@@ -35,7 +35,7 @@ func (v *Verifier) Type() string {
 	return detectorID
 }
 
-// Verify checks if the detected Supabase service key is valid/active.
+// Verify checks if the detected Supabase personal access token is valid/active.
 // Raw contains the key value.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
@@ -47,7 +47,7 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 			URL:    apiURL + "/v1/projects",
 			Header: map[string]string{"Authorization": "Bearer " + token},
 		},
-		ActiveMessage:   "Supabase service key is active",
-		InactiveMessage: "Supabase service key is invalid or revoked",
+		ActiveMessage:   "Supabase personal access token is active",
+		InactiveMessage: "Supabase personal access token is invalid or revoked",
 	})
 }

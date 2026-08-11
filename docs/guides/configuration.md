@@ -1,10 +1,12 @@
 # Leakwatch - Configuration Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental configuration deep dive. The [configuration user manual](../user-manuals/en/configuration/config-file.md) is authoritative for current keys, defaults, and precedence.
 
 ## 1. Overview
 
@@ -80,13 +82,10 @@ detection:
 
     # Shannon entropy threshold (float64, 0.0–8.0). Default: 4.0
     #
-    # NOTE — this value is currently display-only for built-in detectors.
-    # The engine computes and attaches entropy scores to findings for context,
-    # but does NOT gate or filter built-in detector findings on this threshold.
-    # Engine-level gating is planned — see the ROADMAP
-    # "Documented-but-Unimplemented Gaps" §4 (Engine-level entropy-threshold gating).
-    #
-    # Per-rule entropy thresholds in `custom-rules:` DO filter custom-rule matches.
+    # The engine computes and attaches entropy scores to every finding. The
+    # threshold gates only built-in heuristic detectors that explicitly opt in
+    # (currently `generic-api-key`); structural provider detectors are never
+    # suppressed by this setting. Custom rules apply their own per-rule entropy.
     threshold: 4.0
 
 # ── Verification Settings ─────────────────────────────────────────
@@ -97,7 +96,8 @@ verification:
   # Default: true
   enabled: true
 
-  # Maximum timeout for a single verification request.
+  # Maximum timeout for one finding's verification operation, including any
+  # bounded provider-region fallback requests.
   # Go duration format: "10s", "30s", "1m"
   # Default: 10s
   timeout: 10s
@@ -132,7 +132,7 @@ filter:
 # ── Output Settings ─────────────────────────────────────────────
 output:
   # Output format.
-  # Valid values: json, sarif, csv, table
+  # Valid values: json, sarif, csv, table, github
   # Default: json
   format: json
 
@@ -153,7 +153,7 @@ output:
 
 # ── Custom Rules ──────────────────────────────────────────────
 custom-rules:
-  # Leakwatch ships with 64 detectors (60 packages). Use YAML custom rules
+  # Leakwatch ships with 65 detectors (61 packages). Use YAML custom rules
   # to detect secrets not covered by built-in detectors.
   # Each rule can contain the following fields:
   - id: "internal-api-key"
@@ -186,7 +186,7 @@ custom-rules:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable entropy analysis |
-| `threshold` | float64 | `4.0` | Entropy threshold (0.0–8.0). Display-only for built-in detectors; filters custom-rule matches only |
+| `threshold` | float64 | `4.0` | Entropy threshold (0.0–8.0). Gates opt-in heuristic detectors (currently `generic-api-key`); structural detectors are unaffected |
 
 **What is entropy?** Shannon entropy measures the degree of randomness in a text. Secrets typically have high entropy (4.0+) because they consist of random characters. Normal code has lower entropy.
 
@@ -210,7 +210,7 @@ flowchart LR
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable verification |
-| `timeout` | duration | `10s` | Timeout per request |
+| `timeout` | duration | `10s` | Timeout for one finding's complete verification operation, including bounded provider-region fallback |
 | `concurrency` | int | `4` | Number of parallel verifications |
 | `rate-limit` | float64 | `10.0` | Max verification API requests per second (must be positive when enabled) |
 
@@ -225,7 +225,7 @@ flowchart LR
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `format` | string | `json` | `json`, `sarif`, `csv`, `table` |
+| `format` | string | `json` | `json`, `sarif`, `csv`, `table`, `github` |
 | `file` | string | `""` | Output file (empty = stdout) |
 | `show-raw` | bool | `false` | Show secret content without masking |
 | `severity-threshold` | string | `low` | Minimum reporting level |
@@ -245,6 +245,8 @@ flowchart LR
 
 Slack scanning is configured entirely via CLI flags and environment variables. There is no `slack:` key in `.leakwatch.yaml`; YAML support for Slack options is planned for a future release.
 
+The bot needs `channels:read`, `channels:history`, `groups:read`, and `groups:history`. Add `im:read`, `im:history`, `mpim:read`, and `mpim:history` for `--include-dms`, and `files:read` for `--include-files`.
+
 Use CLI flags directly when running `scan slack`:
 
 ```bash
@@ -255,7 +257,7 @@ leakwatch scan slack \
   --channels "engineering,devops" \
   --exclude-channels "random" \
   --since "2026-01-01" \
-  --rate-limit 20 \
+  --rate-limit 0.8 \
   --min-severity medium
 ```
 
@@ -265,9 +267,9 @@ leakwatch scan slack \
 | `--channels` | all | Comma-separated channel names to scan |
 | `--exclude-channels` | none | Comma-separated channel names to skip |
 | `--since` | none | Scan messages posted after this date (`YYYY-MM-DD`) |
-| `--include-dms` | `false` | Scan direct messages (requires `im:history` / `mpim:history` scopes) |
-| `--include-files` | `false` | **Not yet implemented** (planned). Deprecated and hidden; has no effect — only message text is scanned |
-| `--rate-limit` | `20` | Maximum Slack API requests per second |
+| `--include-dms` | `false` | Scan direct messages (requires `im:read`, `im:history`, `mpim:read`, and `mpim:history`) |
+| `--include-files` | `false` | Download and scan bounded text-like attachments; requires Slack `files:read` |
+| `--rate-limit` | `0` | Optional per-operation Slack request cap; zero retains safe operation-specific defaults (history `1/60`, list/file/download higher) |
 
 > **Security note:** Always provide the Slack token via the `LEAKWATCH_SLACK_TOKEN` environment variable rather than the `--token` flag in automated environments, to avoid token exposure in process listings or CI logs.
 
@@ -697,3 +699,4 @@ leakwatch scan fs . --log-level debug 2>&1 | head -5
 | Architecture design | [Architecture Document](../architecture/03-ARCHITECTURE.md) |
 | ADR: CLI framework (Cobra + Viper) | [ADR-0002](../decisions/ADR-0002-cli-frame.md) |
 | ADR: Pattern matching | [ADR-0005](../decisions/ADR-0005-pattern-matching.md) |
+| ADR: Entropy gating | [ADR-0010](../decisions/ADR-0010-entropy-gating-policy.md) |

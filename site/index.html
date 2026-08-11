@@ -10,11 +10,11 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://hodetech.github.io/Leakwatch/" />
 <meta property="og:title" content="Leakwatch — Detect, verify & report leaked secrets" />
-<meta property="og:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 64 detectors, 54 live verifiers." />
+<meta property="og:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 39 direct live checks." />
 <meta property="og:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Leakwatch — Detect, verify & report leaked secrets" />
-<meta name="twitter:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 64 detectors, 54 live verifiers." />
+<meta name="twitter:description" content="Open-source secret scanning for code, Git history, containers, and the cloud. 65 detectors, 39 direct live checks." />
 <meta name="twitter:image" content="https://hodetech.github.io/Leakwatch/assets/og.svg" />
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
 <link rel="stylesheet" href="css/fonts.css" />
@@ -68,7 +68,7 @@
         <a class="btn btn-red btn-lg" href="playground.html"><span data-i18n="hero.cta.run">▸ Run the scan</span></a>
         <a class="btn btn-lg" href="docs.html"><span data-i18n="hero.cta.docs">Read the docs</span></a>
       </div>
-      <div class="kv" data-i18n="hero.kv">64 detectors · 54 live verifiers · 6 sources · exit-code aware</div>
+      <div class="kv" data-i18n="hero.kv">65 detectors · 39 direct-live · 9 context-required · 6 sources</div>
     </div>
 
     <div class="frame doc" id="heroDoc">
@@ -95,10 +95,10 @@
   <!-- ===== Stats ===== -->
   <section class="section no-rule" style="padding-top:6px">
     <div class="frame stats">
-      <div class="cell"><div class="n"><b>64</b></div><div class="l" data-i18n="stats.detectors">secret detectors</div></div>
-      <div class="cell"><div class="n"><b>54</b></div><div class="l" data-i18n="stats.verifiers">live verifiers</div></div>
+      <div class="cell"><div class="n"><b>65</b></div><div class="l" data-i18n="stats.detectors">secret detectors</div></div>
+      <div class="cell"><div class="n"><b>39</b></div><div class="l" data-i18n="stats.verifiers">direct live checks</div></div>
       <div class="cell"><div class="n"><b>6</b></div><div class="l" data-i18n="stats.sources">scan sources</div></div>
-      <div class="cell"><div class="n"><b>4</b></div><div class="l" data-i18n="stats.formats">output formats</div></div>
+      <div class="cell"><div class="n"><b>5</b></div><div class="l" data-i18n="stats.formats">output formats</div></div>
     </div>
   </section>
 
@@ -144,31 +144,33 @@
   <!-- ===== §04 Verification ===== -->
   <section class="section" id="verify">
     <div class="sec-head"><span class="idx mono-label">§ 04</span><h2 data-i18n="verify.title">Is it still live?</h2></div>
-    <p class="sec-intro" data-i18n="verify.intro">Detection is half the job. For most secret types, Leakwatch makes a controlled, read-only API call to the provider to confirm whether a key is active — separating real incidents from noise.</p>
+    <p class="sec-intro" data-i18n="verify.intro">Detection is half the job. Leakwatch distinguishes direct live checks from checks that require trusted context and from offline format validation, so registry counts never overstate live capability.</p>
     <div class="frame" style="border-radius:8px;padding:8px 22px">
-      <div class="vrow"><span class="vk live" data-i18n="verify.live.k">Live verified</span><span class="vd" data-i18n="verify.live.d">A read-only API call confirms the key is active or inactive.</span><span class="vcount">~49</span></div>
-      <div class="vrow"><span class="vk fmt" data-i18n="verify.fmt.k">Format checked</span><span class="vd" data-i18n="verify.fmt.d">Validated by structure where no safe live check exists.</span><span class="vcount">5</span></div>
-      <div class="vrow"><span class="vk no" data-i18n="verify.no.k">Not verifiable</span><span class="vd" data-i18n="verify.no.d">No public verification API (e.g. JWTs, private keys) — still detected, triaged manually.</span><span class="vcount">9</span></div>
+      <div class="vrow"><span class="vk live" data-i18n="verify.live.k">Direct live</span><span class="vd" data-i18n="verify.live.d">A non-destructive provider check can confirm the key in the normal production path.</span><span class="vcount">39</span></div>
+      <div class="vrow"><span class="vk ctx" data-i18n="verify.context.k">Context required</span><span class="vd" data-i18n="verify.context.d">A trusted issuer, region, or paired credential must be supplied before a safe live check.</span><span class="vcount">9</span></div>
+      <div class="vrow"><span class="vk fmt" data-i18n="verify.fmt.k">Format checked</span><span class="vd" data-i18n="verify.fmt.d">Validated by structure where no safe live check exists.</span><span class="vcount">6</span></div>
+      <div class="vrow"><span class="vk no" data-i18n="verify.no.k">Not verifiable</span><span class="vd" data-i18n="verify.no.d">No safe provider check (e.g. JWTs, private keys) — still detected, triaged manually.</span><span class="vcount">11</span></div>
     </div>
   </section>
 
   <!-- ===== §05 Output formats ===== -->
   <section class="section" id="formats">
     <div class="sec-head"><span class="idx mono-label">§ 05</span><h2 data-i18n="formats.title">Reports that fit your workflow</h2></div>
-    <div class="grid-2" style="grid-template-columns:repeat(4,1fr)">
+    <div class="grid-2" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
       <div class="card format-card reveal"><div class="fmt">JSON</div><p data-i18n="formats.json">Structured findings for tooling and automation.</p></div>
       <div class="card format-card reveal"><div class="fmt">SARIF</div><p data-i18n="formats.sarif">v2.1.0 — upload straight to GitHub Code Scanning.</p></div>
       <div class="card format-card reveal"><div class="fmt">CSV</div><p data-i18n="formats.csv">Spreadsheet-ready, sanitized against formula injection.</p></div>
       <div class="card format-card reveal"><div class="fmt">Table</div><p data-i18n="formats.table">Colorized terminal output for local triage.</p></div>
+      <div class="card format-card reveal"><div class="fmt">GitHub</div><p data-i18n="formats.github">Inline pull-request annotations in GitHub Actions.</p></div>
     </div>
   </section>
 
   <!-- ===== §06 Detector index ===== -->
   <section class="section" id="index">
-    <div class="sec-head"><span class="idx mono-label">§ 06</span><h2 data-i18n="index.title">Redacted index — 64 detectors</h2></div>
-    <p class="sec-intro" data-i18n="index.intro">A sample of the catalog. 54 of these can be verified against the live provider. Add your own with YAML custom rules.</p>
+    <div class="sec-head"><span class="idx mono-label">§ 06</span><h2 data-i18n="index.title">Redacted index — 65 detectors</h2></div>
+    <p class="sec-intro" data-i18n="index.intro">A sample of the catalog: 39 direct-live, 9 context-required, 6 format-only, and 11 without a verifier. Add your own with YAML custom rules.</p>
     <div class="index-grid">
-      <span class="idx-chip">aws-access-key-id</span><span class="idx-chip">gcp-service-account</span><span class="idx-chip">openai-api-key</span><span class="idx-chip">anthropic-api-key</span><span class="idx-chip">github-token</span><span class="idx-chip">stripe-api-key-live</span><span class="idx-chip"><span class="redact" data-real="sendgrid-api-key">sendgrid-api-key</span></span><span class="idx-chip">slack-token</span><span class="idx-chip">twilio-api-key</span><span class="idx-chip"><span class="redact" data-real="digitalocean-token">digitalocean-token</span></span><span class="idx-chip">datadog-api-key</span><span class="idx-chip">cloudflare-api-token</span><span class="idx-chip"><span class="redact" data-real="npm-token">npm-token</span></span><span class="idx-chip">private-key</span><span class="idx-chip">jwt</span><span class="idx-chip"><span class="redact" data-real="shopify-access-token">shopify-access-token</span></span><span class="idx-chip">supabase-service-key</span><span class="idx-chip">gitlab-pat</span><span class="idx-chip"><span class="redact" data-real="vercel-token">vercel-token</span></span><a class="idx-chip more" href="docs.html#/detectors/detector-catalog" data-i18n="index.more">+ 44 more · view full catalog →</a>
+      <span class="idx-chip">aws-access-key-id</span><span class="idx-chip">gcp-service-account</span><span class="idx-chip">openai-api-key</span><span class="idx-chip">anthropic-api-key</span><span class="idx-chip">github-token</span><span class="idx-chip">stripe-api-key-live</span><span class="idx-chip"><span class="redact" data-real="sendgrid-api-key">sendgrid-api-key</span></span><span class="idx-chip">slack-token</span><span class="idx-chip">twilio-api-key</span><span class="idx-chip"><span class="redact" data-real="digitalocean-token">digitalocean-token</span></span><span class="idx-chip">datadog-api-key</span><span class="idx-chip">cloudflare-api-token</span><span class="idx-chip"><span class="redact" data-real="npm-token">npm-token</span></span><span class="idx-chip">private-key</span><span class="idx-chip">jwt</span><span class="idx-chip"><span class="redact" data-real="shopify-access-token">shopify-access-token</span></span><span class="idx-chip">supabase-service-key</span><span class="idx-chip">gitlab-pat</span><span class="idx-chip"><span class="redact" data-real="vercel-token">vercel-token</span></span><a class="idx-chip more" href="docs.html#/detectors/detector-catalog" data-i18n="index.more">+ 46 more · view full catalog →</a>
     </div>
   </section>
 
@@ -214,7 +216,7 @@
       <li><a href="https://github.com/HodeTech/Leakwatch/blob/main/LICENSE" target="_blank" rel="noopener" data-i18n="footer.license">License (MIT)</a></li>
     </ul></div>
   </div>
-  <div class="footer-bottom"><span data-i18n="footer.copyright">© 2026 HodeTech · Leakwatch is open source under the MIT License.</span><span class="mono-label">v1.6.0 · concept: redacted</span></div>
+  <div class="footer-bottom"><span data-i18n="footer.copyright">© 2026 HodeTech · Leakwatch is open source under the MIT License.</span><span class="mono-label" data-release-version>v1.8.0 · concept: redacted</span></div>
 </div></footer>
 
 <script src="js/translations.js"></script>

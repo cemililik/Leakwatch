@@ -33,10 +33,10 @@ Her tarama, motorun işlemesi için veri parçaları yayan bir soyutlama olan **
 | Konteyner imajı | `scan image` | Bir OCI/Docker imajının katman içerikleri, daemonsuz |
 | AWS S3 | `scan s3` | Bir S3 kovasındaki nesne içerikleri |
 | Google Cloud Storage | `scan gcs` | Bir GCS kovasındaki nesne içerikleri |
-| Slack | `scan slack` | Kanal ve DM'lerdeki mesaj metni |
+| Slack | `scan slack` | Kanal/DM mesajları ve isteğe bağlı metin benzeri ekler |
 
 :::note
-Slack taraması yalnızca **mesaj metnini** kapsar. Slack'e yüklenen dosyaların içerikleri taranmaz.
+Slack varsayılan olarak hiçbir dosya indirmez. `--include-files`, metin benzeri eklerin boyutu sınırlı taramasını etkinleştirir ve Slack `files:read` kapsamını gerektirir.
 :::
 
 Parçalar, işçi havuzu tarafından tüketilen tamponlu bir kanala akar.
@@ -49,7 +49,7 @@ Taramalar `SIGINT` / `SIGTERM`'e yanıt verir: iptal sinyali geldiğinde bağlam
 
 ## 3. Aho-Corasick anahtar kelime ön-filtresi
 
-Her parça üzerinde 64 regex desenini çalıştırmak yavaş olur. Bunun yerine motor, başlangıçta her dedektörün bildirdiği anahtar kelime listelerinden tek bir **Aho-Corasick çok-desenli otomat** oluşturur. Her parça için bu otomat tek bir doğrusal geçiş yapar ve yalnızca anahtar kelimeleri parçanın baytlarında görünen dedektörleri döndürür.
+Her parça üzerinde 65 dedektör desenini çalıştırmak yavaş olur. Bunun yerine motor, başlangıçta her dedektörün bildirdiği anahtar kelime listelerinden tek bir **Aho-Corasick çok-desenli otomat** oluşturur. Her parça için bu otomat tek bir doğrusal geçiş yapar ve yalnızca anahtar kelimeleri parçanın baytlarında görünen dedektörleri döndürür.
 
 Bu, çoğu dedektörün çoğu parça üzerinde regex'ini hiç çalıştırmadığı anlamına gelir. Anahtar kelime bildirmeyen dedektörler her zaman çalışır (ön filtreyi atlayarak doğrudan regex'e geçerler).
 
@@ -63,7 +63,7 @@ Kısa listeye alınan her dedektör, derlenmiş **düzenli ifadesini** parça ba
 - Çıktı için güvenli olan **maskelenmiş** bir gösterim.
 - İsteğe bağlı ek meta veri (örneğin bir AWS anahtarı için hesap kimliği).
 
-Leakwatch, 60 paket genelinde **64 yerleşik dedektör** ile birlikte gelir; bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını, sürüm kontrolünü ve daha fazlasını kapsar. [Özel YAML kuralları](#/detectors/custom-rules) aracılığıyla kendi desenlerinizi ekleyebilirsiniz.
+Leakwatch, 61 paket genelinde **65 yerleşik dedektör** ile birlikte gelir; bulut sağlayıcılarını, yapay zekâ API'lerini, ödeme platformlarını, veritabanlarını, mesajlaşma araçlarını, sürüm kontrolünü, yapılandırılmış config dosyalarını ve daha fazlasını kapsar. [Özel YAML kuralları](#/detectors/custom-rules) aracılığıyla kendi desenlerinizi ekleyebilirsiniz.
 
 Tüm dedektörler, Go'nun `init()` işlevi ve boş importlar kullanılarak derleme zamanında kaydedilir (ADR-0004). Çalışma zamanında eklenti yükleyici veya dinamik keşif yoktur.
 
@@ -87,12 +87,12 @@ veya dedektöre özgü bir varyant:
 
 Tüm parçalar için tespit tamamlandıktan sonra motor, bulguları ayrı bir **doğrulama işçi havuzuna** geçirir (varsayılan 4 işçi). Doğrulama:
 
-- Tüm işçiler arasında paylaşılan global bir **hız sınırlayıcı** (varsayılan saniyede 10 istek) ile korunur.
-- Her API çağrısına **istek başına zaman aşımı** (varsayılan 10 saniye) uygular.
+- Her gerçek API çağrısını paylaşılan global ve dedektör başına birer **hız sınırlayıcıdan** geçirir (yapılandırılmış varsayılan değer her iki tavan için saniyede 10 istektir). Yalnız-format veya eksik-bağlam yolları token tüketmez; paylaşılan global kova toplam trafiği sınırlar ancak sağlayıcılar arasında adil zamanlama garantisi vermez.
+- Sınırlı bölgesel fallback ve istek kabulü dahil olmak üzere her bulguya ait doğrulama operasyonuna **zaman aşımı** (varsayılan 10 saniye) uygular.
 - Sağlayıcıya yalnızca **salt-okunur, yıkıcı olmayan** çağrılar yapar (örneğin AWS anahtarları için `sts:GetCallerIdentity`).
 - Her bulguyu dört durumdan biriyle işaretler: `verified_active`, `verified_inactive`, `unverified` veya `verify_error`.
 
-Leakwatch **54 doğrulayıcı** ile birlikte gelir; 64 yerleşik dedektör türünün %84,4'ünü kapsar. Kalan 10 tür (JWT'ler ve genel API anahtarları gibi) güvenli biçimde doğrulanamaz ve her zaman `unverified` olarak raporlanır.
+Leakwatch 65 dedektör türü için **54 doğrulayıcı implementasyonu** kaydeder (%83,1); ancak registry kaydı canlı kapsam değildir: 39'u doğrudan canlı, 9'u güvenilir issuer/bölge/eşlik eden bağlam gerektiren, 6'sı yalnız-format doğrulayıcısıdır. Kalan 11 türün doğrulayıcısı yoktur. Bağlam-gerektiren, yalnız-format ve doğrulayıcısız bulgular, belirtilen canlı doğrulama önkoşulları karşılanmadıkça `unverified` kalır.
 
 Bu aşamayı tamamen atlamak için `--no-verify` geçirin — hızlı, çevrimdışı taramalar için kullanışlıdır.
 
@@ -103,13 +103,13 @@ Doğrulama davranışı ve durum anlamları hakkında derinlemesine bilgi için 
 Her bulgu, şu şekilde hesaplanan **deterministik bir kimlik** alır:
 
 ```
-sha256(detectorID + redacted + filePath + line)  →  ilk 16 bayta kısaltılır,
-                                                      32 karakterlik bir dizeye hex kodlanır
+sha256(detectorID + redacted + filePath + decimal(line) + ":" + decimal(byteOffset))
+  → ilk 16 bayta kısaltılır ve 32 karakterlik bir dizeye hex kodlanır
 ```
 
 Sonuç, düz, 32 karakterlik küçük harfli bir hex dizesidir (örn. `447b5d2846d08ce25dd3d638cfe911ad`) — **çizgili** bir UUID **değildir**. Aynı konumdaki aynı sır her zaman aynı kimliği üretir; bu da bulguları çalıştırmalar arasında yinelenenleri kaldırmayı veya sorun izleyicilerde takip etmeyi güvenli kılar.
 
-**Shannon entropisi** (aralık 0–8) her bulgu için hesaplanır ve bilgilendirme amacıyla çıktıda gösterilir. Motor düzeyinde, `detection.entropy.threshold` kapısı yalnızca açıkça buna dahil olan sezgisel dedektörlere uygulanır — şu anda yalnızca `generic-api-key` — entropisi eşiğin altına düşen bir eşleşmeyi, düşük rastgelelikli yer tutucuları bastırmak için düşürür. `aws-access-key-id` veya `github-token` gibi her yapısal (biçim-çapalı) dedektör entropi tarafından hiçbir zaman kapılanmaz: bu dedektörlerden gelen düşük entropili bir eşleşme yine de sonuçlarda görünür. Özel kurallar, bu motor düzeyindeki kapıdan ayrı olarak kendi bağımsız kural başına `entropy` eşiğini uygular (bkz. [Özel Kurallar](#/detectors/custom-rules)).
+`detection.entropy.enabled` doğru olduğunda **Shannon entropisi** (aralık 0–8) boş olmayan her bulgu için hesaplanır ve bilgilendirme amacıyla çıktıda gösterilir; devre dışıyken yapay sıfır yerine alan bulunmaz. Motor düzeyinde, `detection.entropy.threshold` kapısı yalnızca açıkça buna dahil olan sezgisel dedektörlere uygulanır — şu anda yalnızca `generic-api-key` — entropisi eşiğin altına düşen bir eşleşmeyi, düşük rastgelelikli yer tutucuları bastırmak için düşürür. `aws-access-key-id` veya `github-token` gibi her yapısal (biçim-çapalı) dedektör entropi tarafından hiçbir zaman kapılanmaz: bu dedektörlerden gelen düşük entropili bir eşleşme yine de sonuçlarda görünür. Özel kurallar, bu motor düzeyindeki kapıdan ayrı olarak kendi bağımsız kural başına `entropy` eşiğini uygular (bkz. [Özel Kurallar](#/detectors/custom-rules)).
 
 ## 8. Tarama sonrası filtreler
 

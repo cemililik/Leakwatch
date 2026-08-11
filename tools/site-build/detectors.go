@@ -55,11 +55,20 @@ type detPattern struct {
 	Flags string `json:"flags,omitempty"`
 }
 
+type detCorrelation struct {
+	RequiredNearby     []detPattern `json:"requiredNearby"`
+	ProximityBytes     int          `json:"proximityBytes"`
+	SameLogicalBlock   bool         `json:"sameLogicalBlock,omitempty"`
+	RejectPlaceholders bool         `json:"rejectPlaceholders,omitempty"`
+	OneToOne           bool         `json:"oneToOne,omitempty"`
+}
+
 type detEntry struct {
-	ID       string       `json:"id"`
-	Severity string       `json:"severity"`
-	Keywords []string     `json:"keywords"`
-	Patterns []detPattern `json:"patterns"`
+	ID          string          `json:"id"`
+	Severity    string          `json:"severity"`
+	Keywords    []string        `json:"keywords"`
+	Patterns    []detPattern    `json:"patterns"`
+	Correlation *detCorrelation `json:"correlation,omitempty"`
 }
 
 // Packages whose detection depends on logic the browser can't fa­ithfully
@@ -139,7 +148,7 @@ func buildDetectors(root, jsDir string, strict bool) (int, error) {
 	sort.Strings(dropped)
 
 	for _, id := range dropped {
-		fmt.Fprintf(os.Stderr, "site-build: WARNING detector %q discovered but emitted zero playground patterns (all references were gates, extraction-only, or conditionally gated)\n", id)
+		fmt.Fprintf(os.Stderr, "site-build: WARNING detector %q discovered but emitted zero playground patterns (references were gated/extraction-only, or its correlated playground contract was not fully representable)\n", id)
 	}
 	if len(dropped) > 0 && strict {
 		return 0, fmt.Errorf("%d detector(s) emitted zero playground patterns (strict mode): %s", len(dropped), strings.Join(dropped, ", "))
@@ -160,13 +169,34 @@ func buildDetectors(root, jsDir string, strict bool) (int, error) {
 // extractDetectors returns the emitted entries plus the IDs of any detector
 // types discovered in f that ended up with zero safe, unconditional patterns.
 func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
-	// Named regexp vars (name -> raw pattern) and every MustCompile literal in
+	// Named regexp vars (name -> raw pattern), integer constants, and every MustCompile literal in
 	// the file (covers patterns declared inside slices, used as a fallback).
 	varPat := map[string]string{}
+	intConst := map[string]int{}
 	var filePats []string
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.VAR {
+		if !ok {
+			continue
+		}
+		if gd.Tok == token.CONST {
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, value := range vs.Values {
+					if i >= len(vs.Names) {
+						continue
+					}
+					if n, ok := integerLiteral(value); ok {
+						intConst[vs.Names[i].Name] = n
+					}
+				}
+			}
+			continue
+		}
+		if gd.Tok != token.VAR {
 			continue
 		}
 		for _, spec := range gd.Specs {
@@ -191,7 +221,7 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 	})
 
 	// Group the detector methods by receiver type.
-	type methods struct{ id, kw, sev, scan *ast.FuncDecl }
+	type methods struct{ id, kw, sev, scan, playground *ast.FuncDecl }
 	types := map[string]*methods{}
 	getType := func(name string) *methods {
 		if types[name] == nil {
@@ -217,6 +247,8 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 			getType(rt).sev = fd
 		case "Scan":
 			getType(rt).scan = fd
+		case "PlaygroundPatternContract":
+			getType(rt).playground = fd
 		}
 	}
 
@@ -233,8 +265,15 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 			entry.Keywords = []string{}
 		}
 
-		var pats []string
-		if m.scan != nil {
+		var pats, requiredNearby []string
+		correlationOK := true
+		proximityBytes := 0
+		sameLogicalBlock := false
+		rejectPlaceholders := false
+		oneToOne := false
+		if m.playground != nil {
+			pats, requiredNearby, proximityBytes, sameLogicalBlock, rejectPlaceholders, oneToOne, correlationOK = playgroundCorrelationOf(m.playground, varPat, intConst)
+		} else if m.scan != nil {
 			refs := newPatternRefSet()
 			collectPatternRefs(m.scan.Body.List, false, refs)
 			if len(refs.order) == 0 {
@@ -258,13 +297,57 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 		}
 
 		seen := map[string]bool{}
-		for _, p := range dedup(pats) {
+		patternsToEmit := dedup(pats)
+		if m.playground != nil {
+			patternsToEmit = pats // correlated contracts are already strictly unique
+		}
+		for _, p := range patternsToEmit {
 			src, flags, ok := goToJSRegex(p)
-			if !ok || seen[src+"\x00"+flags] {
+			if !ok {
+				if m.playground != nil {
+					correlationOK = false
+					break
+				}
+				continue
+			}
+			if seen[src+"\x00"+flags] {
+				if m.playground != nil {
+					correlationOK = false
+					break
+				}
 				continue
 			}
 			seen[src+"\x00"+flags] = true
 			entry.Patterns = append(entry.Patterns, detPattern{Src: src, Flags: flags})
+		}
+		if m.playground != nil && correlationOK {
+			correlation := &detCorrelation{
+				ProximityBytes:     proximityBytes,
+				SameLogicalBlock:   sameLogicalBlock,
+				RejectPlaceholders: rejectPlaceholders,
+				OneToOne:           oneToOne,
+			}
+			requiredSeen := map[string]bool{}
+			for _, p := range dedup(requiredNearby) {
+				src, flags, ok := goToJSRegex(p)
+				key := src + "\x00" + flags
+				if !ok || requiredSeen[key] {
+					correlationOK = false
+					break
+				}
+				requiredSeen[key] = true
+				correlation.RequiredNearby = append(correlation.RequiredNearby, detPattern{Src: src, Flags: flags})
+			}
+			if len(correlation.RequiredNearby) == 0 || proximityBytes <= 0 {
+				correlationOK = false
+			}
+			if correlationOK {
+				entry.Correlation = correlation
+			}
+		}
+		if !correlationOK {
+			entry.Patterns = nil
+			entry.Correlation = nil
 		}
 		if len(entry.Patterns) > 0 {
 			out = append(out, entry)
@@ -273,6 +356,174 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 		}
 	}
 	return out, dropped
+}
+
+// playgroundCorrelationOf resolves the optional, co-located detector contract
+// without importing the parent module. It deliberately accepts only a direct
+// detector.PlaygroundPatternContract composite literal whose regex fields
+// reference package-level regexp vars and whose proximity is a positive
+// integer literal or constant. Unsupported shapes fail closed in strict mode.
+func playgroundCorrelationOf(fd *ast.FuncDecl, patterns map[string]string, ints map[string]int) (primary, required []string, proximity int, sameBlock, rejectPlaceholders, oneToOne, ok bool) {
+	contract, valid := directPlaygroundContract(fd)
+	if !valid {
+		return nil, nil, 0, false, false, false, false
+	}
+	values := playgroundCorrelationValues{}
+	seenFields := map[string]bool{}
+	for _, element := range contract.Elts {
+		field, fieldName, valid := playgroundContractField(element, seenFields)
+		if !valid || !values.applyField(fieldName, field.Value, patterns, ints) {
+			return nil, nil, 0, false, false, false, false
+		}
+		seenFields[fieldName] = true
+	}
+	requiredFields := seenFields["Primary"] && seenFields["RequiredNearby"] && seenFields["ProximityBytes"]
+	ok = requiredFields && len(values.primary) > 0 && len(values.required) > 0 && values.proximity > 0
+	return values.primary, values.required, values.proximity, values.sameBlock, values.rejectPlaceholders, values.oneToOne, ok
+}
+
+type playgroundCorrelationValues struct {
+	primary, required             []string
+	proximity                     int
+	sameBlock, rejectPlaceholders bool
+	oneToOne                      bool
+}
+
+func directPlaygroundContract(fd *ast.FuncDecl) (*ast.CompositeLit, bool) {
+	if fd == nil || fd.Body == nil || len(fd.Body.List) != 1 {
+		return nil, false
+	}
+	ret, isReturn := fd.Body.List[0].(*ast.ReturnStmt)
+	if !isReturn || len(ret.Results) != 1 {
+		return nil, false
+	}
+	contract, isContract := ret.Results[0].(*ast.CompositeLit)
+	if !isContract || !isPlaygroundContractType(contract.Type) {
+		return nil, false
+	}
+	return contract, true
+}
+
+func playgroundContractField(element ast.Expr, seen map[string]bool) (*ast.KeyValueExpr, string, bool) {
+	field, isField := element.(*ast.KeyValueExpr)
+	if !isField {
+		return nil, "", false
+	}
+	name, isName := field.Key.(*ast.Ident)
+	if !isName || seen[name.Name] {
+		return nil, "", false
+	}
+	return field, name.Name, true
+}
+
+func (values *playgroundCorrelationValues) applyField(name string, value ast.Expr, patterns map[string]string, ints map[string]int) bool {
+	switch name {
+	case "Primary":
+		var valid bool
+		values.primary, valid = regexpIdentifierList(value, patterns)
+		return valid
+	case "RequiredNearby":
+		var valid bool
+		values.required, valid = regexpIdentifierList(value, patterns)
+		return valid
+	case "ProximityBytes":
+		var valid bool
+		values.proximity, valid = integerValue(value, ints)
+		return valid
+	case "SameLogicalBlock":
+		var valid bool
+		values.sameBlock, valid = boolLiteral(value)
+		return valid
+	case "RejectPlaceholders":
+		var valid bool
+		values.rejectPlaceholders, valid = boolLiteral(value)
+		return valid
+	case "OneToOne":
+		var valid bool
+		values.oneToOne, valid = boolLiteral(value)
+		return valid
+	default:
+		return false
+	}
+}
+
+func isPlaygroundContractType(expr ast.Expr) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "PlaygroundPatternContract" {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	return ok && pkg.Name == "detector"
+}
+
+func regexpIdentifierList(expr ast.Expr, patterns map[string]string) ([]string, bool) {
+	list, ok := expr.(*ast.CompositeLit)
+	if !ok || !isRegexpPointerSliceType(list.Type) || len(list.Elts) == 0 {
+		return nil, false
+	}
+	out := make([]string, 0, len(list.Elts))
+	seenNames := map[string]bool{}
+	seenPatterns := map[string]bool{}
+	for _, element := range list.Elts {
+		ident, ok := element.(*ast.Ident)
+		if !ok || seenNames[ident.Name] {
+			return nil, false
+		}
+		pattern, exists := patterns[ident.Name]
+		if !exists || seenPatterns[pattern] {
+			return nil, false
+		}
+		seenNames[ident.Name] = true
+		seenPatterns[pattern] = true
+		out = append(out, pattern)
+	}
+	return out, true
+}
+
+func isRegexpPointerSliceType(expr ast.Expr) bool {
+	array, ok := expr.(*ast.ArrayType)
+	if !ok || array.Len != nil {
+		return false
+	}
+	pointer, ok := array.Elt.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := pointer.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Regexp" {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	return ok && pkg.Name == "regexp"
+}
+
+func boolLiteral(expr ast.Expr) (bool, bool) {
+	ident, ok := expr.(*ast.Ident)
+	if !ok || (ident.Name != "true" && ident.Name != "false") {
+		return false, false
+	}
+	return ident.Name == "true", true
+}
+
+func integerLiteral(expr ast.Expr) (int, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.INT {
+		return 0, false
+	}
+	n, err := strconv.Atoi(lit.Value)
+	return n, err == nil
+}
+
+func integerValue(expr ast.Expr, ints map[string]int) (int, bool) {
+	if n, ok := integerLiteral(expr); ok {
+		return n, true
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return 0, false
+	}
+	n, ok := ints[ident.Name]
+	return n, ok
 }
 
 // patternRefs accumulates how a pattern var was referenced across Scan.

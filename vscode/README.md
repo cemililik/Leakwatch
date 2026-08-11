@@ -54,8 +54,18 @@ npm run watch    # development mode with auto-rebuild
 
 ```bash
 npm run compile                      # build for production
-npx @vscode/vsce package             # create .vsix package
+npm run package:vsix                 # create leakwatch-<version>.vsix
 ```
+
+The committed 256×256 Marketplace icon is rendered from `images/icon.svg`.
+CI packages and uploads a VSIX for every extension change. Marketplace
+publication is a separate manual, `main`-only workflow. Administrators must
+configure the `vscode-marketplace` environment with required reviewers,
+prevent-self-review, protected-branch deployment policy, and an environment-only
+`VSCE_PAT`. Add a short-lived, repository-restricted `VSCODE_ENV_AUDIT_TOKEN`
+with only **Environments: read**; the workflow uses it to prove that `VSCE_PAT`
+exists in that environment, audits the policies through the GitHub API, and
+fails closed before publication when either the policy or secret provenance drifts.
 
 ## License
 

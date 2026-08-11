@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="1200" height="480" role="img" aria-labelledby="title desc">
+  <title id="title">Leakwatch</title>
+  <desc id="desc">Find leaked secrets before attackers do. Detect, verify, and report across code, Git history, containers, and cloud.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0c0d10"/>
+      <stop offset="1" stop-color="#0a0b0d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e6394d"/>
+      <stop offset="1" stop-color="#ff6377"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#23272e" stroke-width="1" opacity=".35"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="480" fill="url(#background)"/>
+  <rect width="1200" height="480" fill="url(#grid)"/>
+  <rect width="1200" height="5" fill="url(#accent)"/>
+
+  <g transform="translate(64 88)">
+    <rect x="0" y="0" width="50" height="50" rx="9" fill="#16191e" stroke="#e6394d" stroke-width="3"/>
+    <rect x="9" y="15" width="31" height="6" rx="2" fill="#0a0b0d"/>
+    <rect x="9" y="26" width="20" height="6" rx="2" fill="#0a0b0d"/>
+    <circle cx="36" cy="29" r="5" fill="none" stroke="#34d39a" stroke-width="3"/>
+    <text x="68" y="44" fill="#f1eee5" font-family="Arial,Helvetica,sans-serif" font-size="54" font-weight="700">Leak<tspan fill="#ff6377">watch</tspan></text>
+  </g>
+
+  <text x="64" y="240" fill="#f1eee5" font-family="Arial,Helvetica,sans-serif" font-size="52" font-weight="700">Find leaked secrets</text>
+  <text x="64" y="298" fill="#f1eee5" font-family="Arial,Helvetica,sans-serif" font-size="52" font-weight="700">before <tspan fill="#ff6377">attackers</tspan> do.</text>
+  <text x="64" y="350" fill="#8b9098" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="22">Detect · verify · report — across code, git history, containers &amp; cloud.</text>
+
+  <!-- stats:begin — managed by internal/meta/statsgen; run `go generate ./...` -->
+  <g font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="22" font-weight="700">
+    <text x="64" y="408" fill="#34d39a">65 detectors</text>
+    <text x="258" y="408" fill="#3a3f47">·</text>
+    <text x="294" y="408" fill="#f0b429">39 direct-live checks</text>
+    <text x="600" y="408" fill="#3a3f47">·</text>
+    <text x="636" y="408" fill="#5aa9e6">6 sources</text>
+    <text x="790" y="408" fill="#3a3f47">·</text>
+    <text x="826" y="408" fill="#ff6377">5 output formats</text>
+  </g>
+  <!-- stats:end -->
+  <text x="64" y="450" fill="#5b616b" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="18">github.com/HodeTech/Leakwatch · MIT</text>
+</svg>

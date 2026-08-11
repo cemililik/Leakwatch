@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,6 +21,8 @@ func TestOAuthVerify_ValidToken_ReturnsActive(t *testing.T) {
 		assert.Equal(t, "application/vnd.github+json", r.Header.Get("Accept"))
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-OAuth-Scopes", "user, repo, user")
+		w.Header().Set("GitHub-Authentication-Token-Expiration", "2027-01-02 03:04:05 UTC")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"login":"octocat"}`))
 	}))
@@ -39,12 +42,61 @@ func TestOAuthVerify_ValidToken_ReturnsActive(t *testing.T) {
 	result := v.Verify(context.Background(), raw)
 
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "GitHub OAuth token is active", result.Message)
+	assert.Equal(t, "GitHub OAuth or installation token is active", result.Message)
 	assert.Equal(t, "octocat", result.ExtraData["login"])
+	assert.Equal(t, "repo,user", result.ExtraData["scopes"])
+	assert.Equal(t, "2", result.ExtraData["scope_count"])
+	assert.Equal(t, "2027-01-02T03:04:05Z", result.ExtraData["expires_at"])
+}
+
+func TestDecodeInstallationRepositories_RejectsMalformedSuccess(t *testing.T) {
+	for _, body := range []string{
+		`{"total_count":-1}`,
+		`{"total_count":0} {"extra":true}`,
+	} {
+		_, _, err := decodeInstallationRepositories(strings.NewReader(body))
+		assert.Error(t, err, body)
+	}
+}
+
+func TestOAuthVerify_InstallationToken_UsesInstallationEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/installation/repositories", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"total_count":0,"repositories":[]}`))
+	}))
+	defer server.Close()
+
+	result := (&OAuthVerifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12")},
+	)
+
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "ghs", result.ExtraData["token_subtype"])
+}
+
+func TestOAuthVerify_RefreshToken_IsUnverifiedWithoutRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+
+	result := (&OAuthVerifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12")},
+	)
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Contains(t, result.Message, "cannot be verified without rotating")
+	assert.Zero(t, requests)
 }
 
 func TestOAuthVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
 	}))
@@ -64,7 +116,20 @@ func TestOAuthVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	result := v.Verify(context.Background(), raw)
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "GitHub OAuth token is invalid or revoked", result.Message)
+	assert.Equal(t, "GitHub OAuth or installation token is invalid or revoked", result.Message)
+}
+
+func TestOAuthVerify_InactiveHTMLIsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`<html>proxy login</html>`))
+	}))
+	defer server.Close()
+	result := (&OAuthVerifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detector.RawFinding{Raw: []byte("gho_synthetic123456789012345678901234")},
+	)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
 }
 
 func TestOAuthVerify_ServerError_ReturnsError(t *testing.T) {
@@ -143,6 +208,14 @@ func TestOAuthVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 	assert.Equal(t, "empty token", result.Message)
 }
 
+func TestOAuthVerify_WithoutTrustedOrigin_MakesNoRequest(t *testing.T) {
+	v := &OAuthVerifier{}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-github-oauth-token")})
+
+	assert.Equal(t, finding.StatusUnverified, result.Status)
+	assert.Equal(t, "trusted GitHub API origin is not configured", result.Message)
+}
+
 func TestOAuthVerify_MalformedJSON_ReturnsVerifyError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -168,4 +241,40 @@ func TestOAuthVerify_MalformedJSON_ReturnsVerifyError(t *testing.T) {
 	// cannot confirm the expected response shape.
 	assert.Equal(t, finding.StatusVerifyError, result.Status)
 	assert.Contains(t, result.Message, "failed to decode response body")
+}
+
+func TestOAuthVerify_MissingIdentityOrWrongContentType_ReturnsVerifyError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing login", contentType: "application/json", body: `{}`},
+		{name: "wrong content type", contentType: "text/plain", body: `{"login":"octocat"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			result := (&OAuthVerifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
+}
+
+func TestNewOAuthForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewOAuthForTrustedInstance("https://api.github.example/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.github.example", configured.apiURL)
+	for _, origin := range []string{"http://api.github.com", "https://127.0.0.1", "https://localhost", "https://github.example/path"} {
+		_, err := NewOAuthForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
 }

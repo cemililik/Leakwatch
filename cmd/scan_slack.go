@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -13,27 +12,27 @@ import (
 )
 
 // flagIncludeFiles is the slack-only flag that requests scanning of uploaded
-// file content. Defined as a constant so the registration, deprecation, and
-// read sites reference a single literal.
+// file content. Defined as a constant so registration and read sites reference
+// a single literal.
 const flagIncludeFiles = "include-files"
 
-// defaultSlackRateLimit is the default for the --rate-limit flag. It mirrors the
-// slack source's own conservative defaultRateLimit (1 req/s): because the flag
-// is always applied when > 0, a mismatched flag default would silently override
-// the source's default and defeat it. Keep this in sync with
-// internal/source/slack defaultRateLimit until that constant is exported.
-const defaultSlackRateLimit = 1.0
+// A zero CLI value retains the source package's safe operation-specific
+// defaults. A positive value explicitly overrides every limiter bucket.
+const defaultSlackRateLimit = 0
 
 var scanSlackCmd = &cobra.Command{
 	Use:   "slack",
 	Short: "Scans a Slack workspace",
 	Long: `Scans messages across channels in a Slack workspace to detect leaked secrets
-such as API keys, passwords, and certificates. Scanning of uploaded file
-content is planned but not yet implemented; only message text is scanned.
+such as API keys, passwords, and certificates. Text-like uploaded files can be
+scanned with --include-files; downloads are size-bounded and restricted to
+Slack-owned HTTPS endpoints.
 
-Requires a Slack Bot Token with appropriate scopes (channels:history,
-groups:history, im:history, mpim:history). The token can be provided via the
---token flag or the LEAKWATCH_SLACK_TOKEN environment variable.`,
+Requires a Slack Bot Token with channels:read, channels:history, groups:read,
+and groups:history. --include-dms additionally requires im:read, im:history,
+mpim:read, and mpim:history; file scanning additionally requires files:read.
+The token can be provided via the --token flag or the LEAKWATCH_SLACK_TOKEN
+environment variable.`,
 	Example: `  # Scan all channels using environment variable for token
   export LEAKWATCH_SLACK_TOKEN=xoxb-your-token
   leakwatch scan slack
@@ -50,8 +49,11 @@ groups:history, im:history, mpim:history). The token can be provided via the
   # Include direct messages
   leakwatch scan slack --include-dms
 
-  # Reduce API rate to avoid throttling
-  leakwatch scan slack --rate-limit 10`,
+  # Include text-like file attachments (requires files:read)
+  leakwatch scan slack --include-files --max-file-size 5242880
+
+  # Use a higher rate for a Marketplace/internal app with Tier 3 history access
+  leakwatch scan slack --rate-limit 0.8`,
 	Args: cobra.NoArgs,
 	RunE: runScanSlack,
 }
@@ -65,14 +67,8 @@ func init() {
 	flags.String("exclude-channels", "", "comma-separated channel names to exclude")
 	flags.String("since", "", "scan messages after this date (YYYY-MM-DD)")
 	flags.Bool("include-dms", false, "include direct messages")
-	// Slack file scanning is not yet implemented (only message text is scanned).
-	// The flag is kept for forward-compatibility but defaults to false, is hidden,
-	// and is marked deprecated so the CLI does not advertise a working feature.
-	flags.Bool(flagIncludeFiles, false, "(not yet implemented; planned) scan uploaded file content")
-	if err := flags.MarkDeprecated(flagIncludeFiles, "Slack file scanning is not yet implemented; this flag has no effect"); err != nil {
-		slog.Warn("failed to mark include-files deprecated", "error", err)
-	}
-	flags.Float64("rate-limit", defaultSlackRateLimit, "max Slack API requests per second")
+	flags.Bool(flagIncludeFiles, false, "scan text-like uploaded files (requires files:read)")
+	flags.Float64("rate-limit", defaultSlackRateLimit, "per-operation Slack request cap per second (0 uses safe operation-specific defaults)")
 	addCommonScanFlags(flags)
 	addVerifyFlags(flags)
 }
@@ -92,7 +88,7 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("slack bot token is required: use --token or set LEAKWATCH_SLACK_TOKEN")
 	}
 
-	var opts []slacksource.Option
+	opts := []slacksource.Option{slacksource.WithMaxFileSize(cfg.MaxFileSize)}
 
 	if channels := flagString(cmd, "channels"); channels != "" {
 		opts = append(opts, slacksource.WithChannels(splitComma(channels)))
@@ -118,7 +114,11 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 		opts = append(opts, slacksource.WithIncludeFiles(true))
 	}
 
-	if rateLimit := flagFloat64(cmd, "rate-limit"); rateLimit > 0 {
+	rateLimit := flagFloat64(cmd, "rate-limit")
+	if rateLimit < 0 {
+		return fmt.Errorf("--rate-limit must be zero or greater")
+	}
+	if rateLimit > 0 {
 		opts = append(opts, slacksource.WithRateLimit(rateLimit))
 	}
 

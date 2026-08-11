@@ -97,6 +97,18 @@ func TestOAuthDetector_Scan_MatchAndReject(t *testing.T) {
 	}
 }
 
+func TestOAuthDetector_Scan_RecordsNonSecretSubtypeContext(t *testing.T) {
+	suffix := strings.Repeat("Abc1D678", 5)
+	for _, subtype := range []string{"gho", "ghu", "ghr", "ghs"} {
+		t.Run(subtype, func(t *testing.T) {
+			findings := (&OAuthDetector{}).Scan(context.Background(), []byte(subtype+"_"+suffix))
+			require.Len(t, findings, 1)
+			assert.Equal(t, subtype, findings[0].ExtraData["token_subtype"])
+			assert.NotContains(t, findings[0].ExtraData["token_subtype"], suffix)
+		})
+	}
+}
+
 // fakeStatelessToken builds an obviously-fake GitHub stateless installation
 // token of the ghs_APPID_<jwt> form (header.payload.signature). It is assembled
 // from parts at runtime so the source file never contains a contiguous,

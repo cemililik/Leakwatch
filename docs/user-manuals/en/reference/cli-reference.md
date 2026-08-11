@@ -25,7 +25,7 @@ leakwatch version
 ```
 
 ```text
-leakwatch v1.5.0 (commit: a3f9c12, built: 2026-05-10T08:22:00Z)
+leakwatch v1.8.0 (commit: 1a2b3c4, built: 2026-08-11T12:00:00Z)
 ```
 
 ## `leakwatch init`
@@ -67,6 +67,8 @@ The following flags are available on **all** `scan` subcommands.
 | `--exclude-detectors` | — | — | Detector IDs to exclude for this run (e.g. `aws-access-key-id,generic-api-key`). Repeatable or comma-separated; combined with (not a replacement for) `filter.exclude-detectors` in the config file. |
 | `--no-verify` | — | `false` | Disable live secret verification. No outbound API calls are made. |
 | `--only-verified` | — | `false` | Report only findings that Leakwatch has confirmed are active via live verification. |
+| `--verifier-origin <id=url>` | — | — | Bind a context-required detector to an operator-trusted HTTPS origin. Repeatable; accepted only on the command line. |
+| `--grafana-instance-url <url>` | — | — | Backward-compatible alias that supplies the trusted Grafana origin. |
 | `--min-severity` | — | `low` | Minimum severity to include in output: `low`, `medium`, `high`, or `critical`. An unrecognized value (e.g. a typo) is a hard error rather than being silently accepted. |
 | `--remediation` | — | `false` | Attach remediation guidance (rotation/revocation steps) to each finding. |
 
@@ -252,7 +254,8 @@ No positional arguments.
 | `--exclude-channels <list>` | — | Comma-separated list of channel names or IDs to skip. |
 | `--since <YYYY-MM-DD>` | — | Scan only messages posted after this date. |
 | `--include-dms` | `false` | Include direct messages (requires additional OAuth scopes). |
-| `--rate-limit <float>` | `1` | Maximum Slack API requests per second. |
+| `--include-files` | `false` | Download and scan bounded text-like attachments. Requires `files:read`. |
+| `--rate-limit <float>` | `0` | Optional per-operation request cap per second. Zero preserves Slack-safe operation-specific defaults. |
 
 `scan slack` has no `--exclude` path-pattern flag (unlike every other scan subcommand) — use `--exclude-channels` to skip whole channels instead.
 

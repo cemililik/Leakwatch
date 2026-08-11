@@ -11,7 +11,7 @@ An ADR is a short document that records the context, rationale, and consequences
 Each ADR follows the structure below:
 
 - **Title:** `ADR-NNNN: <Decision Title>`
-- **Status:** Proposed | **Accepted** | Amended | Rejected | Deprecated
+- **Status:** Proposed | **Accepted** | Superseded | Amended | Rejected | Deprecated
 - **Context:** The situation and problem that led to the decision
 - **Decision:** The decision made and its rationale
 - **Alternatives Considered:** Options evaluated and reasons for rejection
@@ -25,8 +25,10 @@ Each ADR follows the structure below:
 | [ADR-0002](ADR-0002-cli-frame.md) | CLI Framework: Cobra + Viper | Accepted | 2026-03-24 |
 | [ADR-0003](ADR-0003-git-library.md) | Git Library: go-git | Accepted | 2026-03-24 |
 | [ADR-0004](ADR-0004-plugin-architecture.md) | Plugin Architecture: Compile-Time | Accepted | 2026-03-24 |
-| [ADR-0005](ADR-0005-pattern-matching.md) | Pattern Matching: Aho-Corasick Hybrid | Accepted | 2026-03-24 |
+| [ADR-0005](ADR-0005-pattern-matching.md) | Pattern Matching: Aho-Corasick Hybrid | Amended by ADR-0010 | 2026-03-24 |
 | [ADR-0006](ADR-0006-container-library.md) | Container Library: go-containerregistry | Accepted | 2026-03-24 |
 | [ADR-0007](ADR-0007-license.md) | License: MIT | Accepted | 2026-03-24 |
 | [ADR-0008](ADR-0008-concurrency-model.md) | Concurrency: Worker Pool | Accepted | 2026-03-24 |
 | [ADR-0009](ADR-0009-github-marketplace-action.md) | GitHub Marketplace Action: Location & Runtime | Accepted | 2026-05-24 |
+| [ADR-0010](ADR-0010-entropy-gating-policy.md) | Entropy Gating Policy | Accepted | 2026-08-11 |
+| [ADR-0011](ADR-0011-product-trust-boundaries.md) | Product Enhancement Trust Boundaries | Accepted | 2026-08-11 |

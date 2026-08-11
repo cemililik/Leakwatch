@@ -24,16 +24,13 @@ const syntheticAWSKey = "AKIAZ7XKJQR4TMPLW2NF"
 func scanFsJSONFindings(t *testing.T, extraArgs ...string) []map[string]any {
 	t.Helper()
 
-	prevCfg := cfgFile
-	cfgFile = filepath.Join(t.TempDir(), "absent.yaml")
-	t.Cleanup(func() { cfgFile = prevCfg })
+	isolateConfig(t)
 
 	outFile := filepath.Join(t.TempDir(), "out.json")
 	args := append([]string{"scan", "fs"}, extraArgs...)
 	args = append(args, "--no-verify", "--format", "json", "--output", outFile)
 
-	rootCmd.SetArgs(args)
-	err := rootCmd.Execute()
+	err := executeRoot(t, args...)
 	// A findings-present run returns FindingsExitError; that is expected here and
 	// is not a failure of the test harness.
 	if err != nil {

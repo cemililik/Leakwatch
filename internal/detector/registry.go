@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -14,26 +15,29 @@ var (
 // Each detector package calls this in its init() function.
 // Panics if a duplicate ID is registered.
 func Register(d Detector) {
+	if d == nil || isNilDetector(d) {
+		panic("cannot register a nil detector")
+	}
+	id := d.ID()
+	if id == "" {
+		panic("cannot register a detector with an empty ID")
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if _, exists := detectors[d.ID()]; exists {
-		panic("duplicate detector ID: " + d.ID())
+	if _, exists := detectors[id]; exists {
+		panic("duplicate detector ID: " + id)
 	}
-	detectors[d.ID()] = d
+	detectors[id] = d
 }
 
-// RegisterIfAbsent registers d only if its ID is not already taken, atomically.
-// It returns true when the detector was registered and false when an entry with
-// the same ID already existed. Unlike Register it never panics, which makes it
-// safe for runtime-supplied detectors such as user-defined custom rules.
-func RegisterIfAbsent(d Detector) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	if _, exists := detectors[d.ID()]; exists {
+func isNilDetector(d Detector) bool {
+	value := reflect.ValueOf(d)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
 		return false
 	}
-	detectors[d.ID()] = d
-	return true
 }
 
 // All returns all registered detectors sorted by ID.
@@ -48,14 +52,6 @@ func All() []Detector {
 		return result[i].ID() < result[j].ID()
 	})
 	return result
-}
-
-// Get returns the detector with the given ID.
-func Get(id string) (Detector, bool) {
-	mu.RLock()
-	defer mu.RUnlock()
-	d, ok := detectors[id]
-	return d, ok
 }
 
 // Reset clears all registered detectors. For testing only.

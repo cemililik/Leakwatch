@@ -33,6 +33,8 @@ type Verifier struct {
 	client stsClient
 }
 
+var _ verifier.RequestGatedVerifier = (*Verifier)(nil)
+
 func init() {
 	verifier.Register(&Verifier{})
 }
@@ -46,6 +48,27 @@ func (v *Verifier) Type() string {
 // Raw contains the Access Key ID and RawV2 contains the Secret Access Key.
 // Both are required for verification.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
+	return v.verify(ctx, raw, nil)
+}
+
+// VerificationRequestBudget declares the single STS probe this verifier can
+// issue for a complete key pair.
+func (v *Verifier) VerificationRequestBudget() int { return 1 }
+
+// VerifyWithRequestGate admits the STS request at its actual SDK send point.
+func (v *Verifier) VerifyWithRequestGate(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
+	return v.verify(ctx, raw, gate)
+}
+
+func (v *Verifier) verify(
+	ctx context.Context,
+	raw detector.RawFinding,
+	gate verifier.RequestGate,
+) finding.VerificationResult {
 	if len(raw.RawV2) == 0 {
 		slog.DebugContext(ctx, "aws verifier: secret access key not found, skipping verification")
 		return finding.VerificationResult{
@@ -64,6 +87,11 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				"",
 			),
 		})
+	}
+	if gate != nil {
+		if rejection := gate(); rejection != nil {
+			return *rejection
+		}
 	}
 
 	output, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})

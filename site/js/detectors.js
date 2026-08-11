@@ -37,7 +37,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)\\s*[=:]\\s*['\"]?([A-Za-z0-9_-]{30,})['\"]?"
+        "src": "(?:[\"']?(?:AUTH0_MANAGEMENT_TOKEN|AUTH0_API_TOKEN|auth0_token)[\"']?)[ \\t]*[=:][ \\t]*[\"']?([A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{8,})"
       }
     ]
   },
@@ -344,17 +344,20 @@ window.LW_DETECTORS = [
       "glpat-",
       "gldt-",
       "glrt-",
+      "glrtr-",
       "glcbt-",
       "glptt-",
+      "glimt-",
+      "glagent-",
+      "glwt-",
+      "glsoat-",
+      "glffct-",
       "gloas-",
       "glft-"
     ],
     "patterns": [
       {
-        "src": "(?:glpat|gldt|glrt|glcbt|glptt|gloas|glft)-[A-Za-z0-9_\\-]{20,}"
-      },
-      {
-        "src": "https?://([a-zA-Z0-9.-]*gitlab[a-zA-Z0-9.-]*(?::\\d+)?)"
+        "src": "(?:glpat|gldt|glrt|glrtr|glcbt|glptt|glimt|glagent|glwt|glsoat|glffct|gloas|glft)-[A-Za-z0-9_\\-]{20,}"
       }
     ]
   },
@@ -690,7 +693,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "shpat_[a-f0-9]{32}"
+        "src": "\\bshpat_[a-f0-9]{32}\\b"
       }
     ]
   },
@@ -793,7 +796,7 @@ window.LW_DETECTORS = [
     ],
     "patterns": [
       {
-        "src": "sbp_[a-f0-9]{40}"
+        "src": "\\bsbp_[a-f0-9]{40}\\b"
       }
     ]
   },
@@ -837,15 +840,27 @@ window.LW_DETECTORS = [
   {
     "id": "twilio-api-key",
     "severity": "critical",
-    "keywords": [],
+    "keywords": [
+      "secret"
+    ],
     "patterns": [
       {
-        "src": "SK[a-f0-9]{32}"
-      },
-      {
-        "src": "AC[a-f0-9]{32}"
+        "src": "(?:^|[^0-9A-Za-z_])(?:(?:[a-z0-9]+[._-]+)*twilio[._-]*|x[._-]*)?api[._-]*(?:key[._-]*)?secret[\"']?\\s*[:=]\\s*(?:\"([^\"\\r\\n]{1,512})\"|'([^'\\r\\n]{1,512})'|([^\"' \\t\\r\\n,;}#]{1,512})(?:[ \\t\\r\\n,;}#]|$))",
+        "flags": "i"
       }
-    ]
+    ],
+    "correlation": {
+      "requiredNearby": [
+        {
+          "src": "(?:^|[^0-9A-Za-z_])(?:(?:[a-z0-9]+[._-]+)*twilio[._-]*|x[._-]*)?api[._-]*(?:key[._-]*)?sid[\"']?\\s*[:=]\\s*[\"']?(SK[0-9a-f]{32})(?:[\"']|[ \\t\\r\\n,;}#]|$)",
+          "flags": "i"
+        }
+      ],
+      "proximityBytes": 512,
+      "sameLogicalBlock": true,
+      "rejectPlaceholders": true,
+      "oneToOne": true
+    }
   },
   {
     "id": "vercel-token",

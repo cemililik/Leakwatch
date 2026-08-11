@@ -2,6 +2,10 @@
 # These are NOT real secrets — they are fixtures that match regex patterns.
 **/*_test.go
 
+# This fixture contains deterministic, synthetic, intentionally matchable
+# credentials. Keep the exemption exact so future testdata remains scanned.
+internal/detector/generic/testdata/appsettings.synthetic.json
+
 # Verifier implementations contain API URL patterns that may match detectors.
 internal/verifier/**
 

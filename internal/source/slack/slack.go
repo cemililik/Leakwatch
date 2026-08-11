@@ -2,13 +2,21 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
+	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/slack-go/slack"
 	"golang.org/x/time/rate"
@@ -18,41 +26,47 @@ import (
 )
 
 const (
-	// defaultRateLimit is a conservative default request rate for the Slack
-	// Web API's conversations.list/conversations.history methods. Slack's
-	// actual enforced tiers for these endpoints are commonly much stricter
-	// than a naive guess, so this default favors reliability over speed;
-	// callers with a higher-tier app/token can raise it via --rate-limit /
-	// WithRateLimit. Combined with the 429 retry handling below, this keeps
-	// scans from silently truncating on the first rate-limit response.
-	defaultRateLimit  = 1.0
-	defaultBufferSize = 100
+	// DefaultRateLimit matches Slack's lowest published conversations.history
+	// contract for newly distributed non-Marketplace apps: one request/minute.
+	// Marketplace and internal customer-built apps can raise it explicitly.
+	DefaultRateLimit     = 1.0 / 60.0
+	defaultListRateLimit = 20.0 / 60.0
+	defaultFileRateLimit = 100.0 / 60.0
+	defaultBufferSize    = 100
+	defaultMaxFileSize   = 10 * 1024 * 1024
+	defaultHistoryLimit  = 15
+	validationTimeout    = 10 * time.Second
+	slackRequestTimeout  = 30 * time.Second
 
 	// maxRateLimitRetries bounds how many consecutive HTTP 429 responses a
 	// single page fetch will absorb before giving up, preventing an
 	// unbounded retry loop against a workspace that never recovers.
 	maxRateLimitRetries = 5
+	maxSlackPages       = 10_000
 
 	// defaultRetryAfter is used when a *slack.RateLimitedError reports a
 	// non-positive RetryAfter duration, as a safe fallback backoff.
-	defaultRetryAfter = time.Second
+	defaultRetryAfter     = time.Second
+	maximumRetryAfterWait = 2 * time.Minute
 )
 
 // SlackSource scans messages in a Slack workspace for leaked secrets.
 type SlackSource struct {
-	token           string
-	channels        []string
-	excludeChannels []string
-	since           time.Time
-	includeDMs      bool
-	// includeFiles is accepted for forward-compatibility but is currently a
-	// no-op: Slack file scanning is not yet implemented (only message text is
-	// scanned). See the planned-feature note in processChannel below.
-	includeFiles bool
-	rateLimit    float64
-	bufferSize   int
-	client       slackClient
-	newClient    func(token string) slackClient
+	token                 string
+	channels              []string
+	excludeChannels       []string
+	since                 time.Time
+	includeDMs            bool
+	includeFiles          bool
+	maxFileSize           int64
+	historyRateLimit      float64
+	listRateLimit         float64
+	fileInfoRateLimit     float64
+	fileDownloadRateLimit float64
+	bufferSize            int
+	client                slackClient
+	newClient             func(token string) slackClient
+	skippedAttachments    int
 
 	// err records the first terminal failure that aborted scanning (channel
 	// listing / auth / pagination). It is written only by the Chunks goroutine,
@@ -65,21 +79,34 @@ type SlackSource struct {
 
 // defaultNewClient creates a real Slack API client.
 func defaultNewClient(token string) slackClient {
-	return slack.New(token)
+	return slack.New(token, slack.OptionHTTPClient(newSlackHTTPClient()))
+}
+
+func newSlackHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: rejectSlackRedirect,
+		Timeout:       slackRequestTimeout,
+	}
+}
+
+func rejectSlackRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // New creates a new SlackSource for the given workspace token.
 // Use functional options to configure channel filtering, rate limits, etc.
 func New(token string, opts ...Option) *SlackSource {
 	s := &SlackSource{
-		token:      token,
-		includeDMs: false,
-		// includeFiles defaults to false: file scanning is not implemented yet,
-		// so advertising it on by default would be misleading.
-		includeFiles: false,
-		rateLimit:    defaultRateLimit,
-		bufferSize:   defaultBufferSize,
-		newClient:    defaultNewClient,
+		token:                 token,
+		includeDMs:            false,
+		includeFiles:          false,
+		maxFileSize:           defaultMaxFileSize,
+		historyRateLimit:      DefaultRateLimit,
+		listRateLimit:         defaultListRateLimit,
+		fileInfoRateLimit:     defaultFileRateLimit,
+		fileDownloadRateLimit: defaultFileRateLimit,
+		bufferSize:            defaultBufferSize,
+		newClient:             defaultNewClient,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -104,10 +131,10 @@ func (s *SlackSource) Err() error {
 // is called only from the single Chunks goroutine, before close(ch), so a plain
 // field write is safe (the channel close/drain publishes it to Err's reader).
 // As defense-in-depth against a client library that echoes the token, any
-// occurrence of the workspace token is stripped from the stored message (and,
-// when present, the error is flattened so the token cannot survive in the unwrap
-// chain either). Context cancellation is never recorded because it is reported
-// through the context, not Err.
+// occurrence of the workspace token is stripped from the stored message. Every
+// provider error is flattened so a wrapper cannot hide credentials in Unwrap.
+// Context cancellation is never recorded because it is reported through the
+// context, not Err.
 func (s *SlackSource) captureErr(err error) {
 	if err == nil || s.err != nil {
 		return
@@ -115,24 +142,44 @@ func (s *SlackSource) captureErr(err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	if s.token != "" && strings.Contains(err.Error(), s.token) {
-		s.err = errors.New(strings.ReplaceAll(err.Error(), s.token, "***"))
-		return
-	}
-	s.err = err
+	s.err = s.safeSlackError(err)
 }
 
-// Validate checks that the Slack token is valid by calling AuthTest.
-func (s *SlackSource) Validate() error {
+func (s *SlackSource) safeSlackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	if s.token != "" {
+		message = strings.ReplaceAll(message, s.token, "***")
+	}
+	return errors.New(message)
+}
+
+// Validate checks that the Slack token is valid by calling AuthTest. The
+// operation is bounded even when the caller supplies no deadline, while an
+// earlier caller deadline or cancellation always wins.
+func (s *SlackSource) Validate(ctx context.Context) error {
 	if s.token == "" {
 		return fmt.Errorf("slack token is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	s.ensureClient()
 
-	_, err := s.client.AuthTestContext(context.Background())
+	validateCtx, cancel := context.WithTimeout(ctx, validationTimeout)
+	defer cancel()
+	_, err := s.client.AuthTestContext(validateCtx)
 	if err != nil {
-		return fmt.Errorf("slack auth test failed: %w", err)
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("slack auth test failed: %w", context.Canceled)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("slack auth test failed: %w", context.DeadlineExceeded)
+		}
+		return fmt.Errorf("slack auth test failed: %w", s.safeSlackError(err))
 	}
 
 	return nil
@@ -141,24 +188,32 @@ func (s *SlackSource) Validate() error {
 // Chunks lists channels in the workspace and sends message contents over a channel.
 // The channel is closed when all messages have been processed or the context is cancelled.
 func (s *SlackSource) Chunks(ctx context.Context) <-chan source.Chunk {
-	ch := make(chan source.Chunk, s.bufferSize)
+	bufferSize := s.bufferSize
+	if s.includeFiles {
+		bufferSize = 0
+	}
+	ch := make(chan source.Chunk, bufferSize)
 	go func() {
 		defer close(ch)
+		s.skippedAttachments = 0
+		defer func() {
+			if s.skippedAttachments > 0 {
+				slog.Warn("Slack scan completed with skipped attachments",
+					slog.Int("skipped_attachments", s.skippedAttachments))
+			}
+		}()
 
 		s.ensureClient()
 
-		// File scanning is advertised via WithIncludeFiles but is not yet
-		// implemented. Warn loudly instead of silently ignoring the request so
-		// the behavior is honest. See the planned-feature note in processChannel.
-		if s.includeFiles {
-			slog.Warn("slack file scanning requested but not yet implemented; scanning message text only")
-		}
+		listLimiter := rate.NewLimiter(rate.Limit(s.listRateLimit), 1)
+		historyLimiter := rate.NewLimiter(rate.Limit(s.historyRateLimit), 1)
+		fileInfoLimiter := rate.NewLimiter(rate.Limit(s.fileInfoRateLimit), 1)
+		fileDownloadLimiter := rate.NewLimiter(rate.Limit(s.fileDownloadRateLimit), 1)
+		seenFiles := make(map[string]struct{})
 
-		limiter := rate.NewLimiter(rate.Limit(s.rateLimit), 1)
-
-		channels, err := s.listChannels(ctx, limiter)
+		channels, err := s.listChannels(ctx, listLimiter)
 		if err != nil {
-			slog.Error("slack channel listing failed", "error", err)
+			slog.Error("slack channel listing failed", "error", s.safeSlackError(err))
 			s.captureErr(fmt.Errorf("slack channel listing failed: %w", err))
 			return
 		}
@@ -172,7 +227,10 @@ func (s *SlackSource) Chunks(ctx context.Context) <-chan source.Chunk {
 			default:
 			}
 
-			s.processChannel(ctx, ch, limiter, channel)
+			s.processChannel(ctx, ch, historyLimiter, fileInfoLimiter, fileDownloadLimiter, channel, seenFiles)
+			if s.err != nil {
+				return
+			}
 		}
 	}()
 	return ch
@@ -192,7 +250,10 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 	cursor := ""
 	retries := 0
 
-	for {
+	for page := 1; ; page++ {
+		if page > maxSlackPages {
+			return allChannels, fmt.Errorf("slack list conversations exceeded %d pages", maxSlackPages)
+		}
 		select {
 		case <-ctx.Done():
 			return allChannels, ctx.Err()
@@ -234,8 +295,12 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 
 		allChannels = append(allChannels, channels...)
 
+		nextCursor = strings.TrimSpace(nextCursor)
 		if nextCursor == "" {
 			break
+		}
+		if nextCursor == cursor {
+			return allChannels, fmt.Errorf("slack list conversations returned a stalled cursor")
 		}
 		cursor = nextCursor
 	}
@@ -259,6 +324,9 @@ func rateLimitRetryAfter(err error) (time.Duration, bool) {
 func waitRetryAfter(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		d = defaultRetryAfter
+	}
+	if d > maximumRetryAfterWait {
+		return fmt.Errorf("slack Retry-After exceeds the bounded wait limit")
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -308,104 +376,370 @@ func (s *SlackSource) filterChannels(channels []slack.Channel) []slack.Channel {
 }
 
 // processChannel reads message history for a single channel and emits chunks.
-func (s *SlackSource) processChannel(ctx context.Context, ch chan<- source.Chunk, limiter *rate.Limiter, channel slack.Channel) {
+func (s *SlackSource) processChannel(
+	ctx context.Context,
+	ch chan<- source.Chunk,
+	historyLimiter *rate.Limiter,
+	fileInfoLimiter *rate.Limiter,
+	fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	seenFiles ...map[string]struct{},
+) {
+	seen := make(map[string]struct{})
+	if len(seenFiles) > 0 && seenFiles[0] != nil {
+		seen = seenFiles[0]
+	}
 	cursor := ""
-	retries := 0
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if err := limiter.Wait(ctx); err != nil {
-			slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", err)
+	for page := 1; ; page++ {
+		if page > maxSlackPages {
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s exceeded %d pages", channel.ID, maxSlackPages))
 			return
 		}
-
-		params := &slack.GetConversationHistoryParameters{
-			ChannelID: channel.ID,
-			Cursor:    cursor,
-			Limit:     200,
-		}
-
-		// Push the since filter down to the API via the "oldest" parameter so
-		// older messages are never transferred. The client-side check below
-		// remains as a correctness backstop for boundary timestamps.
-		if !s.since.IsZero() {
-			params.Oldest = formatSlackTimestamp(s.since)
-		}
-
-		resp, err := s.client.GetConversationHistoryContext(ctx, params)
-		if err != nil {
-			if retryAfter, ok := rateLimitRetryAfter(err); ok {
-				retries++
-				if retries > maxRateLimitRetries {
-					slog.Warn("slack conversation history rate limited, giving up",
-						"channel", channel.ID, "attempts", retries, "error", err)
-					return
-				}
-				slog.Warn("slack conversation history rate limited, retrying",
-					"channel", channel.ID, "retry_after", retryAfter, "attempt", retries)
-				if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
-					slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", waitErr)
-					return
-				}
-				continue
-			}
-			slog.Warn("slack conversation history failed", "channel", channel.ID, "error", err)
+		resp, ok := s.fetchConversationHistoryPage(ctx, historyLimiter, channel, cursor)
+		if !ok || !s.processSlackMessages(ctx, ch, fileInfoLimiter, fileDownloadLimiter, channel, resp.Messages, seen) {
 			return
-		}
-		retries = 0
-
-		for _, msg := range resp.Messages {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Apply since filter by parsing the message timestamp.
-			if !s.since.IsZero() {
-				msgTime := parseSlackTimestamp(msg.Timestamp)
-				if msgTime.Before(s.since) {
-					continue
-				}
-			}
-
-			if msg.Text == "" {
-				continue
-			}
-
-			// Planned (see ROADMAP): Slack file scanning. When s.includeFiles is
-			// honored, msg.Files (and each File.URLPrivate) should be downloaded
-			// and emitted as additional chunks here. Currently only msg.Text is
-			// scanned.
-
-			select {
-			case ch <- source.Chunk{
-				Data: []byte(msg.Text),
-				SourceMetadata: finding.SourceMetadata{
-					SourceType:  "slack",
-					Channel:     channel.ID,
-					ChannelName: channel.Name,
-					MessageUser: msg.User,
-					MessageTS:   msg.Timestamp,
-					ThreadTS:    msg.ThreadTimestamp,
-				},
-			}:
-			case <-ctx.Done():
-				return
-			}
 		}
 
 		if !resp.HasMore {
 			return
 		}
-		cursor = resp.ResponseMetaData.NextCursor
+		nextCursor := strings.TrimSpace(resp.ResponseMetaData.NextCursor)
+		if nextCursor == "" || nextCursor == cursor {
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s returned a stalled cursor", channel.ID))
+			return
+		}
+		cursor = nextCursor
 	}
 }
+
+func (s *SlackSource) fetchConversationHistoryPage(
+	ctx context.Context,
+	limiter *rate.Limiter,
+	channel slack.Channel,
+	cursor string,
+) (*slack.GetConversationHistoryResponse, bool) {
+	params := s.historyParameters(channel.ID, cursor)
+	for retries := 0; ; retries++ {
+		if err := limiter.Wait(ctx); err != nil {
+			slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", s.safeSlackError(err))
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s rate limiter wait: %w", channel.ID, err))
+			return nil, false
+		}
+		response, err := s.client.GetConversationHistoryContext(ctx, params)
+		if err == nil {
+			return response, true
+		}
+		if !s.retryConversationHistory(ctx, channel.ID, retries+1, err) {
+			return nil, false
+		}
+	}
+}
+
+func (s *SlackSource) historyParameters(channelID, cursor string) *slack.GetConversationHistoryParameters {
+	params := &slack.GetConversationHistoryParameters{ChannelID: channelID, Cursor: cursor, Limit: defaultHistoryLimit}
+	if !s.since.IsZero() {
+		params.Oldest = formatSlackTimestamp(s.since)
+	}
+	return params
+}
+
+func (s *SlackSource) retryConversationHistory(ctx context.Context, channelID string, attempt int, err error) bool {
+	retryAfter, rateLimited := rateLimitRetryAfter(err)
+	if !rateLimited {
+		slog.Warn("slack conversation history failed", "channel", channelID, "error", s.safeSlackError(err))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s: %w", channelID, err))
+		return false
+	}
+	if attempt > maxRateLimitRetries {
+		slog.Warn("slack conversation history rate limited, giving up",
+			"channel", channelID, "attempts", attempt, "error", s.safeSlackError(err))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s: rate limited after %d retries: %w", channelID, maxRateLimitRetries, err))
+		return false
+	}
+	slog.Warn("slack conversation history rate limited, retrying",
+		"channel", channelID, "retry_after", retryAfter, "attempt", attempt)
+	if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
+		slog.Warn("slack rate limiter wait failed", "channel", channelID, "error", s.safeSlackError(waitErr))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s retry wait: %w", channelID, waitErr))
+		return false
+	}
+	return true
+}
+
+func (s *SlackSource) processSlackMessages(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	messages []slack.Message,
+	seen map[string]struct{},
+) bool {
+	for _, message := range messages {
+		if ctx.Err() != nil {
+			return false
+		}
+		if !s.since.IsZero() && parseSlackTimestamp(message.Timestamp).Before(s.since) {
+			continue
+		}
+		if !s.processSlackMessage(ctx, output, fileInfoLimiter, fileDownloadLimiter, channel, message, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *SlackSource) processSlackMessage(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	message slack.Message,
+	seen map[string]struct{},
+) bool {
+	metadata := finding.SourceMetadata{
+		SourceType: "slack", Channel: channel.ID, ChannelName: channel.Name,
+		MessageUser: message.User, MessageTS: message.Timestamp, ThreadTS: message.ThreadTimestamp,
+	}
+	if message.Text != "" && !sendSlackChunk(ctx, output, source.Chunk{Data: []byte(message.Text), SourceMetadata: metadata}) {
+		return false
+	}
+	if !s.includeFiles {
+		return true
+	}
+	return s.processSlackFiles(ctx, output, fileInfoLimiter, fileDownloadLimiter, channel, message, metadata, seen)
+}
+
+func (s *SlackSource) processSlackFiles(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	message slack.Message,
+	metadata finding.SourceMetadata,
+	seen map[string]struct{},
+) bool {
+	for _, attached := range message.Files {
+		if attached.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[attached.ID]; duplicate {
+			continue
+		}
+		seen[attached.ID] = struct{}{}
+		chunk, ok, err := s.fileChunk(ctx, fileInfoLimiter, fileDownloadLimiter, channel, message, attached, metadata)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
+			s.skippedAttachments++
+			slog.Warn("skipping unreadable Slack attachment",
+				"channel", channel.ID,
+				"message_ts", message.Timestamp,
+				"file_id", attached.ID,
+				"error", s.safeSlackError(err))
+			continue
+		}
+		if ok && !sendSlackChunk(ctx, output, chunk) {
+			return false
+		}
+	}
+	return true
+}
+
+func sendSlackChunk(ctx context.Context, output chan<- source.Chunk, chunk source.Chunk) bool {
+	select {
+	case output <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *SlackSource) fileChunk(
+	ctx context.Context,
+	fileInfoLimiter *rate.Limiter,
+	fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	message slack.Message,
+	attached slack.File,
+	metadata finding.SourceMetadata,
+) (source.Chunk, bool, error) {
+	info, err := s.fileInfo(ctx, fileInfoLimiter, attached)
+	if err != nil {
+		return source.Chunk{}, false, fmt.Errorf("slack file %s metadata: %w", attached.ID, err)
+	}
+	if info.Size > 0 && int64(info.Size) > s.maxFileSize {
+		slog.Debug("skipping oversized Slack attachment", "file_id", info.ID, "size", info.Size, "limit", s.maxFileSize)
+		return source.Chunk{}, false, nil
+	}
+	if !isTextLikeSlackFile(*info) {
+		return source.Chunk{}, false, nil
+	}
+	downloadURL := info.URLPrivateDownload
+	if downloadURL == "" {
+		downloadURL = info.URLPrivate
+	}
+	if err := validateSlackDownloadURL(downloadURL); err != nil {
+		return source.Chunk{}, false, fmt.Errorf("slack file %s download URL rejected: %w", info.ID, err)
+	}
+
+	contents, err := s.downloadFile(ctx, fileDownloadLimiter, downloadURL)
+	if err != nil {
+		if errors.Is(err, errSlackFileTooLarge) {
+			return source.Chunk{}, false, nil
+		}
+		return source.Chunk{}, false, fmt.Errorf("slack file %s download: %w", info.ID, err)
+	}
+	if len(contents) == 0 || !isProbablyText(contents) {
+		return source.Chunk{}, false, nil
+	}
+
+	fileName := safeSlackPathSegment(info.Name, "attachment")
+	channelName := safeSlackPathSegment(strings.TrimPrefix(channel.Name, "#"), "channel")
+	metadata.FilePath = path.Join("slack", channelName, fileName)
+	metadata.MessageUser = message.User
+	return source.Chunk{Data: contents, SourceMetadata: metadata}, true, nil
+}
+
+func safeSlackPathSegment(value, fallback string) string {
+	segment := path.Base(strings.ReplaceAll(value, "\\", "/"))
+	if segment == "." || segment == ".." || segment == "/" || segment == "" {
+		return fallback
+	}
+	var cleaned strings.Builder
+	for _, char := range segment {
+		if char < 0x20 || char == 0x7f {
+			cleaned.WriteByte('_')
+			continue
+		}
+		cleaned.WriteRune(char)
+		if cleaned.Len() >= 255 {
+			break
+		}
+	}
+	if cleaned.Len() == 0 {
+		return fallback
+	}
+	return cleaned.String()
+}
+
+func (s *SlackSource) downloadFile(ctx context.Context, limiter *rate.Limiter, downloadURL string) ([]byte, error) {
+	for attempt := 0; attempt <= maxRateLimitRetries; attempt++ {
+		if err := limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("slack file download limiter wait: %w", err)
+		}
+		buffer := &boundedFileBuffer{remaining: s.maxFileSize}
+		err := s.client.GetFileContext(ctx, downloadURL, buffer)
+		if err == nil {
+			return buffer.Bytes(), nil
+		}
+		if errors.Is(err, errSlackFileTooLarge) {
+			return nil, err
+		}
+		retryAfter, limited := rateLimitRetryAfter(err)
+		if !limited || attempt == maxRateLimitRetries {
+			return nil, err
+		}
+		if err := waitRetryAfter(ctx, retryAfter); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("slack file download retry budget exhausted")
+}
+
+func (s *SlackSource) fileInfo(ctx context.Context, limiter *rate.Limiter, attached slack.File) (*slack.File, error) {
+	for attempt := 0; attempt <= maxRateLimitRetries; attempt++ {
+		if err := limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("slack file metadata limiter wait: %w", err)
+		}
+		info, _, _, err := s.client.GetFileInfoContext(ctx, attached.ID, 0, 0)
+		if err == nil {
+			if info == nil {
+				return nil, fmt.Errorf("slack returned empty file metadata")
+			}
+			return info, nil
+		}
+		retryAfter, limited := rateLimitRetryAfter(err)
+		if !limited || attempt == maxRateLimitRetries {
+			return nil, err
+		}
+		if err := waitRetryAfter(ctx, retryAfter); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("slack file metadata retry budget exhausted")
+}
+
+func isTextLikeSlackFile(file slack.File) bool {
+	rawType := strings.TrimSpace(file.Mimetype)
+	if rawType == "" {
+		return true
+	}
+	mimeType, _, err := mime.ParseMediaType(rawType)
+	if err != nil {
+		return false
+	}
+	mimeType = strings.ToLower(mimeType)
+	if strings.HasPrefix(mimeType, "text/") {
+		return true
+	}
+	switch mimeType {
+	case "application/json", "application/ld+json", "application/xml", "application/x-yaml",
+		"application/yaml", "application/toml", "application/javascript", "application/x-sh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isProbablyText(data []byte) bool {
+	if len(data) == 0 || !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return false
+	}
+	total, nonText := 0, 0
+	for _, char := range string(data) {
+		total++
+		if unicode.IsPrint(char) || char == '\n' || char == '\r' || char == '\t' {
+			continue
+		}
+		nonText++
+	}
+	return total > 0 && nonText*100 <= total*5
+}
+
+func validateSlackDownloadURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("expected an absolute credential-free HTTPS URL")
+	}
+	if !strings.EqualFold(parsed.Hostname(), "files.slack.com") || (parsed.Port() != "" && parsed.Port() != "443") {
+		return fmt.Errorf("host is not Slack's file-download endpoint")
+	}
+	return nil
+}
+
+var errSlackFileTooLarge = errors.New("slack attachment exceeds configured maximum")
+
+type boundedFileBuffer struct {
+	bytes.Buffer
+	remaining int64
+}
+
+func (w *boundedFileBuffer) Write(input []byte) (int, error) {
+	if int64(len(input)) > w.remaining {
+		written := 0
+		if w.remaining > 0 {
+			written, _ = w.Buffer.Write(input[:int(w.remaining)])
+			w.remaining = 0
+		}
+		return written, errSlackFileTooLarge
+	}
+	w.remaining -= int64(len(input))
+	return w.Buffer.Write(input)
+}
+
+var _ io.Writer = (*boundedFileBuffer)(nil)
 
 // formatSlackTimestamp converts a time.Time to the Slack "oldest" parameter
 // format (Unix seconds with a fractional component, e.g. "1234567890.000000").

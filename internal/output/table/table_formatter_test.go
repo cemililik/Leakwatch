@@ -3,11 +3,14 @@ package table
 import (
 	"bytes"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/HodeTech/leakwatch/pkg/finding"
+	"github.com/mattn/go-runewidth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,6 +141,35 @@ func TestFormatter_Format_ShowRawTrue_AddsRawColumn(t *testing.T) {
 		"ShowRaw=true must include the raw secret value in table output")
 }
 
+func TestFormatter_Format_ShowRawTrue_UsesReversibleTerminalSafeEncoding(t *testing.T) {
+	raw := "abc\ndef\tghi\x1b\x00\\suffix\u0301\u202e" + string([]byte{0xff})
+	encoded := quoteRawForTable(raw)
+
+	recovered, err := strconv.Unquote(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, []byte(raw), []byte(recovered), "quoted RAW value must round-trip byte-for-byte")
+	assert.True(t, utf8.ValidString(encoded), "table display must remain valid UTF-8")
+	for _, unsafe := range []string{"\n", "\t", "\x1b", "\x00", "\u202e"} {
+		assert.NotContains(t, encoded, unsafe, "encoded RAW must not contain literal terminal controls")
+	}
+
+	f := &Formatter{ShowRaw: true}
+	var buf bytes.Buffer
+	require.NoError(t, f.Format(&buf, []finding.Finding{{
+		DetectorID: "generic-secret",
+		Raw:        raw,
+	}}))
+	assert.Contains(t, buf.String(), encoded)
+}
+
+func TestTableCell_DisplayWidthUsesExplicitUncoloredText(t *testing.T) {
+	cell := tableCell{text: "\x1b[31mCRITICAL\x1b[0m", widthText: "CRITICAL"}
+	assert.Equal(t, 8, cell.displayWidth(), "ANSI decoration must not contribute to table alignment")
+
+	unicodeCell := tableCell{text: "ignored", widthText: "秘密"}
+	assert.Equal(t, 4, unicodeCell.displayWidth(), "widthText must retain terminal-cell semantics")
+}
+
 func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 	f := &Formatter{ShowRaw: false}
 	var buf bytes.Buffer
@@ -156,7 +188,7 @@ func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 		"Format must not mutate the original slice")
 }
 
-func TestFormatter_Format_ColumnsAligned_TabwriterProducesAlignedOutput(t *testing.T) {
+func TestFormatter_Format_ColumnsAligned_ProducesAlignedOutput(t *testing.T) {
 	f := &Formatter{}
 	var buf bytes.Buffer
 
@@ -171,6 +203,48 @@ func TestFormatter_Format_ColumnsAligned_TabwriterProducesAlignedOutput(t *testi
 	lines := strings.Split(buf.String(), "\n")
 	// Header and separator should exist.
 	require.GreaterOrEqual(t, len(lines), 4)
+}
+
+func TestFormatter_Format_UnicodeDisplayWidthAlignsColumns(t *testing.T) {
+	f := &Formatter{}
+	var buf bytes.Buffer
+	findings := []finding.Finding{
+		{
+			DetectorID: "detector-a",
+			Severity:   finding.SeverityLow,
+			Redacted:   "first-redacted",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "設定/秘密.yaml",
+			},
+		},
+		{
+			DetectorID: "detector-b",
+			Severity:   finding.SeverityHigh,
+			Redacted:   "second-redacted",
+			SourceMetadata: finding.SourceMetadata{
+				FilePath: "cafe\u0301/emoji-🔐.yaml",
+			},
+		},
+	}
+
+	require.NoError(t, f.Format(&buf, findings))
+	lines := strings.Split(buf.String(), "\n")
+	require.GreaterOrEqual(t, len(lines), 4)
+
+	wantColumn := -1
+	for _, item := range []struct {
+		line   int
+		needle string
+	}{{0, "REDACTED"}, {2, "first-redacted"}, {3, "second-redacted"}} {
+		line := lines[item.line]
+		byteIndex := strings.Index(line, item.needle)
+		require.NotEqual(t, -1, byteIndex)
+		column := runewidth.StringWidth(line[:byteIndex])
+		if wantColumn < 0 {
+			wantColumn = column
+		}
+		assert.Equal(t, wantColumn, column, "display column drifted for %q", item.needle)
+	}
 }
 
 func TestFormatter_Format_WithRemediation_ShowsRemediationTitle(t *testing.T) {

@@ -27,8 +27,8 @@ type mockSource struct {
 	err error
 }
 
-func (m *mockSource) Type() string    { return "mock" }
-func (m *mockSource) Validate() error { return nil }
+func (m *mockSource) Type() string                   { return "mock" }
+func (m *mockSource) Validate(context.Context) error { return nil }
 func (m *mockSource) Chunks(_ context.Context) <-chan source.Chunk {
 	ch := make(chan source.Chunk, len(m.chunks))
 	for _, c := range m.chunks {
@@ -58,6 +58,43 @@ func (m *mockDetector) Keywords() []string                                     {
 func (m *mockDetector) Severity() finding.Severity                             { return m.severity }
 func (m *mockDetector) Scan(_ context.Context, _ []byte) []detector.RawFinding { return m.findings }
 func (m *mockDetector) EntropyBased() bool                                     { return m.entropyBased }
+
+type mixedEntropyDetector struct {
+	*mockDetector
+	gateFinding bool
+}
+
+type fallbackMockDetector struct {
+	*mockDetector
+}
+
+func (d *fallbackMockDetector) FallbackOnSpecializedOverlap() bool { return true }
+
+type authorityMockDetector struct {
+	*mockDetector
+}
+
+func (d *authorityMockDetector) AuthoritativeOnOverlap() bool { return true }
+
+func (m *mixedEntropyDetector) EntropyGated(_ detector.RawFinding) bool {
+	return m.gateFinding
+}
+
+// policyOnlyDetector intentionally has EntropyGated but not EntropyBased. It
+// proves that a coincidentally named method cannot opt a structural detector
+// into the entropy floor.
+type policyOnlyDetector struct {
+	findings []detector.RawFinding
+}
+
+func (d *policyOnlyDetector) ID() string                            { return "policy-only" }
+func (d *policyOnlyDetector) Description() string                   { return "policy only" }
+func (d *policyOnlyDetector) Keywords() []string                    { return nil }
+func (d *policyOnlyDetector) Severity() finding.Severity            { return finding.SeverityMedium }
+func (d *policyOnlyDetector) EntropyGated(detector.RawFinding) bool { return true }
+func (d *policyOnlyDetector) Scan(_ context.Context, _ []byte) []detector.RawFinding {
+	return d.findings
+}
 
 var fixedClock = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
 
@@ -93,6 +130,157 @@ func TestScan_SingleChunkSingleDetector_ReturnsOneFinding(t *testing.T) {
 	assert.Empty(t, result.Findings[0].Raw)
 	assert.Equal(t, 1, result.ScannedChunks)
 	assert.False(t, result.Interrupted)
+}
+
+func TestScan_SpecializedOverlapSuppressesOnlyFallbackFinding(t *testing.T) {
+	data := []byte(`{"AccessToken":"shpat_0123456789abcdef0123456789abcdef"}`)
+	wholeStart := bytes.Index(data, []byte("shpat_"))
+	wholeEnd := wholeStart + len("shpat_0123456789abcdef0123456789abcdef")
+
+	fallback := &fallbackMockDetector{mockDetector: &mockDetector{
+		id:       "structured-fallback",
+		severity: finding.SeverityHigh,
+		findings: []detector.RawFinding{{
+			DetectorID: "structured-fallback",
+			Raw:        data[wholeStart:wholeEnd],
+			Redacted:   "fallback-redacted",
+			ByteStart:  wholeStart,
+			ByteEnd:    wholeEnd,
+		}},
+	}}
+	specialized := &authorityMockDetector{mockDetector: &mockDetector{
+		id:       "provider-specialized",
+		severity: finding.SeverityCritical,
+		findings: []detector.RawFinding{{
+			DetectorID: "provider-specialized",
+			Raw:        data[wholeStart:wholeEnd],
+			Redacted:   "provider-redacted",
+		}},
+	}}
+
+	eng := New(Config{Concurrency: 1, Detectors: []detector.Detector{fallback, specialized}, Clock: fixedClock})
+	result, err := eng.Scan(context.Background(), &mockSource{chunks: []source.Chunk{{
+		Data: data, SourceMetadata: finding.SourceMetadata{FilePath: "appsettings.json"},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "provider-specialized", result.Findings[0].DetectorID)
+	assert.Equal(t, finding.SeverityCritical, result.Findings[0].Severity)
+}
+
+func TestScan_NonAuthorityOverlapCannotEraseFindingThroughSeverityFilter(t *testing.T) {
+	data := []byte(`{"Password":"fixture-secret-value"}`)
+	start := bytes.Index(data, []byte("fixture-secret-value"))
+	end := start + len("fixture-secret-value")
+	fallback := &fallbackMockDetector{mockDetector: &mockDetector{
+		id:       "structured-fallback",
+		severity: finding.SeverityHigh,
+		findings: []detector.RawFinding{{
+			DetectorID: "structured-fallback", Raw: data[start:end], Redacted: "fallback", ByteStart: start, ByteEnd: end,
+		}},
+	}}
+	customLike := &mockDetector{
+		id:       "custom-low",
+		severity: finding.SeverityLow,
+		findings: []detector.RawFinding{{
+			DetectorID: "custom-low", Raw: data[start:end], Redacted: "custom", ByteStart: start, ByteEnd: end,
+		}},
+	}
+
+	eng := New(Config{
+		Concurrency: 1,
+		Detectors:   []detector.Detector{fallback, customLike},
+		MinSeverity: finding.SeverityHigh,
+		Clock:       fixedClock,
+	})
+	result, err := eng.Scan(context.Background(), &mockSource{chunks: []source.Chunk{{Data: data}}})
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, "structured-fallback", result.Findings[0].DetectorID)
+}
+
+func TestSuppressFallbacksForSpecialized_PreservesDistinctLocations(t *testing.T) {
+	makePair := func(id string, start, end int, severity finding.Severity) locatedVerifyPair {
+		return locatedVerifyPair{
+			pair:  verifier.VerifyPair{Finding: finding.Finding{DetectorID: id, Severity: severity}},
+			start: start,
+			end:   end,
+		}
+	}
+	tests := []struct {
+		name        string
+		fallbacks   []locatedVerifyPair
+		specialized locatedVerifyPair
+		want        []string
+	}{
+		{
+			name: "same value at distinct location remains",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20, finding.SeverityHigh),
+			},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 30, 40, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
+		},
+		{
+			name: "specialized subset suppresses containing fallback",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 40, finding.SeverityHigh),
+			},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 20, 30, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{},
+		},
+		{
+			name: "unknown fallback location is not suppressed",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", -1, -1, finding.SeverityHigh),
+			},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 10, 20, finding.SeverityCritical)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
+		},
+		{
+			name: "overlapping non-authority cannot suppress",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20, finding.SeverityHigh),
+			},
+			specialized: makePair("custom", 10, 20, finding.SeverityLow),
+			want:        []string{"fallback"},
+		},
+		{
+			name: "lower-severity authority cannot suppress",
+			fallbacks: []locatedVerifyPair{
+				makePair("fallback", 10, 20, finding.SeverityHigh),
+			},
+			specialized: func() locatedVerifyPair {
+				pair := makePair("specialized", 10, 20, finding.SeverityLow)
+				pair.isAuthority = true
+				return pair
+			}(),
+			want: []string{"fallback"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := suppressFallbacksForSpecialized(tc.fallbacks, tc.specialized)
+			ids := make([]string, 0, len(got))
+			for _, pair := range got {
+				ids = append(ids, pair.pair.Finding.DetectorID)
+			}
+			assert.Equal(t, tc.want, ids)
+		})
+	}
 }
 
 func TestScan_EmptySource_ReturnsNoFindings(t *testing.T) {
@@ -334,6 +522,27 @@ func TestScan_RepeatedSecret_DistinctLinesAndIDs(t *testing.T) {
 	lines := []int{result.Findings[0].SourceMetadata.Line, result.Findings[1].SourceMetadata.Line}
 	assert.ElementsMatch(t, []int{1, 3}, lines, "the two occurrences must report distinct lines")
 	assert.NotEqual(t, result.Findings[0].ID, result.Findings[1].ID, "distinct lines must yield distinct IDs")
+}
+
+func TestRawFindingOffset_ExactSpanWinsAndInvalidSpanFallsBack(t *testing.T) {
+	rawBytes := []byte("SAME_SECRET")
+	data := []byte("SAME_SECRET decoy\nSAME_SECRET actual\n")
+	second := bytes.LastIndex(data, rawBytes)
+
+	exact := detector.RawFinding{
+		Raw:       rawBytes,
+		ByteStart: second,
+		ByteEnd:   second + len(rawBytes),
+	}
+	assert.Equal(t, second, rawFindingOffset(data, exact, nil))
+
+	invalid := exact
+	invalid.ByteEnd-- // span bytes no longer equal Raw
+	assert.Equal(t, 0, rawFindingOffset(data, invalid, nil), "invalid detector spans must use the legacy safe fallback")
+
+	outOfBounds := exact
+	outOfBounds.ByteEnd = len(data) + 1
+	assert.Equal(t, 0, rawFindingOffset(data, outOfBounds, nil))
 }
 
 func TestScan_RepeatedSecret_FirstIgnored_SecondReported(t *testing.T) {
@@ -774,6 +983,84 @@ func TestScan_EntropyGating_StructuralDetectorNeverGated(t *testing.T) {
 	result, err := eng.Scan(context.Background(), src)
 	require.NoError(t, err)
 	assert.Len(t, result.Findings, 1, "structural detectors must never be entropy-gated")
+}
+
+func TestScan_EntropyGating_PerFindingPolicy(t *testing.T) {
+	low := "01234567012345670123456701234567"
+	src := &mockSource{
+		chunks: []source.Chunk{
+			{Data: []byte(low), SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"}},
+		},
+	}
+	base := &mockDetector{
+		id:           "mixed",
+		findings:     []detector.RawFinding{{DetectorID: "mixed", Raw: []byte(low), Redacted: "r***"}},
+		entropyBased: true,
+	}
+
+	for _, tc := range []struct {
+		name        string
+		gateFinding bool
+		wantCount   int
+	}{
+		{name: "strong contextual finding bypasses gate", gateFinding: false, wantCount: 1},
+		{name: "heuristic finding retains gate", gateFinding: true, wantCount: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &mixedEntropyDetector{mockDetector: base, gateFinding: tc.gateFinding}
+			eng := New(Config{
+				Concurrency:      1,
+				Detectors:        []detector.Detector{det},
+				EnableEntropy:    true,
+				EntropyThreshold: 4.0,
+				Clock:            fixedClock,
+			})
+			result, err := eng.Scan(context.Background(), src)
+			require.NoError(t, err)
+			assert.Len(t, result.Findings, tc.wantCount)
+		})
+	}
+}
+
+func TestScan_EntropyGating_PerFindingPolicyCannotOptInStructuralDetector(t *testing.T) {
+	low := "01234567012345670123456701234567"
+	src := &mockSource{chunks: []source.Chunk{{
+		Data:           []byte(low),
+		SourceMetadata: finding.SourceMetadata{FilePath: "f.txt"},
+	}}}
+	raw := detector.RawFinding{DetectorID: "structural", Raw: []byte(low), Redacted: "r***"}
+
+	tests := []struct {
+		name string
+		det  detector.Detector
+	}{
+		{
+			name: "EntropyBased false",
+			det: &mixedEntropyDetector{
+				mockDetector: &mockDetector{id: "mixed-structural", findings: []detector.RawFinding{raw}},
+				gateFinding:  true,
+			},
+		},
+		{
+			name: "EntropyBased absent",
+			det:  &policyOnlyDetector{findings: []detector.RawFinding{raw}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := New(Config{
+				Concurrency:      1,
+				Detectors:        []detector.Detector{tc.det},
+				EnableEntropy:    true,
+				EntropyThreshold: 4.0,
+				Clock:            fixedClock,
+			})
+			result, err := eng.Scan(context.Background(), src)
+			require.NoError(t, err)
+			assert.Len(t, result.Findings, 1, "per-finding refinement must never opt a structural detector into gating")
+		})
+	}
 }
 
 func TestScan_EntropyDisabled_NoGating(t *testing.T) {

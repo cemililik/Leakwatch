@@ -33,10 +33,10 @@ Every scan starts with a **Source** — an abstraction that emits chunks of data
 | Container image | `scan image` | Layer contents of an OCI/Docker image, daemonless |
 | AWS S3 | `scan s3` | Object contents from an S3 bucket |
 | Google Cloud Storage | `scan gcs` | Object contents from a GCS bucket |
-| Slack | `scan slack` | Message text from channels and DMs |
+| Slack | `scan slack` | Message text from channels/DMs and opt-in text-like attachments |
 
 :::note
-Slack scanning covers **message text only**. The contents of files uploaded to Slack are not scanned.
+Slack downloads no files by default. `--include-files` enables bounded scanning of text-like attachments and requires Slack's `files:read` scope.
 :::
 
 Chunks flow into a buffered channel consumed by the worker pool.
@@ -49,7 +49,7 @@ Scans respond to `SIGINT` / `SIGTERM`: when a cancellation signal arrives, the c
 
 ## 3. Aho-Corasick keyword pre-filter
 
-Running 64 regex patterns on every chunk would be slow. Instead, the engine builds a single **Aho-Corasick multi-pattern automaton** at startup from the keyword lists declared by each detector. For each chunk, this automaton does a single linear pass and returns only the detectors whose keywords appeared in the chunk's bytes.
+Running 65 detector patterns on every chunk would be slow. Instead, the engine builds a single **Aho-Corasick multi-pattern automaton** at startup from the keyword lists declared by each detector. For each chunk, this automaton does a single linear pass and returns only the detectors whose keywords appeared in the chunk's bytes.
 
 This means most detectors never run their regex on most chunks. Detectors that declare no keywords always run (they skip the pre-filter and proceed directly to regex).
 
@@ -63,7 +63,7 @@ Each shortlisted detector runs its compiled **regular expression** against the c
 - A **redacted** representation safe for output.
 - Optional extra metadata (e.g. account ID for an AWS key).
 
-Leakwatch ships **64 built-in detectors** across 60 packages, covering cloud providers, AI APIs, payment platforms, databases, messaging tools, version control, and more. You can add your own patterns via [custom YAML rules](#/detectors/custom-rules).
+Leakwatch ships **65 built-in detectors** across 61 packages, covering cloud providers, AI APIs, payment platforms, databases, messaging tools, version control, structured configuration, and more. You can add your own patterns via [custom YAML rules](#/detectors/custom-rules).
 
 All detectors are registered at compile time using Go's `init()` function and blank imports (ADR-0004). There is no plugin loader or dynamic discovery at runtime.
 
@@ -87,12 +87,12 @@ If the marker is present, the finding is silently dropped **before any network c
 
 After detection completes for all chunks, the engine passes findings to a separate **verification worker pool** (default 4 workers). Verification:
 
-- Is guarded by a global **rate limiter** (default 10 requests per second) shared across all workers.
-- Applies a **per-request timeout** (default 10 seconds) to every API call.
+- Admits each actual API call through both a shared global and a per-detector **rate limiter** (the configured default is 10 requests per second for each ceiling). Format-only or missing-context paths consume no token; the shared global bucket bounds total traffic but does not guarantee fair provider scheduling.
+- Applies a **per-finding verification-operation timeout** (default 10 seconds), including bounded regional fallback and request admission.
 - Makes only **read-only, non-destructive** calls to the provider (e.g. `sts:GetCallerIdentity` for AWS keys).
 - Marks each finding with one of four statuses: `verified_active`, `verified_inactive`, `unverified`, or `verify_error`.
 
-Leakwatch ships **54 verifiers**, covering 84.4% of the 64 built-in detector types. The remaining 10 types (such as JWTs and generic API keys) cannot be safely verified and are always reported as `unverified`.
+Leakwatch registers **54 verifier implementations** for 65 detector types (83.1%), but registry presence is not live coverage: 39 are direct-live, 9 require trusted issuer/region/companion context, and 6 are format-only. The remaining 11 types have no verifier. Context-required, format-only, and no-verifier findings remain `unverified` unless their stated live-verification preconditions are met.
 
 Pass `--no-verify` to skip this stage entirely — useful for fast, offline scans.
 
@@ -103,13 +103,13 @@ For a deep dive into verification behavior and status meanings, see [How Verific
 Each finding receives a **deterministic ID** computed as:
 
 ```
-sha256(detectorID + redacted + filePath + line)  →  truncated to the first 16 bytes,
-                                                      hex-encoded to a 32-character string
+sha256(detectorID + redacted + filePath + decimal(line) + ":" + decimal(byteOffset))
+  → truncated to the first 16 bytes and hex-encoded to a 32-character string
 ```
 
 The result is a flat 32-character lowercase hex string (e.g. `447b5d2846d08ce25dd3d638cfe911ad`) — **not** a dashed UUID. The same secret at the same location always produces the same ID, making it safe to deduplicate findings across runs or track them in issue trackers.
 
-**Shannon entropy** (range 0–8) is computed for each finding and exposed in output for informational purposes. At the engine level, the `detection.entropy.threshold` gate applies **only** to heuristic detectors that explicitly opt in — currently just `generic-api-key` — dropping a match whose entropy falls below the threshold to suppress low-randomness placeholders. Every structural (format-anchored) detector, such as `aws-access-key-id` or `github-token`, is never gated by entropy: a low-entropy match from those detectors still appears in results. Custom rules apply their own independent per-rule `entropy` threshold (see [Custom Rules](#/detectors/custom-rules)), separate from this engine-level gate.
+When `detection.entropy.enabled` is true, **Shannon entropy** (range 0–8) is computed for each non-empty finding and exposed in output for informational purposes; when disabled, the field is absent rather than a synthetic zero. At the engine level, `detection.entropy.threshold` applies **only** to heuristic detectors that explicitly opt in — currently just `generic-api-key` — dropping a match whose entropy falls below the threshold to suppress low-randomness placeholders. Every structural (format-anchored) detector, such as `aws-access-key-id` or `github-token`, is never gated by entropy: a low-entropy match from those detectors still appears in results. Custom rules apply their own independent per-rule `entropy` threshold (see [Custom Rules](#/detectors/custom-rules)), separate from this engine-level gate.
 
 ## 8. Post-scan filters
 

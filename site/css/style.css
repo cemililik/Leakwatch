@@ -199,7 +199,7 @@ h1,h2,h3,h4{font-family:var(--display);font-weight:700;letter-spacing:-.015em;co
 .vrow{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--line)}
 .vrow:last-child{border-bottom:0}
 .vrow .vk{font-family:var(--mono);font-size:12px;font-weight:700;min-width:130px}
-.vrow .vk.live{color:var(--cleared)}.vrow .vk.fmt{color:var(--info)}.vrow .vk.no{color:var(--faint)}
+.vrow .vk.live{color:var(--cleared)}.vrow .vk.ctx{color:var(--warn)}.vrow .vk.fmt{color:var(--info)}.vrow .vk.no{color:var(--faint)}
 .vrow .vd{color:var(--muted);font-size:13.5px}
 .vcount{font-family:var(--display);font-weight:700;color:var(--paper);margin-left:auto}
 

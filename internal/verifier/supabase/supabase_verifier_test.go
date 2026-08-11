@@ -38,7 +38,7 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 	result := v.Verify(context.Background(), raw)
 
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "Supabase service key is active", result.Message)
+	assert.Equal(t, "Supabase personal access token is active", result.Message)
 }
 
 func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
@@ -62,7 +62,21 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	result := v.Verify(context.Background(), raw)
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
-	assert.Equal(t, "Supabase service key is invalid or revoked", result.Message)
+	assert.Equal(t, "Supabase personal access token is invalid or revoked", result.Message)
+}
+
+func TestVerify_Forbidden_RemainsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer server.Close()
+
+	v := &Verifier{apiURL: server.URL, httpClient: server.Client()}
+	result := v.Verify(context.Background(), detector.RawFinding{Raw: []byte("synthetic-sbp-token")})
+
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.NotEqual(t, finding.StatusVerifiedInactive, result.Status)
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

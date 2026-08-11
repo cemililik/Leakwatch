@@ -4,8 +4,12 @@ package snyk
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -15,20 +19,34 @@ import (
 
 const detectorID = "snyk-api-key"
 
-// defaultAPIURL is the base URL for the Snyk API.
-const defaultAPIURL = "https://api.snyk.io"
-
 // apiVersion is the Snyk REST API version. The REST API mandates a
 // ?version=YYYY-MM-DD query parameter; omitting it makes the API respond 400.
-const apiVersion = "2024-04-29"
+const apiVersion = "2024-10-15"
 
 // Verifier checks whether a Snyk API key is active by calling the
 // Snyk REST API. It NEVER logs or persists raw key values.
 type Verifier struct {
-	// apiURL overrides the Snyk API base URL (for testing).
+	// apiURL is reserved for a validated, trusted Snyk API origin. The
+	// production registration leaves it empty until operator wiring exists;
+	// tests inject a local server.
 	apiURL string
 	// httpClient overrides the default HTTP client (for testing).
 	httpClient *http.Client
+}
+
+// NewForTrustedInstance constructs a Snyk verifier for an explicit regional,
+// government, or operator-controlled private Snyk API origin.
+func NewForTrustedInstance(instanceURL string) (*Verifier, error) {
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(instanceURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Verifier{apiURL: normalized}, nil
+}
+
+// WithTrustedInstance implements verifier.TrustedInstanceConfigurer.
+func (*Verifier) WithTrustedInstance(instanceURL string) (verifier.Verifier, error) {
+	return NewForTrustedInstance(instanceURL)
 }
 
 func init() {
@@ -44,7 +62,16 @@ func (v *Verifier) Type() string {
 // Raw contains the key value.
 func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.VerificationResult {
 	token := string(raw.Raw)
-	apiURL := httpx.BaseURL(v.apiURL, defaultAPIURL)
+	if token == "" {
+		return finding.VerificationResult{Status: finding.StatusUnverified, Message: "empty token"}
+	}
+	if v.apiURL == "" {
+		return finding.VerificationResult{
+			Status:  finding.StatusUnverified,
+			Message: "trusted Snyk API origin is not configured",
+		}
+	}
+	apiURL := v.apiURL
 
 	// The Snyk REST API requires the version as a query parameter; without it
 	// the live API returns 400. The Version header is kept for compatibility.
@@ -59,8 +86,44 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 				"Version":       apiVersion,
 			},
 		},
-		InactiveStatuses: []int{http.StatusUnauthorized, http.StatusForbidden},
-		ActiveMessage:    "Snyk API key is active",
-		InactiveMessage:  "Snyk API key is invalid or revoked",
+		InactiveStatuses:       []int{http.StatusUnauthorized},
+		ActiveMessage:          "Snyk API key is active",
+		InactiveMessage:        "Snyk API key is invalid or revoked",
+		Decode:                 decodeSelf,
+		DecodeInactive:         decodeInactiveResponse,
+		RequireCompleteBody:    true,
+		RequireJSONContentType: true,
 	})
+}
+
+func decodeInactiveResponse(body io.Reader) error {
+	var response struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if response.Code != http.StatusUnauthorized ||
+		strings.ToLower(strings.TrimSpace(response.Message)) != "invalid auth token provided" {
+		return fmt.Errorf("unexpected Snyk authentication error")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("unexpected trailing Snyk response data")
+	}
+	return nil
+}
+
+func decodeSelf(body io.Reader) (map[string]string, string, error) {
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		return nil, "", err
+	}
+	if len(response.Data) == 0 || string(response.Data) == "null" {
+		return nil, "", fmt.Errorf("missing Snyk self data")
+	}
+	return nil, "", nil
 }

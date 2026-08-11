@@ -99,7 +99,8 @@ verification:
   # Sağlayıcı API'lerine karşı canlı doğrulamayı etkinleştirir.
   enabled: true
 
-  # İstek başına HTTP zaman aşımı. Doğrulama etkinleştirildiğinde >= 1ms olmalıdır.
+  # Sınırlı fallback ve istek kabulü dahil bulgu başına doğrulama operasyonu
+  # zaman aşımı. Doğrulama etkinleştirildiğinde >= 1ms olmalıdır.
   # Süre dizesi kullanın (örn. "10s", "500ms") — tam sayı nanosaniye olarak
   # yorumlanır ve doğrulama başarısız olur.
   timeout: 10s
@@ -176,7 +177,7 @@ custom-rules: []
 ```
 
 :::note
-`detection.entropy.threshold`, bir bulgunun yanında gösterilen entropi değerini kontrol eder ve entropi tabanlı sezgisel yöntemleri tercih eden her dedektörü kapılar — şu anda yalnızca yerleşik `generic-api-key` dedektörü, artı kendi `entropy` alanını bildiren özel kurallar. Bunlardan birine ait, entropisi eşiğin altına düşen bir eşleşme, olası bir yer tutucu olarak bastırılır. Diğer her (yapısal/biçim-çapalı) yerleşik dedektör — `aws-access-key-id`, `github-token` ve diğerleri — kendi sabit eşleşme kriterlerine sahiptir ve entropiden bağımsız olarak bu ayar tarafından **hiçbir zaman** bırakılmaz.
+`detection.entropy.enabled`, hesaplanan entropi değerinin bulguların yanında bulunup bulunmadığını kontrol eder. `detection.entropy.threshold` gösterimi kontrol etmez; motor entropi sezgisini tercih eden dedektörleri kapılar — şu anda yalnızca yerleşik `generic-api-key` dedektörü. Entropisi eşiğin altına düşen bir eşleşme olası bir yer tutucu olarak bastırılır. Kendi `entropy` alanını bildiren özel kurallar bağımsız kural-başı eşiklerini uygular. Diğer her yapısal/biçim-çapalı yerleşik dedektör — `aws-access-key-id`, `github-token` ve diğerleri — entropiden bağımsız olarak motor eşiği tarafından **hiçbir zaman** bırakılmaz.
 :::
 
 ## Doğrulama

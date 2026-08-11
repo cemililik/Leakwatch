@@ -28,11 +28,11 @@ flowchart LR
         E4[Custom Rules]
     end
 
-    subgraph Verifiers["Verifiers (54 verifiers, 51 packages, 84.4% coverage)"]
+    subgraph Verifiers["Verification (39 direct-live + 9 context-required + 6 format-only)"]
         V1[AWS STS]
         V2[GitHub API]
         V3[Slack API]
-        V4[Stripe, JWT, ...]
+        V4[Stripe, context & format checks]
     end
 
     subgraph Output["Output"]
@@ -61,7 +61,7 @@ classDiagram
         <<interface>>
         +Type() string
         +Chunks(ctx) chan Chunk
-        +Validate() error
+        +Validate(ctx context.Context) error
     }
 
     class Detector {
@@ -145,7 +145,7 @@ type Source interface {
     Chunks(ctx context.Context) <-chan Chunk
 
     // Validate checks that the source is accessible and valid.
-    Validate() error
+    Validate(ctx context.Context) error
 }
 
 // Chunk represents the smallest unit of data to be scanned.
@@ -271,8 +271,8 @@ type Finding struct {
     Severity   Severity  `json:"severity"`
 
     // Secret data
-    Raw      string `json:"raw,omitempty"`     // Only with --show-raw
-    Redacted string `json:"redacted"`           // Masked
+    Raw      string `json:"-"`        // Dedicated opt-in wire type only
+    Redacted string `json:"redacted"` // Masked
 
     // Location
     SourceMetadata SourceMetadata `json:"source"`
@@ -281,14 +281,18 @@ type Finding struct {
     Verification VerificationResult `json:"verification"`
 
     // Timestamp
-    DetectedAt time.Time `json:"detected_at"`
+    DetectedAt time.Time `json:"detected_at,omitempty"` // Custom marshal omits zero
 
     // Entropy
-    Entropy float64 `json:"entropy,omitempty"`
+    Entropy           float64 `json:"entropy,omitempty"`
+    EntropyCalculated bool    `json:"-"` // Preserves a calculated 0.0 on the wire
 
     // Additional context
-    ExtraData map[string]string `json:"extra_data,omitempty"`
+    ExtraData map[string]string `json:"-"` // Dedicated opt-in wire type only
 }
+
+// SetEntropy marks a value as calculated, including a legitimate 0.0.
+func (f *Finding) SetEntropy(value float64)
 
 // Severity represents the finding severity level.
 type Severity int
@@ -300,6 +304,11 @@ const (
     SeverityCritical
 )
 ```
+
+The custom JSON contract omits absent entropy and zero `DetectedAt`, but emits a
+legitimately calculated entropy of `0.0`. `Raw` and `ExtraData` remain
+type-level excluded; the JSON formatter's explicit `--show-raw` wire type is the
+only path that can add them.
 
 ---
 
@@ -327,7 +336,7 @@ sequenceDiagram
             Worker->>Detector: Scan(ctx, data)
             Detector-->>Worker: []RawFinding
             Worker-->>Engine: Write to results channel
-            Note over Worker: Entropy is calculated and attached<br/>to the finding (display-only at engine level)
+            Note over Worker: Entropy is calculated and attached;<br/>opt-in heuristic findings are threshold-gated
         end
     end
     opt Verification enabled
@@ -347,9 +356,9 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Source["SOURCE\n(chunks channel)"] --> Jobs["JOBS CHANNEL\n(buffered chan)"]
-    Jobs --> W1["Worker 1\nAC Match → Regex → Entropy score (display)"]
-    Jobs --> W2["Worker 2..N-1\nAC Match → Regex → Entropy score (display)"]
-    Jobs --> WN["Worker N\nAC Match → Regex → Entropy score (display)"]
+    Jobs --> W1["Worker 1\nAC Match → Regex → Entropy policy"]
+    Jobs --> W2["Worker 2..N-1\nAC Match → Regex → Entropy policy"]
+    Jobs --> WN["Worker N\nAC Match → Regex → Entropy policy"]
     W1 --> Results["RESULTS CHANNEL\n(buffered chan)"]
     W2 --> Results
     WN --> Results
@@ -369,8 +378,8 @@ type Config struct {
     // Detection
     Detectors        []detector.Detector
     EnableEntropy    bool
-    // EntropyThreshold is validated and stored, but at the engine level
-    // entropy is display-only. Threshold gating applies only to custom rules.
+    // EntropyThreshold gates only heuristic detectors that explicitly opt in;
+    // structural provider detectors remain independent of entropy.
     EntropyThreshold float64 // Default: 4.0
     ShowRaw          bool    // Expose raw secret content on Finding.Raw
 
@@ -409,7 +418,7 @@ stateDiagram-v2
         state ParallelScan {
             [*] --> ACPreFilter: Aho-Corasick pre-filtering
             ACPreFilter --> DetectorScan: Call matching detectors' Scan()
-            DetectorScan --> EntropyCalc: Entropy score (display-only)
+            DetectorScan --> EntropyCalc: Score and opt-in heuristic gate
             EntropyCalc --> WriteResult: Write to results channel
         }
     }
@@ -628,11 +637,13 @@ flowchart TD
     F --> G{"Finding\nexists?"}
     G -->|"No"| H[Skip]
     G -->|"Yes"| I["Calculate Shannon entropy\n(if EnableEntropy = true)"]
-    I --> J["Attach entropy score to Finding\n(display-only — no gating)"]
-    J --> K["Finding → Results channel"]
+    I --> J{"Detector opts into\nentropy gating?"}
+    J -->|"No"| K["Finding → Results channel"]
+    J -->|"Yes, score meets threshold"| K
+    J -->|"Yes, score below threshold"| H
 ```
 
-> **Note on entropy gating:** At the engine level, entropy is **display-only**. The computed value is attached to the `Finding.Entropy` field for human review; the engine never suppresses or demotes a finding based on entropy score. The exception is **custom rules**: a YAML rule with an `entropy:` field does gate matches — only candidates whose entropy meets or exceeds the rule's threshold are emitted. A global entropy gate for built-in detectors is planned but not yet implemented (see [ROADMAP — Known Gaps](../../docs/05-ROADMAP.md)).
+> **Entropy policy:** The engine attaches the computed value to every finding for review. The configured threshold suppresses only heuristic detectors that explicitly opt into entropy gating — currently `generic-api-key`. Structural provider detectors such as AWS and GitHub never depend on this threshold. Custom rules apply their own independent per-rule `entropy` threshold.
 
 ### 6.2 Shannon Entropy Calculation
 

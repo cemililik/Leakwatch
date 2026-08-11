@@ -1,11 +1,11 @@
 ---
 title: "Custom Rules"
-description: "How to define your own secret detection patterns in YAML and add them to a Leakwatch scan alongside the 64 built-in detectors."
+description: "How to define your own secret detection patterns in YAML and add them to a Leakwatch scan alongside the 65 built-in detectors."
 ---
 
 # Custom Rules
 
-The 64 built-in detectors cover widely used credential formats, but every organisation has internal tokens, proprietary service keys, or environment-specific patterns that no generic tool can anticipate. Custom rules let you extend Leakwatch with your own patterns — defined in plain YAML, loaded at runtime — without modifying source code or rebuilding the binary.
+The 65 built-in detectors cover widely used credential formats, but every organisation has internal tokens, proprietary service keys, or environment-specific patterns that no generic tool can anticipate. Custom rules let you extend Leakwatch with your own patterns — defined in plain YAML, loaded at runtime — without modifying source code or rebuilding the binary.
 
 ## Where custom rules live
 
@@ -116,5 +116,5 @@ filter:
 ## See also
 
 - [Configuration: Config File](#/configuration/config-file) — full reference for `.leakwatch.yaml`, including where `custom-rules:` sits in the document structure.
-- [Detector Catalog](#/detectors/detector-catalog) — the 64 built-in detectors, to check for ID conflicts before naming your custom rule.
+- [Detector Catalog](#/detectors/detector-catalog) — the 65 built-in detectors, to check for ID conflicts before naming your custom rule.
 - [How It Works](#/getting-started/how-it-works) — the Aho-Corasick pre-filter pipeline that `keywords` plugs into.

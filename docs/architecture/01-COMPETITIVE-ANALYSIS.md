@@ -187,7 +187,7 @@ While existing open-source tools (TruffleHog, Gitleaks) are strong in certain ar
 | **Filesystem** | Yes | Yes | Yes | No | Yes | **Yes** |
 | **Container Images** | Yes | No | No | No | Yes | **Yes** |
 | **Cloud Sources** | Yes (S3, GCS) | No | No | No | No | **Yes (Phase 5)** |
-| **SaaS Scanning** | Yes (Slack, Jira) | No | No | No | Public monitoring | **Yes (Slack, shipped `v1.2.0`; message text only — file-attachment scanning still planned)** |
+| **SaaS Scanning** | Yes (Slack, Jira) | No | No | No | Public monitoring | **Yes (Slack messages shipped `v1.2.0`; bounded text attachments delivered post-`v1.7.0`)** |
 | **Aho-Corasick** | Yes | Yes | No | Unknown | Unknown | **Yes** |
 | **Entropy Analysis** | Yes | As filter | Yes | No | With ML | **Yes (hybrid)** |
 | **SARIF Output** | No | Yes | No | Native | Yes | **Yes** |

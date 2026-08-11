@@ -110,12 +110,23 @@ jobs:
           go-version: '1.25.12'
           cache: true
           cache-dependency-path: tools/site-build/go.sum
-      - name: Regenerate site/js from tools/site-build
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Test site generator and browser detector contracts
+        working-directory: tools/site-build
+        run: go test -count=1 ./...
+      - name: Regenerate site output from tools/site-build
         working-directory: tools/site-build
         run: go run . -strict
-      - name: Fail if the committed site/js has drifted from the generator
+      - name: Fail if the committed site has drifted from the generator
         run: |
-          if ! git diff --exit-code -- site/js; then
-            echo "::error::site/js is stale. Run 'cd tools/site-build && go run . -strict' from the repo root and commit the regenerated files under site/js/."
+          if ! git diff --exit-code -- site; then
+            echo "::error::site output is stale. Run 'cd tools/site-build && go run . -strict' from the repo root and commit the regenerated files under site/."
+            exit 1
+          fi
+          if test -n "$(git status --porcelain --untracked-files=all -- site)"; then
+            echo "::error::site generator created untracked output. Regenerate and commit every generated file under site/."
+            git status --short --untracked-files=all -- site
             exit 1
           fi

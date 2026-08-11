@@ -1,11 +1,11 @@
 ---
 title: "Dedektör Kataloğu"
-description: "Kategorilere göre gruplanmış tüm 64 yerleşik dedektör; ID'leri, ne tespit ettikleri ve varsayılan önem dereceleri ile."
+description: "Kategorilere göre gruplanmış tüm 65 yerleşik dedektör; ID'leri, ne tespit ettikleri ve varsayılan önem dereceleri ile."
 ---
 
 # Dedektör Kataloğu
 
-Leakwatch, bulut sağlayıcısı erişim anahtarlarından ve yapay zekâ API token'larından veritabanı bağlantı dizelerine ve özel kriptografik anahtarlara kadar geniş bir kimlik bilgisi türü yelpazesini kapsayan **64 yerleşik dedektör** ile gelir. Her dedektörün kararlı bir ID'si, varsayılan bir önem derecesi ve (çoğu için) bulunan sırrın hâlâ canlı olup olmadığını teyit edebilen eşleştirilmiş bir doğrulayıcısı vardır.
+Leakwatch, bulut sağlayıcısı erişim anahtarlarından ve yapay zekâ API token'larından veritabanı bağlantı dizelerine ve özel kriptografik anahtarlara kadar geniş bir kimlik bilgisi türü yelpazesini kapsayan **65 yerleşik dedektör** ile gelir. Her dedektörün kararlı bir ID'si ve varsayılan önem derecesi vardır. Doğrulama kabiliyeti ayrıca doğrudan-canlı, bağlam-gerektiren, yalnız-format veya kullanılamaz olarak sınıflandırılır; kayıtlı bir doğrulayıcı tek başına canlı kapsamı kanıtlamaz.
 
 Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın. Kendi kalıplarınızı eklemek için [Özel Kurallar](#/detectors/custom-rules) bölümüne bakın.
 
@@ -57,7 +57,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 |----|------------|--------|
 | `github-token` | GitHub Kişisel Erişim Token'ı — hem klasik `ghp_` PAT hem de ince taneli `github_pat_` PAT | Critical |
 | `github-oauth-token` | GitHub OAuth2 ve kurulum (installation) token'ı — `gho_`/`ghu_`/`ghr_`/`ghs_`, yeni durumsuz (JWT biçimli) `ghs_` kurulum token'ları dâhil | Critical |
-| `gitlab-pat` | GitLab Kişisel Erişim Token'ı — klasik `glpat-` token'ı artı yeni yönlendirilebilir önekler: dağıtım (`gldt-`), runner (`glrt-`), CI/CD derleme ve tetikleyici (`glcbt-`/`glptt-`), OAuth uygulama sırrı (`gloas-`) ve besleme (`glft-`) token'ları; yakınında bulunduğunda kendi barındırılan (self-hosted) GitLab sunucuları doğrulama için tespit edilir | Critical |
+| `gitlab-pat` | GitLab kimlik bilgisi — klasik `glpat-` kişisel erişim token'ı ile dağıtım (`gldt-`), runner (`glrt-`), CI/CD derleme ve tetikleyici (`glcbt-`/`glptt-`), OAuth uygulama sırrı (`gloas-`) ve besleme (`glft-`) önekleri; repo URL'leri doğrulama yönlendirmesinde asla güvenilir sayılmaz | Critical |
 | `bitbucket-app-password` | Bitbucket Uygulama Parolası | Critical |
 | `circleci-token` | CircleCI Kişisel API Token'ı | High |
 | `npm-token` | NPM Erişim Token'ı | High |
@@ -91,7 +91,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | `sendgrid-api-key` | SendGrid API Anahtarı | Critical |
 | `mailgun-api-key` | Mailgun API Anahtarı | Critical |
 | `postmark-server-token` | Postmark Sunucu API Token'ı | High |
-| `twilio-api-key` | Twilio API Anahtarı | Critical |
+| `twilio-api-key` | Yakınındaki `SK...` Key SID ile açıkça eşleştirilmiş Twilio API Key Secret; tek başına SID gizli değildir ve raporlanmaz | Critical |
 
 ## İzleme ve Gözlemlenebilirlik
 
@@ -111,7 +111,7 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | `redis-connection-string` | Redis Bağlantı Dizesi | Critical |
 | `rabbitmq-connection-string` | RabbitMQ Bağlantı Dizesi | Critical |
 | `snowflake-credentials` | Snowflake Bağlantı Kimlik Bilgileri | Critical |
-| `supabase-service-key` | Supabase Servis Rolü Anahtarı | Critical |
+| `supabase-service-key` | Supabase Kişisel Erişim Token'ı (`sbp_`; kararlı eski dedektör ID'si) | Critical |
 
 ## Kimlik ve Erişim
 
@@ -132,13 +132,14 @@ Bu sayfa her yerleşik dedektörü listeler. Doğrulama kapsamı ayrıntıları 
 | ID | Tespit eder | Önem Derecesi |
 |----|------------|--------|
 | `generic-api-key` | Genel API Anahtarı | Medium |
+| `structured-config-secret` | JSON/JSONC, yüksek güvenli YAML ve TOML skaler atamaları, XML öğe/öznitelikleri veya `.env` yapılandırmasında bağlamsal sır değeri | High |
 | `jwt` | JSON Web Token | High |
 | `private-key` | Özel Anahtar (RSA, SSH, DSA, EC, PGP); PKCS8 `PRIVATE KEY` ve parola korumalı `ENCRYPTED PRIVATE KEY` zarfı dahil | Critical |
 | `ftp-credentials` | FTP/SFTP Kimlik Bilgileri | Critical |
 
 ---
 
-**Toplam: 64 yerleşik dedektör.**
+**Toplam: 65 yerleşik dedektör.**
 
 ## Önem derecesine göre filtreleme
 
@@ -159,7 +160,7 @@ Tam filtreleme referansı için [Önem Derecesi & Filtreleme](#/configuration/se
 
 ## Doğrulama kapsamı
 
-Bazı dedektörlerin canlı doğrulayıcısı vardır; bazıları yalnızca format doğrulamasına tabi tutulur; onu ise hiç doğrulayıcıya sahip değildir. Tam döküm için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın.
+Bazı dedektörlerin doğrudan canlı doğrulayıcısı vardır, bazıları güvenilir veya eşlik eden bağlam gerektirir, bazıları yalnızca format doğrular ve on birinin hiç doğrulayıcısı yoktur. Tam döküm için [Doğrulama Kapsamı](#/verification/verification-coverage) bölümüne bakın.
 
 ## Ayrıca bakın
 

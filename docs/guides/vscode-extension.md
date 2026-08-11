@@ -1,10 +1,12 @@
 # Leakwatch - VS Code Extension Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental extension deep dive. The [user manual](../user-manuals/en/getting-started/introduction.md) is authoritative for Leakwatch CLI behavior; this guide owns only extension-specific workflows.
 
 ## 1. Overview
 
@@ -31,9 +33,21 @@ Verify the CLI is available:
 leakwatch version
 ```
 
-### 2.2 Install from Marketplace / GitHub Releases (Not Yet Available)
+### 2.2 Install a CI-built VSIX
 
-The extension is not yet published to the VS Code Marketplace, and no CI workflow packages or uploads a `.vsix` to GitHub Releases today — `.github/workflows/vscode-ci.yml` only lints, compiles, and tests `vscode/` on every push/PR; it does not run `vsce package` or attach an artifact. Until one of those ships, build the `.vsix` yourself with [§2.3 Build from Source](#23-build-from-source) below.
+The extension is not yet advertised as generally available in the Visual Studio Marketplace. Extension CI does, however, lint, test, package, and upload a reviewable `leakwatch-vsix` workflow artifact. Download the artifact from a trusted workflow run and install it with `code --install-extension leakwatch-<version>.vsix`.
+
+Marketplace publication is experimental and deliberately separate from ordinary CI. `.github/workflows/vscode-release.yml` accepts `publish=true` only from `main`, publishes the exact VSIX produced by its package job, and reads `VSCE_PAT` only from the `vscode-marketplace` environment. Tags do not publish automatically.
+
+Repository administrators must configure that environment before the first publication:
+
+1. Add at least one required reviewer and enable **Prevent self-review**.
+2. Set deployment branches to **Protected branches only** and keep `main` protected.
+3. Store `VSCE_PAT` as an environment secret, never as a repository secret.
+4. Create a short-lived fine-grained token named `VSCODE_ENV_AUDIT_TOKEN` as an environment secret. Restrict it to this repository and grant only **Environments: read** so the workflow can prove that the environment-scoped `VSCE_PAT` metadata exists.
+5. Audit these settings and rotate both tokens after ownership or branch-protection changes.
+
+The publish job queries GitHub's environment and environment-secret metadata APIs. It fails before loading the VSIX or Marketplace PAT unless the required-reviewer, self-review, and protected-branch policies are present and `VSCE_PAT` actually exists in the protected environment. `VSCODE_ENV_AUDIT_TOKEN` is read-only and is never sent to the Marketplace; `VSCE_PAT` is never placed in process arguments. The environment approval itself remains an external GitHub control; this runbook and the executable audit make that dependency explicit rather than assuming an environment name is sufficient.
 
 ### 2.3 Build from Source
 
@@ -42,14 +56,11 @@ The extension is not yet published to the VS Code Marketplace, and no CI workflo
 git clone https://github.com/HodeTech/Leakwatch.git
 cd Leakwatch/vscode
 
-# Install dependencies
-npm install
-
-# Build for production
-npm run compile
+# Install the lockfile-pinned dependency graph
+npm ci
 
 # Package as VSIX
-npx @vscode/vsce package
+npm run package:vsix
 
 # Install the generated VSIX
 code --install-extension leakwatch-0.1.0.vsix
@@ -96,7 +107,7 @@ All settings are under the `leakwatch.*` namespace. Open **Settings** (`Ctrl+,`)
 
 **`leakwatch.minSeverity`** -- Controls the noise level. Setting this to `high` hides medium and low findings, which is useful in large projects where generic API key detections may be noisy.
 
-**`leakwatch.customRulesPath`** -- Points to a YAML file containing custom detection rules. See [Custom Rules Integration](#8-custom-rules-integration) below.
+**`leakwatch.customRulesPath`** -- Points to a YAML file containing custom detection rules. See [Custom Rules Integration](#9-custom-rules-integration) below.
 
 ---
 

@@ -29,9 +29,12 @@
 //     relying on the crypto/tls default, as defense-in-depth and
 //     self-documentation.
 //
-// This helper deliberately does NOT implement retry, backoff, or per-provider
-// rate limiting. Those concerns are handled (or deferred) elsewhere; keeping
-// this package focused on transport safety.
+// The shared token helper performs at most one Retry-After-aware HTTP 429 retry
+// for safe GET/HEAD probes. The wait is strictly bounded, context-aware, and
+// passes through an engine-owned admission gate immediately before every actual
+// send when verification runs through the engine. Format-only, empty-input, and
+// missing-context paths consume no limiter capacity. Unsafe methods and
+// missing/invalid Retry-After responses are never retried.
 package httpx
 
 import (
@@ -129,7 +132,10 @@ func RedactError(err error, secret string) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	return redactText(err.Error(), secret)
+}
+
+func redactText(msg, secret string) string {
 	if secret == "" {
 		return msg
 	}

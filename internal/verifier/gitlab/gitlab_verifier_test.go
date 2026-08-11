@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,12 +16,17 @@ import (
 
 func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v4/user", r.URL.Path)
 		assert.NotEmpty(t, r.Header.Get("PRIVATE-TOKEN"))
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":1,"username":"johndoe","name":"John Doe"}`))
+		switch r.URL.Path {
+		case "/api/v4/user":
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe","name":"John Doe"}`))
+		case "/api/v4/personal_access_tokens/self":
+			_, _ = w.Write([]byte(`{"active":true,"revoked":false,"scopes":["read_api","api","api"],"expires_at":"2027-02-03"}`))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
@@ -40,10 +46,120 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, "GitLab token is active", result.Message)
 	assert.Equal(t, "johndoe", result.ExtraData["username"])
+	assert.Equal(t, "api,read_api", result.ExtraData["scopes"])
+	assert.Equal(t, "2", result.ExtraData["scope_count"])
+	assert.Equal(t, "2027-02-03", result.ExtraData["expires_at"])
+}
+
+func TestVerifyWithRequestGate_MetadataFailureDoesNotEraseProvenActiveIdentity(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v4/user" {
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"404 Not Found"}`))
+	}))
+	defer server.Close()
+
+	admissions := 0
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).VerifyWithRequestGate(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+		func() *finding.VerificationResult { admissions++; return nil },
+	)
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, 2, requests)
+	assert.Equal(t, 2, admissions)
+}
+
+func TestVerifyWithRequestGate_AdmitsEvery429RetryAndMetadataSend(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v4/user":
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+		case "/api/v4/personal_access_tokens/self":
+			_, _ = w.Write([]byte(`{"active":true,"revoked":false,"scopes":["read_api"]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	admissions := 0
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).VerifyWithRequestGate(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+		func() *finding.VerificationResult { admissions++; return nil },
+	)
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, 3, requests)
+	assert.Equal(t, requests, admissions, "each actual HTTP send, including the 429 replay, needs one admission")
+}
+
+func TestDecodeTokenMetadata_GranularScopesAreBoundedAndDeterministic(t *testing.T) {
+	body := `{
+		"active":true,"revoked":false,"scopes":[],"expires_at":"2027-02-03",
+		"granular_scopes":[
+			{"access":"selected_memberships","permissions":["write_job","read_job"],"project_id":6,"group_id":null},
+			{"access":"user","permissions":["read_profile"],"project_id":null,"group_id":null}
+		]
+	}`
+	extra, _, err := decodeTokenMetadata(strings.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t,
+		"granular:selected_memberships:project:6:read_job,granular:selected_memberships:project:6:write_job,granular:user:read_profile",
+		extra["scopes"])
+	assert.Equal(t, "3", extra["scope_count"])
+	assert.Equal(t, "2027-02-03", extra["expires_at"])
+}
+
+func TestVerify_MalformedGranularMetadataDoesNotEraseActiveIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v4/user" {
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"active":true,"revoked":false,"granular_scopes":[{"access":"selected_memberships","permissions":["read_job"],"project_id":null,"group_id":null}]}`))
+	}))
+	defer server.Close()
+
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")})
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "johndoe", result.ExtraData["username"])
+	assert.NotContains(t, result.ExtraData, "scopes")
+}
+
+func TestVerifyWithRequestGate_RejectionPreventsAnyRequest(t *testing.T) {
+	called := false
+	v := &Verifier{apiURL: "https://trusted.example", httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, assert.AnError
+	})}}
+	rejection := finding.VerificationResult{Status: finding.StatusVerifyError, Message: "admission rejected"}
+	result := v.VerifyWithRequestGate(context.Background(), detector.RawFinding{
+		Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab"),
+	}, func() *finding.VerificationResult { return &rejection })
+	assert.Equal(t, rejection, result)
+	assert.False(t, called)
 }
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"401 Unauthorized"}`))
 	}))
@@ -64,6 +180,52 @@ func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "GitLab token is invalid or revoked", result.Message)
+}
+
+func TestVerify_DPoPChallengeDoesNotProveTokenInactive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_token","error_description":"DPoP proof required"}`))
+	}))
+	defer server.Close()
+
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(),
+		detector.RawFinding{DetectorID: detectorID, Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+	)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.NotContains(t, result.Message, "DPoP")
+}
+
+func TestVerify_ActiveResponseRequiresCompleteJSONIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "empty object", contentType: "application/json", body: `{}`},
+		{name: "null", contentType: "application/json", body: `null`},
+		{name: "missing username", contentType: "application/json", body: `{"id":1}`},
+		{name: "missing id", contentType: "application/json", body: `{"username":"johndoe"}`},
+		{name: "trailing json", contentType: "application/json", body: `{"id":1,"username":"johndoe"}{}`},
+		{name: "wrong content type", contentType: "text/html", body: `{"id":1,"username":"johndoe"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(),
+				detector.RawFinding{DetectorID: detectorID, Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {
@@ -95,69 +257,42 @@ func TestVerify_Type_ReturnsCorrectID(t *testing.T) {
 	assert.Equal(t, "gitlab-pat", v.Type())
 }
 
-func TestBaseURL_DerivesHostFromExtraData(t *testing.T) {
-	tests := []struct {
-		name   string
-		apiURL string
-		extra  map[string]string
-		want   string
-	}{
-		{
-			name: "no context defaults to gitlab.com",
-			want: "https://gitlab.com",
-		},
-		{
-			name:  "self-hosted host from ExtraData",
-			extra: map[string]string{"host": "gitlab.example.com"},
-			want:  "https://gitlab.example.com",
-		},
-		{
-			name:  "self-hosted host with port",
-			extra: map[string]string{"host": "gitlab.corp.internal:8443"},
-			want:  "https://gitlab.corp.internal:8443",
-		},
-		{
-			name:   "apiURL override wins",
-			apiURL: "http://127.0.0.1:1234",
-			extra:  map[string]string{"host": "gitlab.example.com"},
-			want:   "http://127.0.0.1:1234",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			v := &Verifier{apiURL: tt.apiURL}
-			raw := detector.RawFinding{DetectorID: detectorID, ExtraData: tt.extra}
-			assert.Equal(t, tt.want, v.baseURL(raw))
-		})
-	}
-}
-
-func TestVerify_SelfHostedActiveToken_NotReportedInvalid(t *testing.T) {
-	// A live self-hosted token verified against its true issuer must read as
-	// active, never as "invalid or revoked". The test server stands in for the
-	// self-hosted instance the detector captured into ExtraData["host"].
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/v4/user", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"username":"selfhosted-user"}`))
-	}))
-	defer server.Close()
-
-	v := &Verifier{apiURL: server.URL, httpClient: server.Client()}
-
+func TestVerify_RepositoryHostNeverSelectsDestination(t *testing.T) {
+	called := false
+	v := &Verifier{httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, assert.AnError
+	})}}
 	raw := detector.RawFinding{
 		DetectorID: detectorID,
 		Raw:        []byte("glpat-selfhostedtoken123456789012"),
-		Redacted:   "glpat-****9012",
-		ExtraData:  map[string]string{"host": "gitlab.example.com"},
+		ExtraData:  map[string]string{"host": "gitlab.attacker.example"},
 	}
-
 	result := v.Verify(context.Background(), raw)
+	require.Equal(t, finding.StatusUnverified, result.Status)
+	assert.False(t, called)
+}
 
-	require.Equal(t, finding.StatusVerifiedActive, result.Status)
-	assert.Equal(t, "selfhosted-user", result.ExtraData["username"])
+func TestVerify_NonPATSubtypesRemainUnverified(t *testing.T) {
+	for _, prefix := range []string{
+		"gldt-", "glrt-", "glrtr-", "glcbt-", "glptt-", "glimt-", "glagent-",
+		"glwt-", "glsoat-", "glffct-", "gloas-", "glft-",
+	} {
+		result := (&Verifier{apiURL: "https://trusted.example"}).Verify(context.Background(), detector.RawFinding{
+			DetectorID: detectorID, Raw: []byte(prefix + "abcDEF1234567890xyzW"),
+		})
+		assert.Equal(t, finding.StatusUnverified, result.Status, prefix)
+	}
+}
+
+func TestNewForTrustedInstance_ValidatesOrigin(t *testing.T) {
+	configured, err := NewForTrustedInstance("https://gitlab.example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://gitlab.example.com", configured.apiURL)
+	for _, origin := range []string{"http://gitlab.com", "https://127.0.0.1", "https://localhost", "https://gitlab.com/path"} {
+		_, err := NewForTrustedInstance(origin)
+		assert.Error(t, err, origin)
+	}
 }
 
 func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
@@ -173,4 +308,10 @@ func TestVerify_EmptyToken_ReturnsUnverified(t *testing.T) {
 
 	assert.Equal(t, finding.StatusUnverified, result.Status)
 	assert.Equal(t, "empty token", result.Message)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }

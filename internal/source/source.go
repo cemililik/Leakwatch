@@ -39,8 +39,10 @@ type Source interface {
 	// Err before the channel closes is a data race.
 	Err() error
 
-	// Validate checks that the source is accessible and valid.
-	Validate() error
+	// Validate checks that the source is accessible and valid. Implementations
+	// must honor cancellation and deadlines for every network or blocking
+	// operation performed during validation.
+	Validate(ctx context.Context) error
 }
 
 // Chunk is the smallest unit of data to be scanned.

@@ -1,10 +1,12 @@
 # Leakwatch - Getting Started Guide
 
-> **Document Version:** 1.0
-> **Date:** 2026-03-24
+> **Document Version:** 1.1
+> **Date:** 2026-08-11
 > **Status:** Approved
 
 ---
+
+> **Documentation role:** Supplemental product tour. The [getting-started user manual](../user-manuals/en/getting-started/introduction.md) is authoritative for current installation and CLI behavior.
 
 ## 1. What is Leakwatch?
 
@@ -12,9 +14,9 @@ Leakwatch is a high-performance, open source (MIT) security tool that detects, v
 
 **Key features:**
 
-- **64 detectors (60 packages) + unlimited YAML custom rules** -- Covers major cloud providers, AI platforms, CI/CD tools, databases, and SaaS services out of the box, with YAML custom rules for anything else
+- **65 detectors (61 packages) + unlimited YAML custom rules** -- Covers major cloud providers, AI platforms, CI/CD tools, databases, structured configuration, and SaaS services out of the box, with YAML custom rules for anything else
 - **Hybrid detection engine** -- Aho-Corasick pre-filter, regex validation, and Shannon entropy analysis for a low false positive rate
-- **Secret verification** -- 54 verifiers (51 packages) with 84.4% verification coverage confirm whether discovered secrets are still active via API calls (AWS, GitHub, Slack, Stripe, and more)
+- **Truthful verification capability** -- 39 direct-live checks, 9 context-required checks, and 6 offline format validators; the 54 registered implementations are never overstated as live coverage
 - **Multi-source support** -- Filesystem, Git repository, container images, S3, GCS, parallel multi-repo, and Slack
 - **Flexible output** -- JSON, SARIF, CSV, and table formats
 - **Single binary, zero dependencies** -- Runs on every platform, no Docker daemon required
@@ -36,11 +38,11 @@ flowchart LR
         E3["Entropy\nAnalysis"]
     end
 
-    subgraph Verification["Secret Verification\n(54 verifiers (51 packages), 84.4% coverage)"]
+    subgraph Verification["Secret Verification\n(39 direct-live + 9 context-required + 6 format-only)"]
         V1["AWS STS"]
         V2["GitHub API"]
         V3["Slack API"]
-        V4["Stripe, JWT, ..."]
+        V4["Stripe, context & format checks"]
     end
 
     Sources -->|Chunks| E1
@@ -277,7 +279,7 @@ leakwatch scan repos https://github.com/org/repo1 https://github.com/org/repo2 -
 
 ### 4.7 Slack Workspace Scan (`scan slack`)
 
-Scans message text across channels in a Slack workspace for leaked secrets. (Scanning of uploaded files is planned but not yet implemented.)
+Scans message text across channels in a Slack workspace for leaked secrets. Add `--include-files` (and Slack's `files:read` scope) to scan bounded text-like attachments.
 
 ```bash
 # Scan a Slack workspace

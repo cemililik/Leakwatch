@@ -214,6 +214,25 @@ func init() {
 		},
 	})
 
+	Register("structured-config-secret", finding.Remediation{
+		Title: "Move Configuration Secret to Secure Storage",
+		Steps: []string{
+			"Treat the exposed value as compromised and rotate or revoke it at its owning service.",
+			"Remove the plaintext value from the configuration file and its version history.",
+			"Store the replacement in a secrets manager or the platform's protected local-secret mechanism.",
+			"Reference the protected value through environment or secret-manager indirection.",
+			"Redeploy affected services and verify that the old credential no longer works.",
+		},
+		DocURL:  "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
+		Urgency: "immediate",
+		Checklist: []string{
+			"Review repository, artifact, backup, log, and chat history for additional copies.",
+			"Audit the owning service for unauthorized use of the exposed credential.",
+			checkNotifySecurityTeam,
+			checkScanCodebaseForKey,
+		},
+	})
+
 	Register("openai-api-key", finding.Remediation{
 		Title: "Rotate OpenAI API Key",
 		Steps: []string{
@@ -505,10 +524,10 @@ func init() {
 	})
 
 	Register("twilio-api-key", finding.Remediation{
-		Title: "Rotate Twilio API Key",
+		Title: "Rotate Twilio API Key Pair",
 		Steps: []string{
 			"Go to Twilio Console > API Keys.",
-			stepDeleteCompromisedKey,
+			"Identify the API Key SID paired with the exposed secret and revoke that key.",
 			stepCreateNewAPIKey,
 		},
 		DocURL:     "https://www.twilio.com/docs/iam/api-keys",
@@ -715,8 +734,8 @@ func init() {
 	Register("shopify-access-token", finding.Remediation{
 		Title: "Rotate Shopify Access Token",
 		Steps: []string{
-			"Go to Shopify Admin > Apps > Manage private apps.",
-			"Rotate the compromised access token.",
+			"Go to Shopify Admin > Settings > Apps and sales channels > Develop apps.",
+			"Open the affected app and revoke or rotate the compromised Admin API access token.",
 			stepUpdateIntegrationsToken,
 		},
 		DocURL:     "https://shopify.dev/docs/apps/auth",
@@ -728,14 +747,14 @@ func init() {
 	})
 
 	Register("supabase-service-key", finding.Remediation{
-		Title: "Rotate Supabase Service Key",
+		Title: "Revoke Supabase Personal Access Token",
 		Steps: []string{
-			"Go to app.supabase.com > Project Settings > API.",
-			"Regenerate the service role key.",
-			"Update all backend services with the new key.",
+			"Open the Supabase Dashboard account access-token page.",
+			"Identify and revoke the compromised personal access token.",
+			"Create a replacement only if the CLI or automation still requires one, then update those consumers.",
 		},
-		DocURL:     "https://supabase.com/docs/guides/api",
-		ConsoleURL: "https://app.supabase.com",
+		DocURL:     "https://supabase.com/docs/reference/api/introduction",
+		ConsoleURL: "https://supabase.com/dashboard/account/tokens",
 		Urgency:    "immediate",
 	})
 
