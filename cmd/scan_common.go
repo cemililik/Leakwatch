@@ -19,6 +19,7 @@ import (
 
 	"github.com/HodeTech/leakwatch/internal/config"
 	"github.com/HodeTech/leakwatch/internal/engine"
+	"github.com/HodeTech/leakwatch/internal/meta"
 	"github.com/HodeTech/leakwatch/internal/output"
 	csvout "github.com/HodeTech/leakwatch/internal/output/csv"
 	githubout "github.com/HodeTech/leakwatch/internal/output/github"
@@ -133,7 +134,7 @@ func newScanViper(cmd *cobra.Command) (*viper.Viper, error) {
 // new subcommand cannot drift out of sync with the common flag surface, and it is
 // the single place the --max-file-size default is wired.
 func addCommonScanFlags(flags *pflag.FlagSet) {
-	flags.StringP("format", "f", "json", "output format (json, sarif, csv, table, github)")
+	flags.StringP("format", "f", "json", "output format ("+meta.OutputFormatList+")")
 	flags.StringP("output", "o", "", "output file (default: stdout)")
 	flags.IntP("concurrency", "c", runtime.NumCPU(), "number of concurrent workers")
 	flags.Int64("max-file-size", defaultMaxFileSize, "maximum file size in bytes")

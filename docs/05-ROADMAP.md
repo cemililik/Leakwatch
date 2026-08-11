@@ -1,9 +1,9 @@
 # Leakwatch - Phased Development Roadmap
 
-> **Document Version:** 7.1
+> **Document Version:** 7.2
 > **Date:** 2026-04-09
 > **Status:** Approved
-> **Last Updated:** 2026-05-25
+> **Last Updated:** 2026-08-11
 
 ---
 
@@ -24,14 +24,23 @@
 | Phase 8.3 — Scan Summary + Security | Completed | `v1.4.0` | 2026-04-08 |
 | Phase 8.4 — False Positive Reduction | Completed | `v1.5.0` | 2026-04-09 |
 | Phase 8.5 — GitHub Marketplace Action & Distribution | Completed | `v1.6.0` | 2026-05-25 |
-| Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.7.0` | — |
-| Phase 10 — Detector Library Expansion | Planned | `v1.8.0` | — |
-| Phase 11 — Verification Depth & Credential Impact | Planned | `v1.9.0` | — |
-| Phase 12 — Source Expansion (Confluence/Jira, org-scale) | Planned | `v1.10.0` | — |
-| Phase 13 — Secrets Inventory | Planned | `v1.11.0` | — |
-| Phase 14 — Honeytokens | Planned | `v1.12.0` | — |
+| Review Remediation Release | Released | `v1.7.0` | 2026-07-19 |
+| Phase 9 — Detection Accuracy & FP Reduction | Planned | `v1.8.0` | — |
+| Phase 10 — Detector Library Expansion | Planned | `v1.9.0` | — |
+| Phase 11 — Verification Depth & Credential Impact | Planned | `v1.10.0` | — |
+| Phase 12 — Source Expansion (Confluence/Jira, org-scale) | Planned | `v1.11.0` | — |
+| Phase 13 — Secrets Inventory | Planned | `v1.12.0` | — |
+| Phase 14 — Honeytokens | Planned | `v1.13.0` | — |
 
 > **Prioritization note (v7.0):** the planned sequence is re-ordered so the work that most strengthens the core promise — accurate, verified, low-noise findings — comes first. Detection accuracy and false-positive reduction (Phase 9), broader coverage of high-blast-radius credential types (Phase 10), and deeper verification with credential-impact insight (Phase 11) precede new scan sources (Phase 12) and the inventory/honeytoken platform features (Phases 13–14). Rationale is detailed in [Planned Work — Prioritization](#planned-work--prioritization).
+
+### v1.7.0 Highlights
+
+- **Full-project remediation release** — findings from a multi-dimensional review of the code, tests, documentation, CI/CD, VS Code extension, and website were remediated and recorded in the changelog
+- **Detection and scan correctness** — expanded token coverage, per-file scanning, consistent exclusion flags, deterministic and bounded engine behavior, correct Git-history attribution, and stricter false-positive handling
+- **Verification accuracy** — corrected provider endpoint/context handling and removed verification paths that could not truthfully prove credential liveness
+- **Secret-safe output and transport** — raw credentials are excluded from default output and logs; panic, URL, terminal, CSV, container, and editor trust boundaries were hardened
+- **Quality and supply-chain gates** — detector coverage, website drift, VS Code, Windows build, SBOM/signing, security scanning, and dependency/toolchain checks were strengthened
 
 ### v1.6.0 Highlights
 
@@ -94,7 +103,7 @@
 
 ## Roadmap Overview
 
-Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–8 (through `v1.6.0`) are complete; Phases 9–14 are the planned forward path, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
+Leakwatch development proceeds in incremental phases, each building on the previous one and each producing a usable deliverable. Phases 1–8 (through `v1.6.0`) and the `v1.7.0` review-remediation release are complete. Phases 9–14 remain the planned forward path beginning with `v1.8.0`, sequenced by leverage on the product's core promise — see [Planned Work — Prioritization](#planned-work--prioritization).
 
 ```mermaid
 gantt
@@ -134,8 +143,11 @@ gantt
         UX, Security, FP reduction      :done, f8, after f6, 6w
         Marketplace Action & distrib.   :done, f85, after f8, 3w
 
-    section Planned v1.7.0+
-        Detection accuracy & FP         :p9, after f85, 5w
+    section Completed v1.7.0
+        Full-project review remediation :done, f87, after f85, 4w
+
+    section Planned v1.8.0+
+        Detection accuracy & FP         :p9, after f87, 5w
         Detector library expansion      :p10, after p9, 6w
         Verification depth & impact     :p11, after p10, 6w
         Source expansion                :p12, after p11, 6w
@@ -422,7 +434,7 @@ The product's core promise is **accurate, verified, low-noise secret findings**.
 
 **Goal:** Make accuracy a measurable strength. Raise detector precision and recall, cut false positives across the board, and ensure every documented detection/verification behavior actually fires. This phase improves the quality of every existing scan without adding new surfaces.
 
-**Duration:** 4-5 weeks | **Version:** `v1.7.0` | **Status:** Planned
+**Duration:** 4-5 weeks | **Version:** `v1.8.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -451,7 +463,7 @@ The product's core promise is **accurate, verified, low-noise secret findings**.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.7.0` tag.
+GitHub Release published with `v1.8.0` tag.
 
 ---
 
@@ -459,7 +471,7 @@ GitHub Release published with `v1.7.0` tag.
 
 **Goal:** Grow coverage of frequently-leaked, high-blast-radius credential types, prioritizing secrets whose exposure causes the most damage. Every new detector with a public verification endpoint ships with its verifier.
 
-**Duration:** 5-6 weeks | **Version:** `v1.8.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.9.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -482,7 +494,7 @@ GitHub Release published with `v1.7.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.8.0` tag.
+GitHub Release published with `v1.9.0` tag.
 
 ---
 
@@ -490,7 +502,7 @@ GitHub Release published with `v1.8.0` tag.
 
 **Goal:** Deepen the verification differentiator. Harden the verification engine, verify more credential classes, and — for live secrets — tell users what the credential can actually reach so they can triage blast radius.
 
-**Duration:** 5-6 weeks | **Version:** `v1.9.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.10.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -512,7 +524,7 @@ GitHub Release published with `v1.8.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.9.0` tag.
+GitHub Release published with `v1.10.0` tag.
 
 ---
 
@@ -520,7 +532,7 @@ GitHub Release published with `v1.9.0` tag.
 
 **Goal:** Reach secrets wherever they live — collaboration platforms and org-scale code hosting — now that the detection/verification core is strong.
 
-**Duration:** 5-6 weeks | **Version:** `v1.10.0` | **Status:** Planned
+**Duration:** 5-6 weeks | **Version:** `v1.11.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -549,7 +561,7 @@ GitHub Release published with `v1.9.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.10.0` tag.
+GitHub Release published with `v1.11.0` tag.
 
 ---
 
@@ -557,7 +569,7 @@ GitHub Release published with `v1.10.0` tag.
 
 **Goal:** Persistent SQLite-based inventory tracking secrets across scans.
 
-**Duration:** 4-5 weeks | **Version:** `v1.11.0` | **Status:** Planned
+**Duration:** 4-5 weeks | **Version:** `v1.12.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -584,7 +596,7 @@ GitHub Release published with `v1.10.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.11.0` tag.
+GitHub Release published with `v1.12.0` tag.
 
 ---
 
@@ -592,7 +604,7 @@ GitHub Release published with `v1.11.0` tag.
 
 **Goal:** Generate and deploy decoy credentials that alert on unauthorized use.
 
-**Duration:** 3-4 weeks | **Version:** `v1.12.0` | **Status:** Planned
+**Duration:** 3-4 weeks | **Version:** `v1.13.0` | **Status:** Planned
 
 ### Deliverables
 
@@ -618,7 +630,7 @@ GitHub Release published with `v1.11.0` tag.
 
 ### Exit Criteria
 
-GitHub Release published with `v1.12.0` tag.
+GitHub Release published with `v1.13.0` tag.
 
 ---
 
@@ -765,12 +777,13 @@ Source packages (no formal standard, but visible gaps):
 | `v1.4.0` | Phase 8.3 | Scan summary, `init` command, colored table, security patches | 2026-04-08 |
 | `v1.5.0` | Phase 8.4 | False positive reduction, ADO.NET support | 2026-04-09 |
 | `v1.6.0` | Phase 8.5 | GitHub Marketplace Action, `github` output format, config wiring | 2026-05-25 |
-| `v1.7.0` | Phase 9 | Detection accuracy & false-positive reduction | — |
-| `v1.8.0` | Phase 10 | Detector library expansion | — |
-| `v1.9.0` | Phase 11 | Verification depth & credential impact | — |
-| `v1.10.0` | Phase 12 | Source expansion (Confluence/Jira, org-scale) | — |
-| `v1.11.0` | Phase 13 | Secrets inventory (SQLite) | — |
-| `v1.12.0` | Phase 14 | Honeytokens | — |
+| `v1.7.0` | Review Remediation | Full-project review remediation, correctness, security, and CI hardening | 2026-07-19 |
+| `v1.8.0` | Phase 9 | Detection accuracy & false-positive reduction | — |
+| `v1.9.0` | Phase 10 | Detector library expansion | — |
+| `v1.10.0` | Phase 11 | Verification depth & credential impact | — |
+| `v1.11.0` | Phase 12 | Source expansion (Confluence/Jira, org-scale) | — |
+| `v1.12.0` | Phase 13 | Secrets inventory (SQLite) | — |
+| `v1.13.0` | Phase 14 | Honeytokens | — |
 | `v2.x.x` | Future | ML detection, SaaS platform, Vault | Ongoing |
 
 > **Note on v1.1.0 / v1.2.0:** Phase 6 (Remediation Guidance) and Phase 7 (Slack Scanning) were completed and merged into `main`, but no `v1.1.0` or `v1.2.0` git tags were ever created. The features shipped as part of the `v1.3.0` release. The version slots are preserved here to keep the phase-to-version mapping consistent.
@@ -796,7 +809,7 @@ Source packages (no formal standard, but visible gaps):
 |--------|----------------|-----------------|
 | GitHub Stars | 500+ | 2,000+ |
 | Contributors | 5+ | 15+ |
-| Detector count | 64 (achieved) | 120+ |
+| Detector count | 65 (achieved) | 120+ |
 | Verifier count | 54 (achieved) | 80+ |
 | Source count | 6 (fs, git, container, S3, GCS, Slack) | 9+ |
 
@@ -816,7 +829,11 @@ Source packages (no formal standard, but visible gaps):
 
 ## Master Review — Documented-but-Unimplemented Gaps
 
-> This section is the **detailed reference** for the gaps found in the 2026-05-22 full-project review. Each item is now scheduled into a planned phase (see the concise [Documented Gap Traceability](#documented-gap-traceability) index); the "Owning phase" column below shows where each is delivered. Each remains **not yet implemented** — the documentation or public interface promises the feature but the code does not deliver it.
+> **Historical snapshot — superseded 2026-08-11:** this inventory preserves the findings as they were recorded during the 2026-05-22 review; it is not a current implementation-status dashboard. The `v1.7.0` release and subsequent review-remediation wave commits have closed or reclassified multiple rows. Current behavior is defined by the executable registry/capability contracts, their CI tests, the user manuals, and the changelog. Future audits must create a new dated snapshot rather than silently rewriting this one.
+>
+> The working `review/FIX-PLAN.md` remains an untracked audit artifact and is intentionally not treated as release metadata. Git commits are the authoritative closure record for the remediation waves.
+
+> At capture time, this section was the **detailed reference** for gaps found in the 2026-05-22 full-project review. The "Owning phase" column records the scheduling decision made in that snapshot; "not implemented" statements below describe the code at that date and must not be read as current status.
 
 | # | Gap | One-line description | Area affected | Owning phase |
 |---|-----|----------------------|---------------|--------------|

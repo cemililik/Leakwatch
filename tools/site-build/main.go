@@ -1,5 +1,6 @@
-// Command site-build compiles the Leakwatch user manuals into the JavaScript
-// data files consumed by the static documentation website.
+// Command site-build compiles the Leakwatch user manuals and detector contracts
+// into the static documentation website, and synchronizes release-version
+// footers from internal/meta.
 //
 // Source layout:
 //
@@ -167,6 +168,16 @@ func run() error {
 		return err
 	}
 	fmt.Printf("site-build: wrote detectors.js (%d detectors)\n", nDet)
+
+	releaseVersion, err := readReleaseVersion(root)
+	if err != nil {
+		return err
+	}
+	footerCount, err := syncSiteReleaseVersion(root, releaseVersion)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("site-build: synced release footer %s (%d pages)\n", releaseVersion, footerCount)
 
 	if missing > 0 && *strict {
 		return fmt.Errorf("%d manual page(s) missing (strict mode)", missing)

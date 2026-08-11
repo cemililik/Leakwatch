@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/HodeTech/leakwatch/internal/meta"
 	csvout "github.com/HodeTech/leakwatch/internal/output/csv"
 	githubout "github.com/HodeTech/leakwatch/internal/output/github"
 	jsonout "github.com/HodeTech/leakwatch/internal/output/json"
@@ -88,6 +92,7 @@ func TestSelectFormatter_AllFormats_ReturnsCorrectType(t *testing.T) {
 func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	// Set known version info for deterministic output.
 	SetVersionInfo("1.0.0-test", "abc1234", "2026-03-24")
+	t.Cleanup(func() { SetVersionInfo("dev", "none", "unknown") })
 
 	buf := new(bytes.Buffer)
 	rootCmd.SetOut(buf)
@@ -97,10 +102,33 @@ func TestRootCommand_VersionFlag_ShowsVersion(t *testing.T) {
 	err := rootCmd.Execute()
 	require.NoError(t, err)
 
-	output := buf.String()
-	assert.Contains(t, output, "1.0.0-test")
-	assert.Contains(t, output, "abc1234")
-	assert.Contains(t, output, "2026-03-24")
+	want := readGolden(t, "version.golden")
+	assert.Equal(t, want, buf.String())
+}
+
+func TestRootCommand_HelpMetadataMatchesGolden(t *testing.T) {
+	want := readGolden(t, "root-help.golden")
+	assert.Equal(t, strings.TrimSuffix(want, "\n"), rootCmd.Long)
+}
+
+func TestOutputFormats_MatchGoldenAndFlagHelp(t *testing.T) {
+	want := readGolden(t, "output-formats.golden")
+	got := strings.Join(meta.OutputFormatNames(), "\n") + "\n"
+	assert.Equal(t, want, got)
+
+	formatFlag := scanFsCmd.Flags().Lookup("format")
+	require.NotNil(t, formatFlag)
+	assert.Equal(t, "output format ("+meta.OutputFormatList+")", formatFlag.Usage)
+	assert.Equal(t, 1, strings.Count(defaultConfigTemplate, "{{OUTPUT_FORMATS}}"))
+	assert.Contains(t, defaultConfig, "# Output format: "+meta.OutputFormatList)
+	assert.NotContains(t, defaultConfig, "{{OUTPUT_FORMATS}}")
+}
+
+func readGolden(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+	return string(b)
 }
 
 func TestScanCommand_NoSubcommand_ShowsHelp(t *testing.T) {

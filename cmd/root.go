@@ -9,6 +9,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/HodeTech/leakwatch/internal/meta"
 )
 
 var (
@@ -49,19 +51,7 @@ func (e *InterruptedExitError) Error() string {
 var rootCmd = &cobra.Command{
 	Use:   "leakwatch",
 	Short: "Detects leaked secrets in codebases",
-	Long: `Leakwatch is a high-performance security tool that detects, verifies, and reports
-leaked secrets (API keys, passwords, certificates) in codebases, Git histories,
-container images, cloud storage buckets, and Slack workspaces.
-
-Features:
-  - 63 built-in secret detectors (60 packages) covering AWS, GitHub, Slack, Stripe, JWT, and more
-  - 54 verification checks to confirm whether discovered secrets are active
-  - Scans filesystems, Git repos, container images, S3, GCS, and Slack
-  - Multiple output formats: JSON, SARIF, CSV, and terminal table
-  - Aho-Corasick pre-filtering for fast multi-pattern matching
-  - Concurrent worker pool architecture for high throughput
-  - Custom rules via YAML configuration
-  - .leakwatchignore and inline ignore support`,
+	Long:  rootLongDescription(),
 	Example: `  # Quick scan of current directory
   leakwatch scan fs .
 
@@ -78,6 +68,30 @@ Features:
   leakwatch scan git . --only-verified`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+}
+
+func rootLongDescription() string {
+	capabilities := meta.VerificationCapabilityCounts()
+	return fmt.Sprintf(`Leakwatch is a high-performance security tool that detects, verifies, and reports
+leaked secrets (API keys, passwords, certificates) in codebases, Git histories,
+container images, cloud storage buckets, and Slack workspaces.
+
+Features:
+  - %d built-in secret detectors covering AWS, GitHub, Slack, Stripe, JWT, and more
+  - %d verification implementations: %d direct-live, %d context-required, %d format-only
+  - Scans filesystems, Git repos, container images, S3, GCS, and Slack
+  - Multiple output formats: %s
+  - Aho-Corasick pre-filtering for fast multi-pattern matching
+  - Concurrent worker pool architecture for high throughput
+  - Custom rules via YAML configuration
+  - .leakwatchignore and inline ignore support`,
+		meta.Detectors,
+		meta.Verifiers,
+		capabilities.Live,
+		capabilities.RequiresContext,
+		capabilities.FormatOnly,
+		meta.OutputFormatList,
+	)
 }
 
 // Execute runs the root command and returns the process exit code:
