@@ -23,6 +23,7 @@ defaults:
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
@@ -50,14 +51,37 @@ jobs:
           retention-days: 14
 
   publish:
-    if: ${{ inputs.publish }}
+    if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
     needs: package
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: vscode-marketplace
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           persist-credentials: false
+
+      - name: Fail closed unless Marketplace environment policy is protected
+        env:
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          policy_file="${RUNNER_TEMP:?}/vscode-marketplace-environment.json"
+          curl --fail-with-body --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_API_TOKEN:?}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL:?}/repos/${GITHUB_REPOSITORY:?}/environments/vscode-marketplace" \
+            --output "$policy_file"
+          jq --exit-status '
+            ([.protection_rules[]?
+              | select(.type == "required_reviewers" and .prevent_self_review == true)
+              | .reviewers[]?] | length) >= 1
+            and .deployment_branch_policy.protected_branches == true
+          ' "$policy_file" >/dev/null
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -84,4 +108,4 @@ jobs:
             echo "expected exactly one VSIX artifact" >&2
             exit 1
           fi
-          npx vsce publish --packagePath "${packages[0]}" --pat "$VSCE_PAT"
+          npx --no-install vsce publish --packagePath "${packages[0]}"

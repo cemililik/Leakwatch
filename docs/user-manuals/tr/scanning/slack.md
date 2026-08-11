@@ -34,9 +34,13 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 
 | Kapsam | Amaç |
 |--------|------|
+| `channels:read` | Genel kanalları listele. |
 | `channels:history` | Botun katıldığı genel kanallardaki mesajları oku. |
+| `groups:read` | Özel kanalları listele. |
 | `groups:history` | Botun katıldığı özel kanallardaki mesajları oku. |
+| `im:read` | Doğrudan mesaj konuşmalarını listele (yalnızca `--include-dms` ile gerekli). |
 | `im:history` | Doğrudan mesajları oku (yalnızca `--include-dms` ile gerekli). |
+| `mpim:read` | Grup doğrudan mesaj konuşmalarını listele (yalnızca `--include-dms` ile gerekli). |
 | `mpim:history` | Grup doğrudan mesajlarını oku (yalnızca `--include-dms` ile gerekli). |
 | `files:read` | Dosya meta verisini ve içeriğini oku (yalnızca `--include-files` ile gerekli). |
 
@@ -52,7 +56,7 @@ Bot token'ı, aşağıdaki OAuth kapsamlarına sahip bir Slack uygulamasıyla il
 | `--since` | string (YYYY-MM-DD) | — | Bu tarihte veya sonrasında gönderilen mesajları tara. |
 | `--include-dms` | bool | `false` | Doğrudan mesajları ve grup DM'lerini de tara. |
 | `--include-files` | bool | `false` | Boyutu sınırlı metin benzeri dosya eklerini indir ve tara. `files:read` gerektirir. |
-| `--rate-limit` | float | `1/60` | Saniye başına maksimum Slack API istek sayısı (dakikada bir). Yalnız uygulamanın yayımlanmış Slack katmanı izin veriyorsa artırın. |
+| `--rate-limit` | float | `0` | İsteğe bağlı, işlem başına saniyelik Slack istek üst sınırı. Sıfır, güvenli işlem varsayılanlarını korur: history `1/60`, liste/dosya/indirme sınırları daha yüksektir. |
 
 ### Ortak tarama bayrakları
 
@@ -134,11 +138,11 @@ Slack taramasından elde edilen her bulgu mesaj ve kanal meta verisi içerir:
 
 ## Performans değerlendirmeleri
 
-Slack API istekleri yöntem ve dağıtım modeline özgü hız sınırlarına tabidir. `--rate-limit`, yeni dağıtılan Marketplace dışı uygulamalar için Slack'in yayımladığı en düşük `conversations.history` sınırıyla uyumlu olarak varsayılan dakikada bir istektir. Tier 3 erişimli Marketplace/dahili uygulamalar bunu bilinçli olarak artırabilir.
+Slack API sınırları yöntem, çalışma alanı ve uygulama başına uygulanır. Bu nedenle Leakwatch bağımsız limiter kovaları kullanır: `conversations.history`, yeni dağıtılan Marketplace dışı uygulamalar için varsayılan dakikada bir istektir; `conversations.list` Tier 2'yi (20+/dakika), `files.info` Tier 4'ü (100+/dakika) izler ve ek indirmelerinin ayrı, ihtiyatlı bir 100/dakika istemci sınırı vardır. `--rate-limit` her kovayı aynı işlem-başı üst sınırla açıkça geçersiz kılar; Tier 3 erişimli Marketplace/dahili uygulamalar bunu bilinçli olarak artırabilir.
 
 Slack `429 Too Many Requests` ile yanıt verdiğinde, Leakwatch `Retry-After` başlığına otomatik olarak uyar ve taramayı tamamen başarısız kılmak yerine isteği yeniden dener.
 
-Ek indirmeleri aynı istek sınırlayıcıyı paylaşır. Leakwatch yalnız Slack'e ait HTTPS indirme URL'lerini kabul eder, en fazla `--max-file-size` kadar veri tutar, ikili/NUL içeren içeriği atlar ve aynı Slack dosya kimliğini mesajlar arasında tekilleştirir.
+Dosya meta verisi ve indirmeler birbirlerinin veya history kapasitesini tüketmek yerine ayrı limiter kovaları kullanır. Leakwatch yalnızca Slack'e ait HTTPS indirme URL'lerini kabul eder, ek chunk'larını doğrudan backpressure ile aktarır, en fazla `--max-file-size` kadar veriyi belleğe alır, MIME boş ya da yanıltıcı olsa bile geçersiz UTF-8/ikili içeriği reddeder ve aynı Slack dosya kimliğini mesajlar arasında tekilleştirir.
 
 Her çalıştırmada tüm çalışma alanını taramak yerine belirli kanalları hedeflemek için `--channels` kullanın. Mesajları artımlı biçimde taramak için `--since` ile birleştirin.
 

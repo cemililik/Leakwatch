@@ -50,7 +50,7 @@ Beklentileri doğru belirlemek için:
 
 - Git geçmişini yeniden yazmaz veya sırları sizin için **kaldırmaz** — onları bulup raporlar ve (`--remediation` ile) nasıl döndüreceğinizi söyler.
 - Slack varsayılan olarak mesaj metnini tarar; boyutu sınırlı metin benzeri ekler `--include-files` ve `files:read` kapsamıyla isteğe bağlıdır.
-- Doğrulama, birçok sır türü için mevcuttur ancak hepsi için değil — 10 dedektör türü (JWT'ler ve genel API anahtarları gibi) güvenli biçimde doğrulanamaz ve her zaman doğrulanmamış olarak raporlanır.
+- Doğrulama, birçok sır türü için mevcuttur ancak hepsi için değil — 11 dedektör türü (JWT'ler ve genel API anahtarları gibi) güvenli biçimde doğrulanamaz ve her zaman doğrulanmamış olarak raporlanır.
 
 ## Sonraki adımlar
 

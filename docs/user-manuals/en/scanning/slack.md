@@ -34,9 +34,13 @@ The bot token must be associated with a Slack app that has the following OAuth s
 
 | Scope | Purpose |
 |-------|---------|
+| `channels:read` | List public channels. |
 | `channels:history` | Read messages in public channels the bot has joined. |
+| `groups:read` | List private channels. |
 | `groups:history` | Read messages in private channels the bot has joined. |
+| `im:read` | List direct-message conversations (required only with `--include-dms`). |
 | `im:history` | Read direct messages (required only with `--include-dms`). |
+| `mpim:read` | List group direct-message conversations (required only with `--include-dms`). |
 | `mpim:history` | Read group direct messages (required only with `--include-dms`). |
 | `files:read` | Read file metadata and contents (required only with `--include-files`). |
 
@@ -52,7 +56,7 @@ The bot token must be associated with a Slack app that has the following OAuth s
 | `--since` | string (YYYY-MM-DD) | — | Scan messages posted on or after this date. |
 | `--include-dms` | bool | `false` | Also scan direct messages and group DMs. |
 | `--include-files` | bool | `false` | Download and scan bounded text-like file attachments. Requires `files:read`. |
-| `--rate-limit` | float | `1/60` | Maximum Slack API requests per second (one request/minute). Raise only when the app's published Slack tier permits it. |
+| `--rate-limit` | float | `0` | Optional per-operation Slack request cap per second. Zero retains safe operation-specific defaults: history uses `1/60`, while list/file/download defaults are higher. |
 
 ### Common scan flags
 
@@ -134,11 +138,11 @@ Each finding from a Slack scan includes message and channel metadata:
 
 ## Performance considerations
 
-Slack API requests are subject to method- and distribution-specific limits. The `--rate-limit` flag defaults to one request/minute, matching Slack's lowest published `conversations.history` limit for newly distributed non-Marketplace apps. Marketplace/internal apps with Tier 3 access can raise it deliberately.
+Slack API limits apply per method, workspace, and app. Leakwatch therefore uses independent limiter buckets: `conversations.history` defaults to one request/minute for newly distributed non-Marketplace apps, `conversations.list` follows Tier 2 (20+/minute), `files.info` follows Tier 4 (100+/minute), and attachment downloads have a separate conservative 100/minute client-side cap. `--rate-limit` deliberately overrides every bucket with the same per-operation ceiling; Marketplace/internal apps with Tier 3 history access can raise it deliberately.
 
 When Slack responds with `429 Too Many Requests`, Leakwatch automatically honors the `Retry-After` header and retries the request rather than failing the scan outright.
 
-Attachment downloads share the same request limiter. Leakwatch accepts only Slack-owned HTTPS download URLs, buffers at most `--max-file-size`, skips binary/NUL-containing content, and de-duplicates the same Slack file ID across messages.
+Attachment metadata and downloads use separate limiter buckets rather than consuming each other's or history capacity. Leakwatch accepts only Slack-owned HTTPS download URLs, transfers attachment chunks with direct backpressure, buffers at most `--max-file-size`, rejects invalid UTF-8/binary content even when MIME metadata is empty or spoofed, and de-duplicates the same Slack file ID across messages.
 
 Use `--channels` to target specific channels rather than scanning the entire workspace on every run. Combine with `--since` to scan only recent messages incrementally.
 

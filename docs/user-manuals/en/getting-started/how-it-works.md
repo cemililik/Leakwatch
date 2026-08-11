@@ -103,13 +103,13 @@ For a deep dive into verification behavior and status meanings, see [How Verific
 Each finding receives a **deterministic ID** computed as:
 
 ```
-sha256(detectorID + redacted + filePath + line)  →  truncated to the first 16 bytes,
-                                                      hex-encoded to a 32-character string
+sha256(detectorID + redacted + filePath + decimal(line) + ":" + decimal(byteOffset))
+  → truncated to the first 16 bytes and hex-encoded to a 32-character string
 ```
 
 The result is a flat 32-character lowercase hex string (e.g. `447b5d2846d08ce25dd3d638cfe911ad`) — **not** a dashed UUID. The same secret at the same location always produces the same ID, making it safe to deduplicate findings across runs or track them in issue trackers.
 
-**Shannon entropy** (range 0–8) is computed for each finding and exposed in output for informational purposes. At the engine level, the `detection.entropy.threshold` gate applies **only** to heuristic detectors that explicitly opt in — currently just `generic-api-key` — dropping a match whose entropy falls below the threshold to suppress low-randomness placeholders. Every structural (format-anchored) detector, such as `aws-access-key-id` or `github-token`, is never gated by entropy: a low-entropy match from those detectors still appears in results. Custom rules apply their own independent per-rule `entropy` threshold (see [Custom Rules](#/detectors/custom-rules)), separate from this engine-level gate.
+When `detection.entropy.enabled` is true, **Shannon entropy** (range 0–8) is computed for each non-empty finding and exposed in output for informational purposes; when disabled, the field is absent rather than a synthetic zero. At the engine level, `detection.entropy.threshold` applies **only** to heuristic detectors that explicitly opt in — currently just `generic-api-key` — dropping a match whose entropy falls below the threshold to suppress low-randomness placeholders. Every structural (format-anchored) detector, such as `aws-access-key-id` or `github-token`, is never gated by entropy: a low-entropy match from those detectors still appears in results. Custom rules apply their own independent per-rule `entropy` threshold (see [Custom Rules](#/detectors/custom-rules)), separate from this engine-level gate.
 
 ## 8. Post-scan filters
 

@@ -55,11 +55,15 @@ func WithMaxFileSize(size int64) Option {
 	}
 }
 
-// WithRateLimit sets the Slack API rate limit in requests per second.
+// WithRateLimit overrides each operation-scoped Slack limiter with the same
+// requests-per-second ceiling. Defaults remain operation-specific.
 func WithRateLimit(rps float64) Option {
 	return func(s *SlackSource) {
 		if rps > 0 {
-			s.rateLimit = rps
+			s.historyRateLimit = rps
+			s.listRateLimit = rps
+			s.fileInfoRateLimit = rps
+			s.fileDownloadRateLimit = rps
 		}
 	}
 }

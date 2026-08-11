@@ -21,6 +21,13 @@ import (
 
 const detectorID = "gitlab-pat"
 
+type gitLabGranularScope struct {
+	Access      string   `json:"access"`
+	Permissions []string `json:"permissions"`
+	ProjectID   *int64   `json:"project_id"`
+	GroupID     *int64   `json:"group_id"`
+}
+
 // Verifier checks whether a GitLab personal access token is active by calling
 // the GitLab API. It NEVER logs or persists raw token values.
 type Verifier struct {
@@ -199,10 +206,11 @@ func decodeUnauthorized(body io.Reader) error {
 
 func decodeTokenMetadata(body io.Reader) (map[string]string, string, error) {
 	var metadata struct {
-		Active    bool     `json:"active"`
-		Revoked   bool     `json:"revoked"`
-		Scopes    []string `json:"scopes"`
-		ExpiresAt *string  `json:"expires_at"`
+		Active         bool                  `json:"active"`
+		Revoked        bool                  `json:"revoked"`
+		Scopes         []string              `json:"scopes"`
+		GranularScopes []gitLabGranularScope `json:"granular_scopes"`
+		ExpiresAt      *string               `json:"expires_at"`
 	}
 	decoder := json.NewDecoder(body)
 	if err := decoder.Decode(&metadata); err != nil {
@@ -215,7 +223,11 @@ func decodeTokenMetadata(body io.Reader) (map[string]string, string, error) {
 		return nil, "", fmt.Errorf("GitLab self metadata did not describe an active token")
 	}
 	extra := make(map[string]string)
-	if scopes := normalizedMetadataScopes(metadata.Scopes); len(scopes) > 0 {
+	scopes, err := normalizedTokenScopes(metadata.Scopes, metadata.GranularScopes)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(scopes) > 0 {
 		extra["scopes"] = strings.Join(scopes, ",")
 		extra["scope_count"] = strconv.Itoa(len(scopes))
 	}
@@ -227,6 +239,62 @@ func decodeTokenMetadata(body io.Reader) (map[string]string, string, error) {
 		extra["expires_at"] = expiresAt
 	}
 	return extra, "", nil
+}
+
+func normalizedTokenScopes(standard []string, granular []gitLabGranularScope) ([]string, error) {
+	result := normalizedMetadataScopes(standard)
+	if len(granular) > 128 {
+		return nil, fmt.Errorf("GitLab granular scope list exceeds safe limit")
+	}
+	seen := make(map[string]struct{}, len(result)+len(granular))
+	for _, scope := range result {
+		seen[scope] = struct{}{}
+	}
+	for _, scope := range granular {
+		access := strings.TrimSpace(scope.Access)
+		if !isAllowedGranularAccess(access) || len(scope.Permissions) == 0 || len(scope.Permissions) > 128 {
+			return nil, fmt.Errorf("GitLab granular scope has an invalid access contract")
+		}
+		target := ""
+		if access == "selected_memberships" {
+			switch {
+			case scope.ProjectID != nil && *scope.ProjectID > 0 && scope.GroupID == nil:
+				target = ":project:" + strconv.FormatInt(*scope.ProjectID, 10)
+			case scope.GroupID != nil && *scope.GroupID > 0 && scope.ProjectID == nil:
+				target = ":group:" + strconv.FormatInt(*scope.GroupID, 10)
+			default:
+				return nil, fmt.Errorf("GitLab selected-membership scope has an invalid target")
+			}
+		} else if scope.ProjectID != nil || scope.GroupID != nil {
+			return nil, fmt.Errorf("GitLab granular scope has an unexpected membership target")
+		}
+		for _, candidate := range scope.Permissions {
+			permission := strings.TrimSpace(candidate)
+			if permission == "" || len(permission) > 64 || !isSafeMetadataScope(permission) {
+				return nil, fmt.Errorf("GitLab granular scope has an invalid permission")
+			}
+			label := "granular:" + access + target + ":" + permission
+			seen[label] = struct{}{}
+			if len(seen) > 128 {
+				return nil, fmt.Errorf("GitLab normalized scope list exceeds safe limit")
+			}
+		}
+	}
+	result = result[:0]
+	for scope := range seen {
+		result = append(result, scope)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func isAllowedGranularAccess(access string) bool {
+	switch access {
+	case "selected_memberships", "user", "instance", "all_memberships", "personal_projects":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizedMetadataScopes(input []string) []string {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -33,19 +34,25 @@ type mockHistoryPage struct {
 	nextCursor string
 }
 
+type hiddenSlackError struct{ cause error }
+
+func (e hiddenSlackError) Error() string { return "outer SDK failure" }
+func (e hiddenSlackError) Unwrap() error { return e.cause }
+
 // mockSlackClient is a minimal mock for the slackClient interface.
 type mockSlackClient struct {
-	channels    []slack.Channel
-	messages    map[string][]slack.Message
-	authErr     error
-	authWait    bool
-	authCtx     context.Context
-	listErr     error
-	historyErr  error
-	fileInfoErr error
-	downloadErr error
-	files       map[string]slack.File
-	fileBodies  map[string][]byte
+	channels        []slack.Channel
+	messages        map[string][]slack.Message
+	authErr         error
+	authWait        bool
+	authCtx         context.Context
+	listErr         error
+	historyErr      error
+	fileInfoErr     error
+	downloadErr     error
+	files           map[string]slack.File
+	fileBodies      map[string][]byte
+	downloadStarted chan string
 
 	// listRateLimitedCalls, when > 0, makes that many upcoming calls to
 	// GetConversationsContext return a *slack.RateLimitedError before
@@ -176,6 +183,13 @@ func (m *mockSlackClient) GetFileInfoContext(_ context.Context, fileID string, _
 
 func (m *mockSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
 	m.downloadCalls++
+	if m.downloadStarted != nil {
+		select {
+		case m.downloadStarted <- downloadURL:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -543,6 +557,190 @@ func TestSlackSource_Chunks_IncludeFiles_DownloadFailureIsReportedAndTokenRedact
 	assert.Contains(t, s.Err().Error(), "***")
 }
 
+func TestSlackSource_Chunks_ProviderErrorsAreRedactedBeforeLogging(t *testing.T) {
+	const token = "xoxb-sensitive-log-canary"
+	tests := []struct {
+		name string
+		mock *mockSlackClient
+	}{
+		{
+			name: "channel list",
+			mock: &mockSlackClient{listErr: fmt.Errorf("SDK echoed Bearer %s", token)},
+		},
+		{
+			name: "history",
+			mock: &mockSlackClient{
+				channels:   []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}}},
+				historyErr: fmt.Errorf("SDK echoed %s", token),
+			},
+		},
+		{
+			name: "rate retry exhaustion",
+			mock: &mockSlackClient{
+				channels:   []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}}},
+				historyErr: fmt.Errorf("SDK echoed %s: %w", token, &slack.RateLimitedError{RetryAfter: time.Millisecond}),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			s := New(token, WithRateLimit(1000))
+			s.client = tc.mock
+			for range s.Chunks(context.Background()) {
+			}
+			require.Error(t, s.Err())
+			assert.NotContains(t, logs.String(), token)
+			assert.NotContains(t, s.Err().Error(), token)
+			assert.Contains(t, logs.String(), "***")
+			assert.Contains(t, s.Err().Error(), "***")
+		})
+	}
+}
+
+func TestSlackSource_CaptureErrAlwaysFlattensUnwrapChain(t *testing.T) {
+	secretCause := errors.New("xoxb-hidden-in-unwrap")
+	s := New("xoxb-hidden-in-unwrap")
+	s.captureErr(hiddenSlackError{cause: secretCause})
+	require.Error(t, s.Err())
+	assert.Equal(t, "outer SDK failure", s.Err().Error())
+	assert.False(t, errors.Is(s.Err(), secretCause))
+}
+
+func TestSlackSource_Chunks_IncludeFilesUsesBackpressureBeforeSecondDownload(t *testing.T) {
+	const (
+		firstURL  = "https://files.slack.com/files-pri/T1-F1/first"
+		secondURL = "https://files.slack.com/files-pri/T1-F2/second"
+	)
+	started := make(chan string, 2)
+	mock := &mockSlackClient{
+		channels: []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}}},
+		messages: map[string][]slack.Message{"C1": {{Msg: slack.Msg{Files: []slack.File{{ID: "F1"}, {ID: "F2"}}}}}},
+		files: map[string]slack.File{
+			"F1": {ID: "F1", Name: "first.env", Mimetype: "text/plain", URLPrivateDownload: firstURL},
+			"F2": {ID: "F2", Name: "second.env", Mimetype: "text/plain", URLPrivateDownload: secondURL},
+		},
+		fileBodies:      map[string][]byte{firstURL: []byte("KEY=first"), secondURL: []byte("KEY=second")},
+		downloadStarted: started,
+	}
+	s := New("xoxb-test-token", WithIncludeFiles(true), WithBufferSize(100), WithRateLimit(1000))
+	s.client = mock
+	ctx, cancel := context.WithCancel(context.Background())
+	chunks := s.Chunks(ctx)
+	assert.Zero(t, cap(chunks), "attachment mode must transfer engine backpressure directly")
+
+	select {
+	case got := <-started:
+		assert.Equal(t, firstURL, got)
+	case <-time.After(time.Second):
+		t.Fatal("first attachment download did not start")
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("second attachment downloaded before the first chunk was consumed: %s", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	for range chunks {
+	}
+}
+
+func TestSlackSource_DefaultMethodRateLimitsAreIndependent(t *testing.T) {
+	s := New("xoxb-test-token")
+	assert.Equal(t, DefaultRateLimit, s.historyRateLimit)
+	assert.Equal(t, defaultListRateLimit, s.listRateLimit)
+	assert.Equal(t, defaultFileRateLimit, s.fileInfoRateLimit)
+	assert.Equal(t, defaultFileRateLimit, s.fileDownloadRateLimit)
+	assert.NotEqual(t, s.historyRateLimit, s.listRateLimit)
+	assert.NotEqual(t, s.historyRateLimit, s.fileInfoRateLimit)
+
+	WithRateLimit(7)(s)
+	assert.Equal(t, 7.0, s.historyRateLimit)
+	assert.Equal(t, 7.0, s.listRateLimit)
+	assert.Equal(t, 7.0, s.fileInfoRateLimit)
+	assert.Equal(t, 7.0, s.fileDownloadRateLimit)
+}
+
+func TestSlackSource_DefaultListAndHistoryFirstRequestsDoNotBlockEachOther(t *testing.T) {
+	mock := &mockSlackClient{
+		channels: []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}}},
+		messages: map[string][]slack.Message{"C1": nil},
+	}
+	s := New("xoxb-test-token")
+	s.client = mock
+	done := make(chan struct{})
+	go func() {
+		for range s.Chunks(context.Background()) {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("method-scoped first requests blocked one another")
+	}
+	assert.Equal(t, 1, mock.listCalls)
+	assert.Equal(t, 1, mock.historyCalls)
+}
+
+func TestSlackAttachmentTextClassification(t *testing.T) {
+	assert.True(t, isTextLikeSlackFile(slack.File{Mimetype: "application/json; charset=utf-8"}))
+	assert.True(t, isTextLikeSlackFile(slack.File{Mimetype: "text/plain; charset=UTF-8"}))
+	assert.False(t, isTextLikeSlackFile(slack.File{Mimetype: "text/plain; broken"}))
+	assert.False(t, isTextLikeSlackFile(slack.File{Mimetype: "application/octet-stream"}))
+
+	assert.True(t, isProbablyText([]byte("{\"secret\":\"value\"}\n")))
+	assert.True(t, isProbablyText([]byte("anahtar=değer\n")))
+	assert.False(t, isProbablyText([]byte{0xff, 0xd8, 0xff, 0xe0, 1, 2, 3}))
+	assert.False(t, isProbablyText([]byte{1, 2, 3, 4, 5}))
+	assert.False(t, isProbablyText([]byte("text\x00binary")))
+}
+
+func TestSlackSource_Chunks_RejectsSpoofedOrMissingMIMEBinaryContent(t *testing.T) {
+	const (
+		spoofedURL = "https://files.slack.com/files-pri/T1-F1/spoofed"
+		missingURL = "https://files.slack.com/files-pri/T1-F2/missing"
+	)
+	mock := &mockSlackClient{
+		channels: []slack.Channel{{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}}},
+		messages: map[string][]slack.Message{"C1": {{Msg: slack.Msg{Files: []slack.File{{ID: "F1"}, {ID: "F2"}}}}}},
+		files: map[string]slack.File{
+			"F1": {ID: "F1", Name: "image.txt", Mimetype: "text/plain", URLPrivateDownload: spoofedURL},
+			"F2": {ID: "F2", Name: "archive", Mimetype: "", URLPrivateDownload: missingURL},
+		},
+		fileBodies: map[string][]byte{
+			spoofedURL: {0xff, 0xd8, 0xff, 0xe0, 1, 2, 3},
+			missingURL: {1, 2, 3, 4, 5},
+		},
+	}
+	s := New("xoxb-test-token", WithIncludeFiles(true), WithRateLimit(1000))
+	s.client = mock
+	var chunks []source.Chunk
+	for chunk := range s.Chunks(context.Background()) {
+		chunks = append(chunks, chunk)
+	}
+	assert.Empty(t, chunks)
+	assert.Equal(t, 2, mock.downloadCalls)
+}
+
+func TestBoundedFileBuffer_MaxAndMaxPlusOne(t *testing.T) {
+	exact := &boundedFileBuffer{remaining: 3}
+	n, err := exact.Write([]byte("abc"))
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, "abc", exact.String())
+
+	over := &boundedFileBuffer{remaining: 3}
+	n, err = over.Write([]byte("abcd"))
+	assert.ErrorIs(t, err, errSlackFileTooLarge)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, "abc", over.String())
+}
+
 func TestValidateSlackDownloadURL_RejectsCredentialAndNonSlackDestinations(t *testing.T) {
 	assert.NoError(t, validateSlackDownloadURL("https://files.slack.com/files-pri/T1-F1/file"))
 	assert.NoError(t, validateSlackDownloadURL("https://files.slack.com:443/files-pri/T1-F1/file"))
@@ -729,7 +927,7 @@ func TestSlackSource_ProcessChannel_RateLimited_RetriesAndEmits(t *testing.T) {
 	limiter := rate.NewLimiter(rate.Inf, 1)
 	channel := slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}}
 
-	s.processChannel(context.Background(), ch, limiter, channel)
+	s.processChannel(context.Background(), ch, limiter, limiter, limiter, channel)
 	close(ch)
 
 	var texts []string
@@ -761,7 +959,7 @@ func TestSlackSource_ProcessChannel_RateLimitedBeyondMaxRetries_GivesUpGracefull
 	// Must not panic and must not hang; give it a bounded time budget.
 	done := make(chan struct{})
 	go func() {
-		s.processChannel(context.Background(), ch, limiter, channel)
+		s.processChannel(context.Background(), ch, limiter, limiter, limiter, channel)
 		close(ch)
 		close(done)
 	}()
@@ -873,7 +1071,7 @@ func TestSlackSource_ProcessChannel_MultiPageCursorPagination_EmitsAllPages(t *t
 	limiter := rate.NewLimiter(rate.Inf, 1)
 	channel := slack.Channel{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C001"}, Name: "general"}}
 
-	s.processChannel(context.Background(), ch, limiter, channel)
+	s.processChannel(context.Background(), ch, limiter, limiter, limiter, channel)
 	close(ch)
 
 	var texts []string

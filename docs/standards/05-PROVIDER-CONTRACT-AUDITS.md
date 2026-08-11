@@ -9,7 +9,7 @@ Provider APIs change independently of Leakwatch. A verifier may therefore keep c
 - `LastContractReviewedAt`, using `YYYY-MM-DD`; and
 - one or more `ContractReferenceURLs` that point to primary provider documentation.
 
-An empty date means **not audited under this process**. It must never be presented as a completed review. A date without primary references, references without a date, non-HTTPS references, future dates, and reviewed contracts older than 180 days fail the metadata contract tests.
+An empty date means **not audited under this process**. It must never be presented as a completed review. A date without primary references, references without a date, non-HTTPS or non-allowlisted provider hosts, future dates, and reviewed contracts older than 180 days fail the metadata contract tests.
 
 ## Audit procedure
 
@@ -22,7 +22,7 @@ For every audited verifier:
 5. Update the verifier's adversarial response matrix before advancing the review date.
 6. Record only primary provider documentation URLs in the capability manifest.
 
-The weekly `provider-contract-audit.yml` workflow runs the freshness gate. Its purpose is to make an audit due date visible and blocking; changing only the date without reviewing the references, implementation, and tests violates this standard.
+The weekly `provider-contract-audit.yml` workflow runs the freshness gate and a bounded live documentation check. Every recorded URL must resolve with a 2xx response on an allowlisted official provider host; a recorded fragment must exist in the returned page. Redirects are bounded and may only remain within the official-host allowlist. Its purpose is to make audit due dates and dead/misdirected evidence visible and blocking; changing only the date without reviewing the references, implementation, and tests violates this standard.
 
 ## Live canaries
 

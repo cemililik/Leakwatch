@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -73,6 +74,41 @@ func TestVerifyWithRequestGate_MetadataFailureDoesNotEraseProvenActiveIdentity(t
 	require.Equal(t, finding.StatusVerifiedActive, result.Status)
 	assert.Equal(t, 2, requests)
 	assert.Equal(t, 2, admissions)
+}
+
+func TestDecodeTokenMetadata_GranularScopesAreBoundedAndDeterministic(t *testing.T) {
+	body := `{
+		"active":true,"revoked":false,"scopes":[],"expires_at":"2027-02-03",
+		"granular_scopes":[
+			{"access":"selected_memberships","permissions":["write_job","read_job"],"project_id":6,"group_id":null},
+			{"access":"user","permissions":["read_profile"],"project_id":null,"group_id":null}
+		]
+	}`
+	extra, _, err := decodeTokenMetadata(strings.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t,
+		"granular:selected_memberships:project:6:read_job,granular:selected_memberships:project:6:write_job,granular:user:read_profile",
+		extra["scopes"])
+	assert.Equal(t, "3", extra["scope_count"])
+	assert.Equal(t, "2027-02-03", extra["expires_at"])
+}
+
+func TestVerify_MalformedGranularMetadataDoesNotEraseActiveIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v4/user" {
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"active":true,"revoked":false,"granular_scopes":[{"access":"selected_memberships","permissions":["read_job"],"project_id":null,"group_id":null}]}`))
+	}))
+	defer server.Close()
+
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")})
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, "johndoe", result.ExtraData["username"])
+	assert.NotContains(t, result.ExtraData, "scopes")
 }
 
 func TestVerifyWithRequestGate_RejectionPreventsAnyRequest(t *testing.T) {

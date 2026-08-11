@@ -16,9 +16,9 @@ import (
 // a single literal.
 const flagIncludeFiles = "include-files"
 
-// defaultSlackRateLimit is the source package's lowest-common-denominator Slack
-// history limit (one request/minute). Marketplace/internal apps can raise it.
-const defaultSlackRateLimit = slacksource.DefaultRateLimit
+// A zero CLI value retains the source package's safe operation-specific
+// defaults. A positive value explicitly overrides every limiter bucket.
+const defaultSlackRateLimit = 0
 
 var scanSlackCmd = &cobra.Command{
 	Use:   "slack",
@@ -28,10 +28,11 @@ such as API keys, passwords, and certificates. Text-like uploaded files can be
 scanned with --include-files; downloads are size-bounded and restricted to
 Slack-owned HTTPS endpoints.
 
-Requires a Slack Bot Token with appropriate scopes (channels:history,
-groups:history, im:history, mpim:history). File scanning additionally requires
-files:read. The token can be provided via the --token flag or the
-LEAKWATCH_SLACK_TOKEN environment variable.`,
+Requires a Slack Bot Token with channels:read, channels:history, groups:read,
+and groups:history. --include-dms additionally requires im:read, im:history,
+mpim:read, and mpim:history; file scanning additionally requires files:read.
+The token can be provided via the --token flag or the LEAKWATCH_SLACK_TOKEN
+environment variable.`,
 	Example: `  # Scan all channels using environment variable for token
   export LEAKWATCH_SLACK_TOKEN=xoxb-your-token
   leakwatch scan slack
@@ -67,7 +68,7 @@ func init() {
 	flags.String("since", "", "scan messages after this date (YYYY-MM-DD)")
 	flags.Bool("include-dms", false, "include direct messages")
 	flags.Bool(flagIncludeFiles, false, "scan text-like uploaded files (requires files:read)")
-	flags.Float64("rate-limit", defaultSlackRateLimit, "max Slack API requests per second")
+	flags.Float64("rate-limit", defaultSlackRateLimit, "per-operation Slack request cap per second (0 uses safe operation-specific defaults)")
 	addCommonScanFlags(flags)
 	addVerifyFlags(flags)
 }
@@ -113,7 +114,11 @@ func runScanSlack(cmd *cobra.Command, _ []string) error {
 		opts = append(opts, slacksource.WithIncludeFiles(true))
 	}
 
-	if rateLimit := flagFloat64(cmd, "rate-limit"); rateLimit > 0 {
+	rateLimit := flagFloat64(cmd, "rate-limit")
+	if rateLimit < 0 {
+		return fmt.Errorf("--rate-limit must be zero or greater")
+	}
+	if rateLimit > 0 {
 		opts = append(opts, slacksource.WithRateLimit(rateLimit))
 	}
 

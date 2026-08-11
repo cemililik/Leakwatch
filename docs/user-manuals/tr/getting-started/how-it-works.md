@@ -103,13 +103,13 @@ Doğrulama davranışı ve durum anlamları hakkında derinlemesine bilgi için 
 Her bulgu, şu şekilde hesaplanan **deterministik bir kimlik** alır:
 
 ```
-sha256(detectorID + redacted + filePath + line)  →  ilk 16 bayta kısaltılır,
-                                                      32 karakterlik bir dizeye hex kodlanır
+sha256(detectorID + redacted + filePath + decimal(line) + ":" + decimal(byteOffset))
+  → ilk 16 bayta kısaltılır ve 32 karakterlik bir dizeye hex kodlanır
 ```
 
 Sonuç, düz, 32 karakterlik küçük harfli bir hex dizesidir (örn. `447b5d2846d08ce25dd3d638cfe911ad`) — **çizgili** bir UUID **değildir**. Aynı konumdaki aynı sır her zaman aynı kimliği üretir; bu da bulguları çalıştırmalar arasında yinelenenleri kaldırmayı veya sorun izleyicilerde takip etmeyi güvenli kılar.
 
-**Shannon entropisi** (aralık 0–8) her bulgu için hesaplanır ve bilgilendirme amacıyla çıktıda gösterilir. Motor düzeyinde, `detection.entropy.threshold` kapısı yalnızca açıkça buna dahil olan sezgisel dedektörlere uygulanır — şu anda yalnızca `generic-api-key` — entropisi eşiğin altına düşen bir eşleşmeyi, düşük rastgelelikli yer tutucuları bastırmak için düşürür. `aws-access-key-id` veya `github-token` gibi her yapısal (biçim-çapalı) dedektör entropi tarafından hiçbir zaman kapılanmaz: bu dedektörlerden gelen düşük entropili bir eşleşme yine de sonuçlarda görünür. Özel kurallar, bu motor düzeyindeki kapıdan ayrı olarak kendi bağımsız kural başına `entropy` eşiğini uygular (bkz. [Özel Kurallar](#/detectors/custom-rules)).
+`detection.entropy.enabled` doğru olduğunda **Shannon entropisi** (aralık 0–8) boş olmayan her bulgu için hesaplanır ve bilgilendirme amacıyla çıktıda gösterilir; devre dışıyken yapay sıfır yerine alan bulunmaz. Motor düzeyinde, `detection.entropy.threshold` kapısı yalnızca açıkça buna dahil olan sezgisel dedektörlere uygulanır — şu anda yalnızca `generic-api-key` — entropisi eşiğin altına düşen bir eşleşmeyi, düşük rastgelelikli yer tutucuları bastırmak için düşürür. `aws-access-key-id` veya `github-token` gibi her yapısal (biçim-çapalı) dedektör entropi tarafından hiçbir zaman kapılanmaz: bu dedektörlerden gelen düşük entropili bir eşleşme yine de sonuçlarda görünür. Özel kurallar, bu motor düzeyindeki kapıdan ayrı olarak kendi bağımsız kural başına `entropy` eşiğini uygular (bkz. [Özel Kurallar](#/detectors/custom-rules)).
 
 ## 8. Tarama sonrası filtreler
 

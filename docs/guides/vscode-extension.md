@@ -37,7 +37,16 @@ leakwatch version
 
 The extension is not yet advertised as generally available in the Visual Studio Marketplace. Extension CI does, however, lint, test, package, and upload a reviewable `leakwatch-vsix` workflow artifact. Download the artifact from a trusted workflow run and install it with `code --install-extension leakwatch-<version>.vsix`.
 
-Marketplace publication is experimental and deliberately separate from ordinary CI: `.github/workflows/vscode-release.yml` requires a manual `publish=true` dispatch, approval through the protected `vscode-marketplace` environment, and its environment-scoped `VSCE_PAT`. It publishes the exact VSIX produced and reviewed by the package job; tags do not publish automatically.
+Marketplace publication is experimental and deliberately separate from ordinary CI. `.github/workflows/vscode-release.yml` accepts `publish=true` only from `main`, publishes the exact VSIX produced by its package job, and reads `VSCE_PAT` only from the `vscode-marketplace` environment. Tags do not publish automatically.
+
+Repository administrators must configure that environment before the first publication:
+
+1. Add at least one required reviewer and enable **Prevent self-review**.
+2. Set deployment branches to **Protected branches only** and keep `main` protected.
+3. Store `VSCE_PAT` as an environment secret, never as a repository secret.
+4. Audit these settings after ownership or branch-protection changes.
+
+The publish job queries GitHub's environment API and fails before loading the VSIX or PAT unless the required-reviewer, self-review, and protected-branch policies are present. The environment approval itself remains an external GitHub control; this runbook and the executable audit make that dependency explicit rather than assuming an environment name is sufficient.
 
 ### 2.3 Build from Source
 

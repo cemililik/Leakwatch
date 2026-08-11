@@ -64,7 +64,9 @@ To scan a Slack workspace, you need a Slack Bot Token (`xoxb-...`) with the appr
 | `channels:read` | List public channels |
 | `groups:history` | Read messages in private channels the bot is a member of |
 | `groups:read` | List private channels the bot is a member of |
+| `im:read` | List direct-message conversations (only if `--include-dms` is used) |
 | `im:history` | Read direct messages (only if `--include-dms` is used) |
+| `mpim:read` | List group direct-message conversations (only if `--include-dms` is used) |
 | `mpim:history` | Read group direct messages (only if `--include-dms` is used) |
 | `files:read` | Read uploaded file content (only if `--include-files` is used) |
 
@@ -172,7 +174,7 @@ By default, Leakwatch scans only public and private channels. To include direct 
 leakwatch scan slack --include-dms
 ```
 
-> **Privacy note:** Scanning direct messages has significant privacy implications. Ensure you have organizational approval and that your employees are aware that DMs may be scanned for security purposes. Many organizations restrict DM scanning to incident response scenarios or require explicit consent. The bot's OAuth scopes `im:history` and `mpim:history` must be granted for this feature to work.
+> **Privacy note:** Scanning direct messages has significant privacy implications. Ensure you have organizational approval and that your employees are aware that DMs may be scanned for security purposes. Many organizations restrict DM scanning to incident response scenarios or require explicit consent. The bot's OAuth scopes `im:read`, `im:history`, `mpim:read`, and `mpim:history` must be granted for this feature to work.
 
 ---
 
@@ -184,7 +186,7 @@ File scanning is opt-in. Add `--include-files` and grant the bot `files:read` to
 leakwatch scan slack --include-files --max-file-size 5242880
 ```
 
-Leakwatch only sends the bot token to Slack-owned HTTPS download URLs. File metadata and downloads use the configured request limiter and bounded 429 retry policy. Attachments that exceed `--max-file-size`, have a non-text MIME type, or contain NUL bytes are skipped. The same Slack file ID is downloaded at most once per scan.
+Leakwatch only sends the bot token to Slack-owned HTTPS download URLs. File metadata and downloads use separate limiter buckets and bounded 429 retry policies without consuming each other's or history capacity. Attachment chunks transfer with direct backpressure; content that exceeds `--max-file-size` or fails the conservative UTF-8 text classifier is skipped even when MIME metadata is empty or spoofed. The same Slack file ID is downloaded at most once per scan.
 
 ---
 
@@ -201,7 +203,7 @@ tier.
 
 ### 8.2 Configuring the Rate Limit
 
-The `--rate-limit` flag controls the maximum number of Slack API requests per second. The conservative default is one request per minute (`1/60` requests/second), matching Slack's lowest published history limit:
+Leakwatch keeps independent operation buckets because Slack applies Web API limits per method/workspace/app. Defaults are one request/minute for the special `conversations.history` profile, Tier 2 (20+/minute) for `conversations.list`, Tier 4 (100+/minute) for `files.info`, and a separate conservative 100/minute client-side cap for attachment downloads. The `--rate-limit` flag explicitly replaces every bucket with one common **per-operation** requests-per-second ceiling:
 
 ```bash
 # Default rate (one request/minute)

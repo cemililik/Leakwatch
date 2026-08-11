@@ -195,6 +195,28 @@ func TestRunScanSlack_TokenFromEnv_ReachesDateValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid --since date")
 }
 
+func TestScanSlackHelp_DocumentsRequiredOAuthScopes(t *testing.T) {
+	for _, scope := range []string{
+		"channels:read", "channels:history", "groups:read", "groups:history",
+		"im:read", "im:history", "mpim:read", "mpim:history", "files:read",
+	} {
+		assert.Contains(t, scanSlackCmd.Long, scope)
+	}
+	rateFlag := scanSlackCmd.Flags().Lookup("rate-limit")
+	require.NotNil(t, rateFlag)
+	assert.Contains(t, rateFlag.Usage, "per-operation")
+	assert.Equal(t, "0", rateFlag.DefValue)
+}
+
+func TestRunScanSlack_RejectsNegativeRateLimitBeforeNetwork(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("LEAKWATCH_SLACK_TOKEN", "xoxb-fake-test-token")
+
+	err := executeRoot(t, "scan", "slack", "--rate-limit", "-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--rate-limit must be zero or greater")
+}
+
 func TestRunScanRepos_AllReposFail_ReturnsAggregateError(t *testing.T) {
 	isolateConfig(t)
 	// Two local paths that are not git repositories fail to open locally (no

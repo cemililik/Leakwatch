@@ -10,12 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Opt-in Slack text-attachment scanning with Slack-owned HTTPS enforcement,
-  shared request limiting, bounded file size/retries, binary filtering, and
-  file-ID de-duplication.
-- Best-effort GitHub scope/expiration and GitLab PAT scope/expiration metadata
+  operation-scoped request limiting, byte-bounded backpressure, bounded file
+  size/retries, UTF-8 text classification, token-safe errors/logs, and file-ID
+  de-duplication.
+- Best-effort GitHub scope/expiration and GitLab PAT standard or GitLab 19.2+ granular scope/expiration metadata
   after authoritative active verification.
-- A reviewable VSIX artifact, 256×256 Marketplace icon, protected manual VS Code
-  publication workflow, and a scheduled provider-contract freshness gate.
+- A reviewable VSIX artifact, 256×256 Marketplace icon, main-only manual VS Code
+  publication workflow with an executable environment-policy audit, and a
+  scheduled provider-contract freshness/link gate.
 
 ### Changed
 

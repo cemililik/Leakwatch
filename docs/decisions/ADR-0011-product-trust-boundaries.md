@@ -14,11 +14,11 @@ The current status is:
 
 | Capability | Status | Contract |
 |---|---|---|
-| Slack text-file attachments | **Shipped** | Explicit `--include-files`; `files:read`; Slack-owned HTTPS only; shared limiter; bounded size/retry; text/NUL filtering; file-ID deduplication; terminal errors fail the source. |
+| Slack text-file attachments | **Shipped** | Explicit `--include-files`; `files:read`; Slack-owned HTTPS only; operation-scoped limiters; byte-bounded backpressure; bounded size/retry; UTF-8 text classification; file-ID deduplication; token-safe terminal errors/logs. |
 | GitHub/GitLab scope and expiry metadata | **Shipped** | Best-effort, schema-validated metadata only after an authoritative active proof; malformed or unavailable enrichment never changes active/inactive evidence. |
 | VSIX build and icon | **Shipped** | Lockfile-pinned local package command and CI artifact; the VSIX contains only the bundled runtime, license/readme/changelog, manifest, and 256×256 icon. |
-| Visual Studio Marketplace publication | **Experimental** | Manual workflow only, explicit boolean input, protected `vscode-marketplace` environment, one reviewed VSIX artifact, and environment-scoped `VSCE_PAT`. No automatic tag publication. |
-| Provider contract freshness audit | **Shipped** | Primary references and review dates in the capability manifest; weekly 180-day freshness gate; synthetic adversarial tests remain mandatory. |
+| Visual Studio Marketplace publication | **Experimental** | Manual `main`-only workflow, explicit boolean input, one reviewed VSIX artifact, environment-scoped `VSCE_PAT`, and a fail-closed API audit of externally configured reviewers/self-review/branch policy. No automatic tag publication. |
+| Provider contract freshness audit | **Shipped** | Allowlisted primary references and review dates in the capability manifest; weekly 180-day plus live link/fragment gate; synthetic adversarial tests remain mandatory. |
 | Baseline/snapshot suppression | **Planned** | Not exposed until the threat model and versioned format below are implemented and tested. |
 | Coinbase legacy live HMAC verification | **Planned** | Remains format-only until key/secret correlation is assignment-aware, unambiguous, secret-safe, and backed by a safe read-only provider contract. |
 | Live provider canaries | **Planned** | No credentials in default CI; provider-specific, protected, explicit opt-in only after the controls in the provider-audit standard are satisfied. |

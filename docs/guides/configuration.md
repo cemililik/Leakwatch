@@ -245,6 +245,8 @@ flowchart LR
 
 Slack scanning is configured entirely via CLI flags and environment variables. There is no `slack:` key in `.leakwatch.yaml`; YAML support for Slack options is planned for a future release.
 
+The bot needs `channels:read`, `channels:history`, `groups:read`, and `groups:history`. Add `im:read`, `im:history`, `mpim:read`, and `mpim:history` for `--include-dms`, and `files:read` for `--include-files`.
+
 Use CLI flags directly when running `scan slack`:
 
 ```bash
@@ -265,9 +267,9 @@ leakwatch scan slack \
 | `--channels` | all | Comma-separated channel names to scan |
 | `--exclude-channels` | none | Comma-separated channel names to skip |
 | `--since` | none | Scan messages posted after this date (`YYYY-MM-DD`) |
-| `--include-dms` | `false` | Scan direct messages (requires `im:history` / `mpim:history` scopes) |
+| `--include-dms` | `false` | Scan direct messages (requires `im:read`, `im:history`, `mpim:read`, and `mpim:history`) |
 | `--include-files` | `false` | Download and scan bounded text-like attachments; requires Slack `files:read` |
-| `--rate-limit` | `1/60` (~`0.0167`) | Maximum Slack API requests per second; raise only for a Marketplace/internal app with a higher published tier |
+| `--rate-limit` | `0` | Optional per-operation Slack request cap; zero retains safe operation-specific defaults (history `1/60`, list/file/download higher) |
 
 > **Security note:** Always provide the Slack token via the `LEAKWATCH_SLACK_TOKEN` environment variable rather than the `--token` flag in automated environments, to avoid token exposure in process listings or CI logs.
 

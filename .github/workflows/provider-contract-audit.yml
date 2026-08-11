@@ -9,12 +9,14 @@ on:
     paths:
       - 'internal/meta/capabilities.go'
       - 'internal/meta/capabilities_test.go'
+      - 'internal/meta/provider_contract_links_test.go'
       - 'docs/standards/05-PROVIDER-CONTRACT-AUDITS.md'
       - '.github/workflows/provider-contract-audit.yml'
   pull_request:
     paths:
       - 'internal/meta/capabilities.go'
       - 'internal/meta/capabilities_test.go'
+      - 'internal/meta/provider_contract_links_test.go'
       - 'docs/standards/05-PROVIDER-CONTRACT-AUDITS.md'
       - '.github/workflows/provider-contract-audit.yml'
 
@@ -24,6 +26,7 @@ permissions:
 jobs:
   freshness:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
@@ -34,3 +37,7 @@ jobs:
           cache: true
       - name: Enforce reviewed provider-contract freshness
         run: go test ./internal/meta -run '^TestVerificationCapabilities_ReviewedContractsAreFresh$' -count=1
+      - name: Verify official provider references and anchors
+        env:
+          LEAKWATCH_CHECK_PROVIDER_LINKS: '1'
+        run: go test ./internal/meta -run '^TestVerificationCapabilities_ReviewedReferenceLinksResolve$' -count=1 -timeout=8m

@@ -175,6 +175,53 @@ func TestEntropyPolicyDocs_MatchEngineContract(t *testing.T) {
 	}
 }
 
+func TestSlackScopeDocumentation_ContainsExecutableRequiredSet(t *testing.T) {
+	root := filepath.Join("..", "..")
+	paths := []string{
+		filepath.Join(root, "docs", "guides", "configuration.md"),
+		filepath.Join(root, "docs", "guides", "slack-scanning.md"),
+		filepath.Join(root, "docs", "user-manuals", "en", "scanning", "slack.md"),
+		filepath.Join(root, "docs", "user-manuals", "tr", "scanning", "slack.md"),
+		filepath.Join(root, "site", "js", "manuals", "en.js"),
+		filepath.Join(root, "site", "js", "manuals", "tr.js"),
+	}
+	scopes := []string{
+		"channels:read", "channels:history", "groups:read", "groups:history",
+		"im:read", "im:history", "mpim:read", "mpim:history", "files:read",
+	}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for _, scope := range scopes {
+			assert.Contains(t, string(contents), scope, "%s is missing %s", filepath.ToSlash(path), scope)
+		}
+	}
+}
+
+func TestFindingWireSemanticsDocs_MatchEngine(t *testing.T) {
+	root := filepath.Join("..", "..")
+	paths := []string{
+		filepath.Join(root, "docs", "user-manuals", "en", "getting-started", "how-it-works.md"),
+		filepath.Join(root, "docs", "user-manuals", "tr", "getting-started", "how-it-works.md"),
+	}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		require.NoError(t, err)
+		text := string(contents)
+		assert.Contains(t, text, "decimal(byteOffset)", path)
+		assert.Contains(t, text, "detection.entropy.enabled", path)
+		assert.NotContains(t, text, "sha256(detectorID + redacted + filePath + line)", path)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "docs", "user-manuals", "en", "getting-started", "introduction.md"),
+		filepath.Join(root, "docs", "user-manuals", "tr", "getting-started", "introduction.md"),
+	} {
+		contents, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Contains(t, string(contents), "11")
+	}
+}
+
 func currentDocumentationMarkdownPaths(root string) ([]string, error) {
 	skipDirs := map[string]struct{}{
 		".git": {}, "node_modules": {}, "vendor": {}, "dist": {}, "review": {},

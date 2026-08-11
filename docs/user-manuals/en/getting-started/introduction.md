@@ -50,7 +50,7 @@ To set expectations accurately:
 
 - It does **not** rewrite Git history or remove secrets for you — it finds and reports them, and (with `--remediation`) tells you how to rotate them.
 - Slack scans message text by default; bounded text-like attachments are opt-in with `--include-files` and the `files:read` scope.
-- Verification is available for many but not all secret types — 10 detector types (such as JWTs and generic API keys) cannot be safely verified and are always reported as unverified.
+- Verification is available for many but not all secret types — 11 detector types (such as JWTs and generic API keys) cannot be safely verified and are always reported as unverified.
 
 ## Next steps
 

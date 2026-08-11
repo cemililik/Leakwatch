@@ -59,8 +59,11 @@ npm run package:vsix                 # create leakwatch-<version>.vsix
 
 The committed 256×256 Marketplace icon is rendered from `images/icon.svg`.
 CI packages and uploads a VSIX for every extension change. Marketplace
-publication is a separate manual workflow protected by the
-`vscode-marketplace` GitHub environment and its `VSCE_PAT` secret.
+publication is a separate manual, `main`-only workflow. Administrators must
+configure the `vscode-marketplace` environment with required reviewers,
+prevent-self-review, protected-branch deployment policy, and an environment-only
+`VSCE_PAT`; the workflow audits those policies through the GitHub API and fails
+closed before publication when they drift.
 
 ## License
 
