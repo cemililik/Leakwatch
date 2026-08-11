@@ -276,6 +276,40 @@ func TestVerifyToken_InactiveRequiresDefinitiveBodyWhenConfigured(t *testing.T) 
 	}
 }
 
+func TestVerifyToken_InactiveRequiresJSONWithoutDecoder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`<html>proxy login</html>`))
+	}))
+	defer server.Close()
+
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:                   "x",
+		Request:                Request{URL: server.URL},
+		InactiveMessage:        "secret revoked",
+		RequireJSONContentType: true,
+	})
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+}
+
+func TestVerifyToken_InactiveBodyIsBounded(t *testing.T) {
+	server := jsonServer(t, http.StatusUnauthorized, strings.Repeat("x", int(MaxBodyBytes)+1))
+	defer server.Close()
+
+	result := VerifyToken(context.Background(), server.Client(), testToken, TokenSpec{
+		Name:                   "x",
+		Request:                Request{URL: server.URL},
+		RequireJSONContentType: true,
+		DecodeInactive: func(io.Reader) error {
+			t.Fatal("oversized inactive body must not reach the decoder")
+			return nil
+		},
+	})
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
+	assert.Contains(t, result.Message, "exceeds")
+}
+
 func TestVerifyToken_CustomActiveStatus405(t *testing.T) {
 	server := jsonServer(t, http.StatusMethodNotAllowed, `{}`)
 	defer server.Close()

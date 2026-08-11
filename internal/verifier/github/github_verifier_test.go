@@ -61,6 +61,7 @@ func TestDecodeUserResponse_IgnoresMalformedUntrustedMetadata(t *testing.T) {
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
 	}))
@@ -81,6 +82,31 @@ func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "GitHub token is invalid or revoked", result.Message)
+}
+
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "proxy html", contentType: "text/html", body: `<html>login</html>`},
+		{name: "ambiguous json", contentType: "application/json", body: `{"message":"Unauthorized"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+				context.Background(), detector.RawFinding{Raw: []byte("ghp_synthetic123456789012345678901234")},
+			)
+			assert.Equal(t, finding.StatusVerifyError, result.Status)
+		})
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

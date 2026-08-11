@@ -47,6 +47,7 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"Invalid API key"}`))
 	}))
@@ -67,6 +68,25 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "Grafana API key is invalid or revoked", result.Message)
+}
+
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>login</html>`},
+		{contentType: "application/json", body: `{"message":"WAF challenge"}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{instanceURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detector.RawFinding{Raw: []byte("glsa_synthetic123456789012345678901234")},
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

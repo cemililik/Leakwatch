@@ -88,7 +88,7 @@ If the marker is present, the finding is silently dropped **before any network c
 After detection completes for all chunks, the engine passes findings to a separate **verification worker pool** (default 4 workers). Verification:
 
 - Admits each actual API call through both a shared global and a per-detector **rate limiter** (the configured default is 10 requests per second for each ceiling). Format-only or missing-context paths consume no token; the shared global bucket bounds total traffic but does not guarantee fair provider scheduling.
-- Applies a **per-request timeout** (default 10 seconds) to every API call.
+- Applies a **per-finding verification-operation timeout** (default 10 seconds), including bounded regional fallback and request admission.
 - Makes only **read-only, non-destructive** calls to the provider (e.g. `sts:GetCallerIdentity` for AWS keys).
 - Marks each finding with one of four statuses: `verified_active`, `verified_inactive`, `unverified`, or `verify_error`.
 

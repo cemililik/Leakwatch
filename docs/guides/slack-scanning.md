@@ -371,7 +371,7 @@ flowchart TD
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `slack_rate_limited` errors in logs | API rate limit exceeded | Lower `--rate-limit` (e.g., `--rate-limit 5`) |
+| `slack_rate_limited` errors in logs | API rate limit exceeded | Use `--rate-limit 0` to restore Slack-safe operation defaults, or reduce an explicit positive override |
 | Scan is very slow | Rate limit set too low | Increase `--rate-limit` if your Slack plan allows higher quotas |
 | Intermittent timeouts | Network instability or Slack API issues | Retry the scan; consider running from a stable network |
 

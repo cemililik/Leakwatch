@@ -258,6 +258,18 @@ func TestFinishScan_ExitCodeContract(t *testing.T) {
 		err := finishScan(base, result, "fs", context.Canceled)
 		var fErr *FindingsExitError
 		require.ErrorAs(t, err, &fErr)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "partial results")
+	})
+
+	t.Run("findings preserve a non-interruption source error", func(t *testing.T) {
+		scanErr := errors.New("source pagination failed")
+		result := &engine.ScanResult{Findings: []finding.Finding{{ID: "x"}}}
+		err := finishScan(base, result, "slack", scanErr)
+		var findingsErr *FindingsExitError
+		require.ErrorAs(t, err, &findingsErr)
+		assert.ErrorIs(t, err, scanErr)
+		assert.Contains(t, err.Error(), "partial results")
 	})
 
 	t.Run("clean completed scan returns nil", func(t *testing.T) {

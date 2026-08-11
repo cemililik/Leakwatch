@@ -553,6 +553,9 @@ const cases = [
   ["bare account SID", "TWILIO_ACCOUNT_SID=" + account, 0],
   ["unpaired secret", "TWILIO_API_KEY_SECRET=" + secret, 0],
   ["paired", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=" + secret, 1],
+  ["prefixed pair", "MYAPP_TWILIO_API_KEY_SID=" + key + "\nMYAPP_TWILIO_API_KEY_SECRET=" + secret, 1],
+  ["generic X pair", "X_API_KEY_SID=" + key + "\nX_API_KEY_SECRET=" + secret, 1],
+  ["compose environment list", "environment:\n  - TWILIO_API_KEY_SID=" + key + "\n  - TWILIO_API_KEY_SECRET=" + secret, 1],
   ["short opaque secret", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=x7-K", 1],
   ["genuine value containing example", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=real-example-secret-value-42", 1],
   ["placeholder", "TWILIO_API_KEY_SID=" + key + "\nTWILIO_API_KEY_SECRET=your_api_key_secret", 0],
@@ -579,6 +582,12 @@ for (const [name, input, want] of cases) {
   const got = count(input);
   if (got !== want) throw new Error(name + ": got " + got + ", want " + want);
 }
+var consecutive = "";
+for (var pairIndex = 1; pairIndex <= 5; pairIndex++) {
+  consecutive += "TWILIO_API_KEY_SID=SK" + pairIndex.toString(16).padStart(32, "0") + "\n";
+  consecutive += "TWILIO_API_KEY_SECRET=opaque-secret-" + pairIndex + "-Q7mN2pL9rT4vW8xY\n";
+}
+if (count(consecutive) !== 5) throw new Error("consecutive pairs were suppressed");
 const capCases = [
   ["ASCII exact cap", "a".repeat(64 * 1024), false],
   ["ASCII over cap", "a".repeat(64 * 1024) + "x", true],

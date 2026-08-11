@@ -162,6 +162,14 @@ func TestFormatter_Format_ShowRawTrue_UsesReversibleTerminalSafeEncoding(t *test
 	assert.Contains(t, buf.String(), encoded)
 }
 
+func TestTableCell_DisplayWidthUsesExplicitUncoloredText(t *testing.T) {
+	cell := tableCell{text: "\x1b[31mCRITICAL\x1b[0m", widthText: "CRITICAL"}
+	assert.Equal(t, 8, cell.displayWidth(), "ANSI decoration must not contribute to table alignment")
+
+	unicodeCell := tableCell{text: "ignored", widthText: "秘密"}
+	assert.Equal(t, 4, unicodeCell.displayWidth(), "widthText must retain terminal-cell semantics")
+}
+
 func TestFormatter_Format_ShowRawFalse_DoesNotMutateOriginal(t *testing.T) {
 	f := &Formatter{ShowRaw: false}
 	var buf bytes.Buffer

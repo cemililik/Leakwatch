@@ -138,8 +138,14 @@
     if (b.end <= a.start) { start = b.end; end = a.start; }
     if (start > end) return false;
     var between = text.slice(start, end);
-    return !/(?:\r?\n[ \t]*\r?\n|\r?\n[ \t]*-[ \t]+|\r?\n[ \t]*\[[^\r\n]+\][ \t]*(?:\r?\n|$))/.test(between) &&
+    return !/(?:\r?\n[ \t]*\r?\n|\r?\n[ \t]*\[[^\r\n]+\][ \t]*(?:\r?\n|$))/.test(between) &&
       !/[{}]/.test(between);
+  }
+
+  function correlatedAssignmentStart(match) {
+    var whole = match[0];
+    if (!whole || /^[0-9A-Za-z]/.test(whole)) return match.index;
+    return match.index + (whole.codePointAt(0) > 0xffff ? 2 : 1);
   }
 
   function allMatchRanges(regexes, text) {
@@ -154,7 +160,7 @@
         }
         var end = re.lastIndex;
         if (captured) end = match.index + whole.lastIndexOf(captured) + captured.length;
-        ranges.push({ start: match.index, end: end, used: false });
+        ranges.push({ start: correlatedAssignmentStart(match), end: end, used: false });
         if (match.index === re.lastIndex) re.lastIndex++;
       }
     });
@@ -208,7 +214,10 @@
         bestDistance = distance;
         companionIndex = index;
       } else if (distance === bestDistance) {
-        companionIndex = -1;
+        var current = companionIndex >= 0 ? companions[companionIndex] : null;
+        var candidatePrecedes = companion.end <= primaryRange.start;
+        var currentPrecedes = current && current.end <= primaryRange.start;
+        if (candidatePrecedes && !currentPrecedes) companionIndex = index;
       }
     });
     return companionIndex;
@@ -218,7 +227,7 @@
     var whole = match[0];
     var display = capturedDisplay(match, detector);
     var valueOffset = whole.lastIndexOf(display);
-    var primaryRange = { start: match.index, end: match.index + valueOffset + display.length };
+    var primaryRange = { start: correlatedAssignmentStart(match), end: match.index + valueOffset + display.length };
     var closing = valueOffset + display.length;
     var truncatedQuotedValue = closing < whole.length && (whole[closing] === '"' || whole[closing] === "'") && escapedAt(whole, closing);
     var companionIndex = closestCompanionIndex(detector, text, byteOffsets, primaryRange, companions);

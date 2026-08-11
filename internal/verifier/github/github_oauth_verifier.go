@@ -107,6 +107,7 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw detector.RawFinding) fin
 		InactiveMessage:        "GitHub OAuth or installation token is invalid or revoked",
 		Decode:                 decode,
 		DecodeResponse:         decodeResponse,
+		DecodeInactive:         decodeGitHubInactive,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})

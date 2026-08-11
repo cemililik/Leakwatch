@@ -171,6 +171,62 @@ func TestStructuredConfigDetector_AllSupportedFormats_HardNegatives(t *testing.T
 	}
 }
 
+func TestStructuredConfigDetector_CommonNamespacedCredentialKeys(t *testing.T) {
+	secret := "Q7mN2pL9rT4vW8xYzC6bH3kF"
+	tests := []struct {
+		name string
+		data []byte
+		want int
+	}{
+		{name: "dotenv DB_PASSWORD after empty placeholder", data: []byte("EMPTY_VAR=\nDB_PASSWORD=" + secret + "\n"), want: 1},
+		{name: "dotenv lowercase neutral line", data: []byte("optional_setting=fixture\nDATABASE_PASSWORD=" + secret + "\n"), want: 1},
+		{name: "docker compose POSTGRES_PASSWORD", data: []byte("services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: " + secret + "\n"), want: 1},
+		{name: "JSON camel and namespace keys", data: []byte(`{"dbPassword":"` + secret + `","AzureClientSecret":"` + secret + `","JWT_SECRET":"` + secret + `","token":"` + secret + `"}`), want: 4},
+		{name: "weak trailing token remains excluded", data: []byte(`{"price-token":"` + secret + `"}`), want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := (&StructuredConfigDetector{}).Scan(t.Context(), tc.data)
+			require.Len(t, findings, tc.want)
+			for _, got := range findings {
+				assert.Equal(t, string(got.Raw), string(tc.data[got.ByteStart:got.ByteEnd]))
+			}
+		})
+	}
+}
+
+func TestStructuredConfigDetector_RejectsLocaleLabelsAndMarkdownProse(t *testing.T) {
+	tests := map[string][]byte{
+		"locale JSON":             []byte(`{"password":"Mot de passe","secret":"Administrator credential"}`),
+		"Markdown prose":          []byte("Password: Ask your administrator for the value\nNote: Keep this document current\n"),
+		"alphabetic placeholder":  []byte(`{"password":"Motdepasse"}`),
+		"JavaScript object":       []byte("const defaults = {\n  username: null,\n  password: null,\n};\n"),
+		"Rust type definition":    []byte("struct CreateUser {\n    email: String,\n    password: String,\n}\n"),
+		"Python type annotation":  []byte("class DbSettings(BaseModel):\n    user: str\n    passwd: str | None = None\n"),
+		"package version":         []byte(`{"dependencies":{"pbkdf2-password":"1.2.1"}}`),
+		"package range":           []byte(`{"dependencies":{"pbkdf2-password":"^1.2.1"}}`),
+		"common pass placeholder": []byte("host: demo-db\npassword: pass\n"),
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))
+		})
+	}
+}
+
+func TestStructuredConfigDetector_XMLTruncationPreservesEarlierFindings(t *testing.T) {
+	secret := "Q7mN2pL9rT4vW8xYzC6bH3kF"
+	var data strings.Builder
+	data.WriteString("<root><Password>" + secret + "</Password>")
+	data.WriteString(strings.Repeat("<nested>", maxStructuredDepth+1))
+	data.WriteString(strings.Repeat("</nested>", maxStructuredDepth+1))
+	data.WriteString("</root>")
+
+	findings := (&StructuredConfigDetector{}).scanXML(t.Context(), []byte(data.String()))
+	require.Len(t, findings, 1)
+	assert.Equal(t, secret, string(findings[0].Raw))
+}
+
 func TestStructuredConfigDetector_YAMLAliasIsReferenceNotSecret(t *testing.T) {
 	data := []byte("---\nvalue: &db_password fixture-secret-9mN2pQ7r\npassword: *db_password\n")
 	assert.Empty(t, (&StructuredConfigDetector{}).Scan(t.Context(), data))

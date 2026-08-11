@@ -2,6 +2,7 @@ package twilio
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestDetector_Metadata_ReturnsExpectedValues(t *testing.T) {
 	assert.Equal(t, "twilio-api-key", d.ID())
 	assert.Equal(t, "Twilio API Key Secret", d.Description())
 	assert.Equal(t, finding.SeverityCritical, d.Severity())
-	assert.Empty(t, d.Keywords())
+	assert.Equal(t, []string{"secret"}, d.Keywords())
 	assert.True(t, d.AuthoritativeOnOverlap())
 	contract := d.PlaygroundPatternContract()
 	require.Len(t, contract.Primary, 1)
@@ -69,6 +70,10 @@ func TestDetector_Scan_SupportsExplicitRoleVariants(t *testing.T) {
 		{input: "twilio-api-key-sid=" + testKeySID + "\ntwilio-api-key-secret='Secret.with.punctuation_42'", secret: "Secret.with.punctuation_42"},
 		{input: `{"Twilio":{"ApiKeySid":"` + testKeySID + `","ApiKeySecret":"` + syntheticSecret("Qw12Er34") + `"}}`, secret: syntheticSecret("Qw12Er34")},
 		{input: "TWILIO_API_KEY_SID=" + testKeySID + "\nTWILIO_API_KEY_SECRET=real-example-secret-value-42", secret: "real-example-secret-value-42"},
+		{input: "MYAPP_TWILIO_API_KEY_SID=" + testKeySID + "\nMYAPP_TWILIO_API_KEY_SECRET=" + syntheticSecret("Mn12Bv34"), secret: syntheticSecret("Mn12Bv34")},
+		{input: "PROD_TWILIO_API_KEY_SID=" + testKeySID + "\nPROD_TWILIO_API_KEY_SECRET=" + syntheticSecret("Rt56Yu78"), secret: syntheticSecret("Rt56Yu78")},
+		{input: "X_API_KEY_SID=" + testKeySID + "\nX_API_KEY_SECRET=" + syntheticSecret("Kp90Lm12"), secret: syntheticSecret("Kp90Lm12")},
+		{input: "environment:\n  - TWILIO_API_KEY_SID=" + testKeySID + "\n  - TWILIO_API_KEY_SECRET=" + syntheticSecret("Dc34Fv56"), secret: syntheticSecret("Dc34Fv56")},
 	}
 	for i, test := range tests {
 		findings := (&Detector{}).Scan(context.Background(), []byte(test.input))
@@ -176,6 +181,23 @@ func TestDetector_Scan_AssociatesNearestKeySID(t *testing.T) {
 	assert.Equal(t, keyB, findings[1].ExtraData["api_key_sid"])
 }
 
+func TestDetector_Scan_ConsecutivePairsAreNotSuppressedOnTies(t *testing.T) {
+	var input strings.Builder
+	wantSIDs := make([]string, 0, 5)
+	for i := range 5 {
+		keySID := fmt.Sprintf("SK%032x", i+1)
+		secret := fmt.Sprintf("opaque-secret-%d-Q7mN2pL9rT4vW8xY", i+1)
+		wantSIDs = append(wantSIDs, keySID)
+		fmt.Fprintf(&input, "TWILIO_API_KEY_SID=%s\nTWILIO_API_KEY_SECRET=%s\n", keySID, secret)
+	}
+
+	findings := testutil.ScanViaMatcher(&Detector{}, []byte(input.String()))
+	require.Len(t, findings, len(wantSIDs))
+	for i, got := range findings {
+		assert.Equal(t, wantSIDs[i], got.ExtraData["api_key_sid"])
+	}
+}
+
 func TestDetector_Scan_DoesNotReuseOneSIDForMultipleSecrets(t *testing.T) {
 	input := "TWILIO_API_KEY_SID=" + testKeySID + "\n" +
 		"TWILIO_API_KEY_SECRET=first-opaque-secret\n" +
@@ -209,14 +231,14 @@ func TestAssignmentMatches_FailsClosedOnMissingOrEmptyCapture(t *testing.T) {
 	assert.Empty(t, assignmentMatches(twilioAccountSIDAssignmentPattern, []byte("TWILIO_ACCOUNT_SID="+testAccountSID+".suffix")))
 }
 
-func TestCompanionSelection_RejectsAmbiguityAndInvalidBlocks(t *testing.T) {
+func TestCompanionSelection_PrefersPrecedingOnTieAndRejectsInvalidBlocks(t *testing.T) {
 	data := []byte(strings.Repeat(" ", 200))
 	target := assignmentMatch{wholeStart: 100, wholeEnd: 110, valueStart: 105, valueEnd: 110}
 	candidates := []assignmentMatch{
 		{wholeStart: 80, wholeEnd: 90, valueStart: 80, valueEnd: 90},
 		{wholeStart: 120, wholeEnd: 130, valueStart: 120, valueEnd: 130},
 	}
-	assert.Equal(t, -1, nearestUnusedCompanion(data, target, candidates, []bool{false, false}))
+	assert.Equal(t, 0, nearestUnusedCompanion(data, target, candidates, []bool{false, false}))
 	assert.Equal(t, 1, nearestUnusedCompanion(data, target, candidates, []bool{true, false}))
 
 	assert.False(t, sameLogicalBlock(data, assignmentMatch{wholeStart: -1, wholeEnd: -1}, target))

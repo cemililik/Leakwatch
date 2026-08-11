@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A default-on `structured-config-secret` detector for JSON, YAML, TOML, INI,
+  dotenv, and XML configuration values, bringing the catalog to **65
+  detectors**. It can be disabled explicitly with
+  `--exclude-detectors structured-config-secret`.
+- Repeatable `--verifier-origin detector-id=https://host` routing for
+  operator-trusted verifier targets, plus the backward-compatible
+  `--grafana-instance-url` alias.
 - Opt-in Slack text-attachment scanning with Slack-owned HTTPS enforcement,
   operation-scoped request limiting, byte-bounded backpressure, bounded file
   size/retries, UTF-8 text classification, token-safe errors/logs, and file-ID
@@ -21,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Auth0, Datadog, GitHub, GitHub OAuth, GitLab, Grafana, Shopify, Snyk, and
+  Twilio verification now requires an explicit operator-trusted origin. Without
+  one, Leakwatch sends no credential and reports the finding as `unverified`.
+- Slack's `--rate-limit` default changed from `1` to `0`; zero preserves the
+  provider-safe, operation-specific limits instead of imposing one global
+  request rate on every Slack method.
+- Source cleanup or partial-scan failures are now visible and non-clean. A
+  cleanup failure without findings exits `2`; partial results still exit `1`
+  while retaining and reporting the source error.
 - Finding JSON now distinguishes calculated zero entropy from absent entropy and
   omits an unset detection timestamp; terminal tables use Unicode display width,
   visibly escape bidi controls, and render `--show-raw` as a reversible quoted

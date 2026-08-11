@@ -153,9 +153,34 @@ func (v *Verifier) verifyEndpoint(ctx context.Context, token string, target endp
 		ActiveMessage:          "New Relic API key is active (" + target.region + " region)",
 		InactiveMessage:        "New Relic API key was rejected by the " + target.region + " region",
 		Decode:                 decodeRequestContext,
+		DecodeInactive:         decodeInactiveResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
+}
+
+func decodeInactiveResponse(body io.Reader) error {
+	var response struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if len(response.Errors) == 0 {
+		return fmt.Errorf("missing New Relic authentication error")
+	}
+	for _, item := range response.Errors {
+		if strings.ToLower(strings.TrimSpace(item.Message)) != "authentication required" {
+			return fmt.Errorf("unexpected New Relic authentication error")
+		}
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("unexpected trailing New Relic response data")
+	}
+	return nil
 }
 
 func decodeRequestContext(body io.Reader) (map[string]string, string, error) {

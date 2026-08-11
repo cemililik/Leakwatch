@@ -50,7 +50,7 @@ detection:
 verification:
   enabled: true            # Enable secret verification via API
   rate-limit: 10           # Max verification requests per second
-  timeout: 10s             # Per-request timeout
+  timeout: 10s             # Per-finding verification-operation timeout
 
 output:
   format: json             # Output format: {{OUTPUT_FORMATS}}

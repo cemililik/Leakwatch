@@ -76,6 +76,38 @@ func TestVerifyWithRequestGate_MetadataFailureDoesNotEraseProvenActiveIdentity(t
 	assert.Equal(t, 2, admissions)
 }
 
+func TestVerifyWithRequestGate_AdmitsEvery429RetryAndMetadataSend(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v4/user":
+			_, _ = w.Write([]byte(`{"id":1,"username":"johndoe"}`))
+		case "/api/v4/personal_access_tokens/self":
+			_, _ = w.Write([]byte(`{"active":true,"revoked":false,"scopes":["read_api"]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	admissions := 0
+	result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).VerifyWithRequestGate(
+		context.Background(),
+		detector.RawFinding{Raw: []byte("glpat-ABCDEFGHIJKLMNOPQRSTUVWXYZab")},
+		func() *finding.VerificationResult { admissions++; return nil },
+	)
+	require.Equal(t, finding.StatusVerifiedActive, result.Status)
+	assert.Equal(t, 3, requests)
+	assert.Equal(t, requests, admissions, "each actual HTTP send, including the 429 replay, needs one admission")
+}
+
 func TestDecodeTokenMetadata_GranularScopesAreBoundedAndDeterministic(t *testing.T) {
 	body := `{
 		"active":true,"revoked":false,"scopes":[],"expires_at":"2027-02-03",

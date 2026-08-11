@@ -49,6 +49,7 @@ type mockBucketHandle struct {
 	attrsBlock       bool
 	attrsDeadline    time.Time
 	attrsHasDeadline bool
+	readerStarted    chan struct{}
 }
 
 func (b *mockBucketHandle) Attrs(ctx context.Context) (*gcsstorage.BucketAttrs, error) {
@@ -79,15 +80,22 @@ func (b *mockBucketHandle) Object(name string) objectHandle {
 	if b.data != nil {
 		content = b.data[name]
 	}
-	return &mockObjectHandle{content: content}
+	return &mockObjectHandle{content: content, readerStarted: b.readerStarted}
 }
 
 // mockObjectHandle implements the objectHandle interface for testing.
 type mockObjectHandle struct {
-	content string
+	content       string
+	readerStarted chan struct{}
 }
 
 func (o *mockObjectHandle) NewReader(_ context.Context) (io.ReadCloser, error) {
+	if o.readerStarted != nil {
+		select {
+		case o.readerStarted <- struct{}{}:
+		default:
+		}
+	}
 	return io.NopCloser(strings.NewReader(o.content)), nil
 }
 
@@ -436,7 +444,7 @@ func TestGCSSource_DownloadObject_AtLimit_NotSkipped(t *testing.T) {
 	s := New("my-bucket", WithMaxFileSize(1024))
 	s.client = mock
 
-	data, err := s.downloadObject(context.Background(), "exact.txt")
+	data, err := s.downloadObject(context.Background(), mock, "exact.txt")
 	require.NoError(t, err)
 	assert.Len(t, data, 1024)
 }
@@ -478,7 +486,7 @@ func TestGCSSource_New_WithExcludePaths_StoresPatterns(t *testing.T) {
 	assert.Equal(t, []string{"a/**", "b"}, s.excludePaths)
 }
 
-func TestGCSSource_Chunks_ClosesClientOnCompletion(t *testing.T) {
+func TestGCSSource_CallerOwnsClientCloseAfterChunksComplete(t *testing.T) {
 	mock := &mockGCSClient{
 		buckets: map[string]*mockBucketHandle{
 			"my-bucket": {
@@ -495,11 +503,51 @@ func TestGCSSource_Chunks_ClosesClientOnCompletion(t *testing.T) {
 	s.client = mock
 
 	for range s.Chunks(context.Background()) {
-		// Drain the channel so Chunks' goroutine can finish and close the client.
+		// Drain the channel so Chunks' goroutine releases its client lease.
 	}
 
-	assert.True(t, mock.closed, "gcs client must be closed once Chunks completes")
+	assert.False(t, mock.closed, "chunk production must not compete with the CLI cleanup owner")
+	require.NoError(t, s.Close())
+	assert.True(t, mock.closed)
 	assert.Nil(t, s.client, "successful close must make later cleanup idempotent")
+}
+
+func TestGCSSource_CloseWaitsForCancelledProducerAndClosesOnce(t *testing.T) {
+	readerStarted := make(chan struct{}, 1)
+	mock := &mockGCSClient{buckets: map[string]*mockBucketHandle{
+		"my-bucket": {
+			name:          "my-bucket",
+			objects:       []*gcsstorage.ObjectAttrs{{Name: "secret.txt", Size: 6}},
+			data:          map[string]string{"secret.txt": "secret"},
+			readerStarted: readerStarted,
+		},
+	}}
+	s := New("my-bucket")
+	s.bufferSize = 0
+	s.client = mock
+	ctx, cancel := context.WithCancel(context.Background())
+	chunks := s.Chunks(ctx)
+
+	select {
+	case <-readerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("producer did not begin object download")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while producer still held the client lease: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	for range chunks {
+	}
+	require.NoError(t, <-closed)
+	assert.Equal(t, 1, mock.closeCalls)
+	require.NoError(t, s.Close())
+	assert.Equal(t, 1, mock.closeCalls)
 }
 
 func TestGCSSource_Close_FailureRemainsRetryable(t *testing.T) {

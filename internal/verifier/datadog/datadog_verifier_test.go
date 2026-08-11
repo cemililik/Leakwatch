@@ -95,6 +95,7 @@ func TestVerify_MalformedSuccessResponse_ReturnsVerifyError(t *testing.T) {
 
 func TestVerify_InvalidKey_403_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"errors":["Forbidden"]}`))
 	}))
@@ -115,6 +116,25 @@ func TestVerify_InvalidKey_403_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "Datadog API key is invalid or revoked", result.Message)
+}
+
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>WAF block</html>`},
+		{contentType: "application/json", body: `{"errors":["challenge"]}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detector.RawFinding{Raw: []byte("synthetic-datadog-key")},
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
 }
 
 func TestVerify_ServerError_ReturnsError(t *testing.T) {

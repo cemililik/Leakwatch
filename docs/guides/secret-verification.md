@@ -231,13 +231,13 @@ If the Secret Access Key is not found alongside the Access Key ID, verification 
 
 ### How It Works
 
-GitHub.com and GitHub Enterprise Server (GHES) issue credentials with the same token prefixes. A token alone therefore cannot identify its issuer. Leakwatch sends a `GET /user` request only after a trusted GitHub API origin has been selected by operator-controlled configuration. The current production registration does not yet expose that configuration, so GitHub token findings return `unverified` without making a network request.
+GitHub.com and GitHub Enterprise Server (GHES) issue credentials with the same token prefixes. A token alone therefore cannot identify its issuer. Leakwatch sends a `GET /user` request only after a trusted GitHub API origin has been selected with the command-line-only `--verifier-origin` flag. Without that explicit origin, GitHub token findings return `unverified` without making a network request.
 
 - **Detector IDs:** `github-token`, `github-oauth-token`
 - **API endpoints:** trusted GitHub.com or GHES API origin plus `/user` for PAT/`gho_`/`ghu_`; `/installation/repositories` for `ghs_`
 - **Headers:** `Authorization: Bearer <token>`, `User-Agent: leakwatch-verifier`
 
-This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. Refresh tokens (`ghr_`) are detected but never exchanged because exchange rotates them; they remain `unverified` even when an issuer is trusted. When trusted-origin wiring is available, only an authentication rejection from the selected issuer and subtype-appropriate endpoint may produce `verified_inactive`.
+This fail-closed behavior prevents a valid GHES token from being sent to GitHub.com and incorrectly reported as inactive. Refresh tokens (`ghr_`) are detected but never exchanged because exchange rotates them; they remain `unverified` even when an issuer is trusted. Only a strict authentication rejection from the selected issuer and subtype-appropriate endpoint may produce `verified_inactive`.
 
 ### What It Reveals
 

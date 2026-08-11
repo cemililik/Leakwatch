@@ -99,7 +99,8 @@ verification:
   # Sağlayıcı API'lerine karşı canlı doğrulamayı etkinleştirir.
   enabled: true
 
-  # İstek başına HTTP zaman aşımı. Doğrulama etkinleştirildiğinde >= 1ms olmalıdır.
+  # Sınırlı fallback ve istek kabulü dahil bulgu başına doğrulama operasyonu
+  # zaman aşımı. Doğrulama etkinleştirildiğinde >= 1ms olmalıdır.
   # Süre dizesi kullanın (örn. "10s", "500ms") — tam sayı nanosaniye olarak
   # yorumlanır ve doğrulama başarısız olur.
   timeout: 10s

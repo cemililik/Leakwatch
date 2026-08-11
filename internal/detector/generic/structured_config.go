@@ -543,16 +543,36 @@ func safeConfigPathComponent(component string) string {
 }
 
 func isHighConfidenceSecretKey(key string) bool {
-	switch canonicalConfigKey(key) {
+	parts := splitConfigIdentifier(key)
+	canonical := strings.Join(parts, "")
+	switch canonical {
 	case "password", "passwd", "passphrase", "secret",
+		"token",
 		"clientsecret", "secrettoken", "accesstoken", "refreshtoken",
 		"authtoken", "bearertoken", "signingsecret", "webhooksecret",
 		"consumersecret", "appsecret", "applicationsecret", "mastersecret",
 		"masterkey", "encryptionkey", "privatekey":
 		return true
-	default:
+	}
+	if len(parts) == 0 {
 		return false
 	}
+	switch parts[len(parts)-1] {
+	case "password", "passwd", "passphrase", "secret":
+		// Namespace prefixes (DB_PASSWORD, POSTGRES_PASSWORD,
+		// AzureClientSecret, JWT_SECRET) add ownership context; they do not make
+		// an otherwise unambiguous credential role less sensitive.
+		return true
+	}
+	if len(parts) >= 2 {
+		suffix := strings.Join(parts[len(parts)-2:], "")
+		switch suffix {
+		case "secrettoken", "accesstoken", "refreshtoken", "authtoken", "bearertoken",
+			"masterkey", "encryptionkey", "privatekey":
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalConfigKey(key string) string {
@@ -598,7 +618,7 @@ func isContextSecretValue(key, value string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	switch lower {
-	case "password", "secret", "string", "redacted", "masked", "changeme", "change-me", "change_me", "dummy",
+	case "password", "pass", "secret", "string", "redacted", "masked", "changeme", "change-me", "change_me", "dummy",
 		"example", "sample", "notset", "not-set", "none", "null", "default", "test", "dev", "local",
 		"true", "false", "yes", "no", "on", "off",
 		"your-secret", "your_secret", "your-password", "your_password", "your_key_here", "your-key-here",
@@ -608,10 +628,71 @@ func isContextSecretValue(key, value string) bool {
 	if isDegenerateValue([]byte(trimmed)) || isBareReference([]byte(trimmed)) {
 		return false
 	}
+	if isVersionLikeValue(trimmed) {
+		return false
+	}
 	if isExternalSecretReference(lower, trimmed) {
 		return false
 	}
 	if isKeyMaterialReference(canonicalConfigKey(key), lower) {
+		return false
+	}
+	if !plausibleStructuredSecretValue(trimmed) {
+		return false
+	}
+	return true
+}
+
+func isVersionLikeValue(value string) bool {
+	candidate := strings.TrimLeft(value, "vV^~<>= ")
+	core := candidate
+	if suffix := strings.IndexAny(core, "-+"); suffix >= 0 {
+		core = core[:suffix]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, char := range part {
+			if !unicode.IsDigit(char) && char != 'x' && char != 'X' && char != '*' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func plausibleStructuredSecretValue(value string) bool {
+	letters := 0
+	hasDigit := false
+	hasSymbol := false
+	hasWhitespace := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r):
+			letters++
+		case unicode.IsDigit(r):
+			hasDigit = true
+		case unicode.IsSpace(r):
+			hasWhitespace = true
+		default:
+			hasSymbol = true
+		}
+	}
+	// Locale labels and prose instructions are overwhelmingly alphabetic words
+	// separated by spaces. Passphrases containing digits or punctuation remain
+	// eligible, as do compact credentials.
+	if hasWhitespace && !hasDigit && !hasSymbol {
+		return false
+	}
+	if len(value) >= 8 && entropy.Calculate([]byte(value)) < 2.5 {
+		return false
+	}
+	if letters >= minVowelRatioLetters && !hasDigit && !hasSymbol && hasHighVowelRatio([]byte(value)) {
 		return false
 	}
 	return true

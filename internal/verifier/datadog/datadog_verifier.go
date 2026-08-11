@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -93,9 +94,27 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		ActiveMessage:          "Datadog API key is active",
 		InactiveMessage:        "Datadog API key is invalid or revoked",
 		Decode:                 decodeValidate,
+		DecodeInactive:         decodeInactiveResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
+}
+
+func decodeInactiveResponse(body io.Reader) error {
+	var response struct {
+		Errors []string `json:"errors"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if len(response.Errors) != 1 || strings.TrimSpace(response.Errors[0]) != "Forbidden" {
+		return fmt.Errorf("unexpected Datadog authentication error")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("unexpected trailing Datadog response data")
+	}
+	return nil
 }
 
 // decodeValidate downgrades a 200 response to inactive when valid=false.

@@ -54,6 +54,7 @@ func TestVerify_ValidToken_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"statusCode":401,"error":"Unauthorized","message":"Invalid token"}`))
 	}))

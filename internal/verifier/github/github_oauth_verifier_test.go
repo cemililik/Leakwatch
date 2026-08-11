@@ -96,6 +96,7 @@ func TestOAuthVerify_RefreshToken_IsUnverifiedWithoutRequest(t *testing.T) {
 
 func TestOAuthVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
 	}))
@@ -116,6 +117,19 @@ func TestOAuthVerify_InvalidToken_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "GitHub OAuth or installation token is invalid or revoked", result.Message)
+}
+
+func TestOAuthVerify_InactiveHTMLIsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`<html>proxy login</html>`))
+	}))
+	defer server.Close()
+	result := (&OAuthVerifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+		context.Background(), detector.RawFinding{Raw: []byte("gho_synthetic123456789012345678901234")},
+	)
+	assert.Equal(t, finding.StatusVerifyError, result.Status)
 }
 
 func TestOAuthVerify_ServerError_ReturnsError(t *testing.T) {

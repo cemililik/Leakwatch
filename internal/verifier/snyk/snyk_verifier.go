@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/internal/verifier"
@@ -89,9 +90,29 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		ActiveMessage:          "Snyk API key is active",
 		InactiveMessage:        "Snyk API key is invalid or revoked",
 		Decode:                 decodeSelf,
+		DecodeInactive:         decodeInactiveResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
+}
+
+func decodeInactiveResponse(body io.Reader) error {
+	var response struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if response.Code != http.StatusUnauthorized ||
+		strings.ToLower(strings.TrimSpace(response.Message)) != "invalid auth token provided" {
+		return fmt.Errorf("unexpected Snyk authentication error")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("unexpected trailing Snyk response data")
+	}
+	return nil
 }
 
 func decodeSelf(body io.Reader) (map[string]string, string, error) {

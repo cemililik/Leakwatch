@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
@@ -99,6 +100,7 @@ type GCSSource struct {
 	maxFileSize  int64
 	bufferSize   int
 	excludePaths []string
+	clientMu     sync.RWMutex
 	client       gcsClient
 
 	// err records the first terminal failure that aborted listing (client
@@ -138,6 +140,8 @@ func (s *GCSSource) Err() error {
 // Close releases the GCS client. A close failure retains the client so callers
 // can report the error and retry cleanup; successful repeated calls are no-ops.
 func (s *GCSSource) Close() error {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
 	if s.client == nil {
 		return nil
 	}
@@ -178,7 +182,12 @@ func (s *GCSSource) Validate(ctx context.Context) error {
 		return fmt.Errorf("gcs client initialization failed: %w", err)
 	}
 
-	_, err := s.client.Bucket(s.bucket).Attrs(ctx)
+	client, release := s.acquireClient()
+	if client == nil {
+		return fmt.Errorf("gcs client was closed before validation")
+	}
+	defer release()
+	_, err := client.Bucket(s.bucket).Attrs(ctx)
 	if err != nil {
 		return fmt.Errorf("gcs bucket inaccessible %q: %w", s.bucket, err)
 	}
@@ -198,19 +207,22 @@ func (s *GCSSource) Chunks(ctx context.Context) <-chan source.Chunk {
 			s.captureErr(fmt.Errorf("gcs client initialization failed: %w", err))
 			return
 		}
-		defer func() {
-			if err := s.Close(); err != nil {
-				slog.Warn("gcs client close failed", "error", err)
-			}
-		}()
+		client, release := s.acquireClient()
+		if client == nil {
+			s.captureErr(fmt.Errorf("gcs client was closed before object listing"))
+			return
+		}
+		defer release()
 
-		s.listAndSendChunks(ctx, ch)
+		s.listAndSendChunks(ctx, ch, client)
 	}()
 	return ch
 }
 
 // ensureClient initializes the GCS client if not already set.
 func (s *GCSSource) ensureClient(ctx context.Context) error {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
 	if s.client != nil {
 		return nil
 	}
@@ -229,14 +241,23 @@ func (s *GCSSource) ensureClient(ctx context.Context) error {
 	return nil
 }
 
+func (s *GCSSource) acquireClient() (gcsClient, func()) {
+	s.clientMu.RLock()
+	if s.client == nil {
+		s.clientMu.RUnlock()
+		return nil, func() {}
+	}
+	return s.client, s.clientMu.RUnlock
+}
+
 // listAndSendChunks iterates through bucket objects and emits chunks.
-func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chunk) {
+func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chunk, client gcsClient) {
 	query := &gcsstorage.Query{}
 	if s.prefix != "" {
 		query.Prefix = s.prefix
 	}
 
-	it := s.client.Bucket(s.bucket).Objects(ctx, query)
+	it := client.Bucket(s.bucket).Objects(ctx, query)
 	for {
 		select {
 		case <-ctx.Done():
@@ -279,7 +300,7 @@ func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chun
 			continue
 		}
 
-		data, err := s.downloadObject(ctx, key)
+		data, err := s.downloadObject(ctx, client, key)
 		if err != nil {
 			slog.Warn("gcs object download failed", "key", key, "error", err)
 			continue
@@ -312,8 +333,8 @@ func (s *GCSSource) listAndSendChunks(ctx context.Context, ch chan<- source.Chun
 }
 
 // downloadObject fetches the content of a single GCS object.
-func (s *GCSSource) downloadObject(ctx context.Context, key string) ([]byte, error) {
-	reader, err := s.client.Bucket(s.bucket).Object(key).NewReader(ctx)
+func (s *GCSSource) downloadObject(ctx context.Context, client gcsClient, key string) ([]byte, error) {
+	reader, err := client.Bucket(s.bucket).Object(key).NewReader(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open object %q: %w", key, err)
 	}

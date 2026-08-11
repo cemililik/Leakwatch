@@ -67,6 +67,8 @@ Aşağıdaki bayraklar **tüm** `scan` alt komutlarında kullanılabilir.
 | `--exclude-detectors` | — | — | Bu çalıştırma için hariç tutulacak dedektör kimlikleri (örn. `aws-access-key-id,generic-api-key`). Tekrarlanabilir veya virgülle ayrılabilir; yapılandırma dosyasındaki `filter.exclude-detectors` ile birleştirilir (onun yerine geçmez). |
 | `--no-verify` | — | `false` | Canlı sır doğrulamasını devre dışı bırak. Giden API çağrısı yapılmaz. |
 | `--only-verified` | — | `false` | Yalnızca canlı doğrulama ile etkin olduğu teyit edilen bulguları raporla. |
+| `--verifier-origin <id=url>` | — | — | Bağlam gerektiren bir dedektörü operatörce güvenilen HTTPS origin'ine bağla. Tekrarlanabilir; yalnız komut satırında kabul edilir. |
+| `--grafana-instance-url <url>` | — | — | Güvenilir Grafana origin'ini sağlayan geriye uyumlu alias. |
 | `--min-severity` | — | `low` | Çıktıya dahil edilecek minimum önem derecesi: `low`, `medium`, `high` veya `critical`. Tanınmayan bir değer (örn. bir yazım hatası) sessizce kabul edilmek yerine kesin bir hataya yol açar. |
 | `--remediation` | — | `false` | Her bulguya düzeltme rehberi (dönüşüm/iptal adımları) ekle. |
 
@@ -252,7 +254,8 @@ Konumsal argüman yoktur.
 | `--exclude-channels <list>` | — | Atlanacak kanal adları veya kimliklerinin virgülle ayrılmış listesi. |
 | `--since <YYYY-MM-DD>` | — | Yalnızca bu tarihten sonra gönderilen mesajları tara. |
 | `--include-dms` | `false` | Doğrudan mesajları dahil et (ek OAuth kapsamları gerektirir). |
-| `--rate-limit <float>` | `1` | Saniye başına maksimum Slack API isteği. |
+| `--include-files` | `false` | Boyutu sınırlı metin benzeri ekleri indir ve tara. `files:read` gerektirir. |
+| `--rate-limit <float>` | `0` | Saniyelik isteğe bağlı işlem-başı istek tavanı. Sıfır, Slack için güvenli işlem-özel varsayılanları korur. |
 
 `scan slack` komutunda (diğer her tarama alt komutunun aksine) `--exclude` yol-kalıbı bayrağı yoktur — bunun yerine tüm kanalları atlamak için `--exclude-channels` kullanın.
 

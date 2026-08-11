@@ -64,7 +64,7 @@ Verification runs in a dedicated concurrent worker pool, isolated from the scan 
 |---------|---------|-----------|
 | Worker count | 4 | `verification.concurrency` |
 | Global + per-detector request ceilings | 10 requests/second each | `verification.rate-limit` |
-| Per-request timeout | 10 s | `verification.timeout` |
+| Per-finding verification-operation timeout | 10 s | `verification.timeout` |
 
 All three values are tunable under the `verification:` block in `.leakwatch.yaml`:
 
@@ -77,7 +77,7 @@ verification:
 ```
 
 :::tip
-If you are scanning a repository that triggers hundreds of findings, consider lowering `rate-limit` to 5 or enabling `--only-verified` to keep the verified-active set small and actionable.
+For repositories with hundreds of findings, keep the provider-safe rate ceiling and reduce `concurrency` if you need gentler traffic. `--only-verified` changes only output filtering; it does not reduce verification requests.
 :::
 
 Admission occurs immediately before an actual provider request. Format-only and missing-context results do not consume limiter capacity. The per-detector bucket constrains that detector's own request rate, while the shared global bucket constrains aggregate traffic; this does not guarantee fair scheduling between providers.

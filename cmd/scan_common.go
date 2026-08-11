@@ -321,7 +321,12 @@ func finishScan(cfg *scanner.Config, result *engine.ScanResult, sourceType strin
 	}
 
 	if len(result.Findings) > 0 {
-		return &FindingsExitError{Count: len(result.Findings)}
+		findingsErr := &FindingsExitError{Count: len(result.Findings)}
+		if scanErr != nil {
+			slog.Warn("scan produced partial results before a source failure")
+			return errors.Join(findingsErr, fmt.Errorf("scan failed after partial results: %w", scanErr))
+		}
+		return findingsErr
 	}
 	if result.Interrupted {
 		slog.Warn("scan did not complete before interruption; results are partial", "error", scanErr)

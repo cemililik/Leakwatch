@@ -87,6 +87,36 @@ func TestAPIKeyDetector_Scan(t *testing.T) {
 			expected: 1,
 		},
 		{
+			name:     "SDK constructor quoted value",
+			input:    `client = OpenAI(api_key="Q7mN2pL9rT4vW8xYzC6bH3kF")`,
+			expected: 1,
+		},
+		{
+			name:     "URL query unquoted value",
+			input:    `https://api.example.test/?api_key=Q7mN2pL9rT4vW8xYzC6bH3kF&next=1`,
+			expected: 1,
+		},
+		{
+			name:     "curl double quoted header",
+			input:    `curl -H "x-api-key: Q7mN2pL9rT4vW8xYzC6bH3kF" https://api.example.test`,
+			expected: 1,
+		},
+		{
+			name:     "curl single quoted header",
+			input:    `curl -H 'X-API-Key: Q7mN2pL9rT4vW8xYzC6bH3kF' https://api.example.test`,
+			expected: 1,
+		},
+		{
+			name:     "embedded shell command",
+			input:    `run: "curl -H \"x-api-key: Q7mN2pL9rT4vW8xYzC6bH3kF\" https://api.example.test"`,
+			expected: 1,
+		},
+		{
+			name:     "XML attribute quoted value",
+			input:    `<cfg apiKey="Q7mN2pL9rT4vW8xYzC6bH3kF"/>`,
+			expected: 1,
+		},
+		{
 			name:     "double quoted JSON key",
 			input:    `{"X-APISIX-KEY": "Q7mN2pL9rT4vW8xY0zA1bC3dE5fG6hJ8kM2nP4sR7tV"}`,
 			expected: 1,

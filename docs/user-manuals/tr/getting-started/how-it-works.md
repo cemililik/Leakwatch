@@ -88,7 +88,7 @@ veya dedektöre özgü bir varyant:
 Tüm parçalar için tespit tamamlandıktan sonra motor, bulguları ayrı bir **doğrulama işçi havuzuna** geçirir (varsayılan 4 işçi). Doğrulama:
 
 - Her gerçek API çağrısını paylaşılan global ve dedektör başına birer **hız sınırlayıcıdan** geçirir (yapılandırılmış varsayılan değer her iki tavan için saniyede 10 istektir). Yalnız-format veya eksik-bağlam yolları token tüketmez; paylaşılan global kova toplam trafiği sınırlar ancak sağlayıcılar arasında adil zamanlama garantisi vermez.
-- Her API çağrısına **istek başına zaman aşımı** (varsayılan 10 saniye) uygular.
+- Sınırlı bölgesel fallback ve istek kabulü dahil olmak üzere her bulguya ait doğrulama operasyonuna **zaman aşımı** (varsayılan 10 saniye) uygular.
 - Sağlayıcıya yalnızca **salt-okunur, yıkıcı olmayan** çağrılar yapar (örneğin AWS anahtarları için `sts:GetCallerIdentity`).
 - Her bulguyu dört durumdan biriyle işaretler: `verified_active`, `verified_inactive`, `unverified` veya `verify_error`.
 

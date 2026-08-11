@@ -46,6 +46,7 @@ func TestVerify_ValidKey_ReturnsActive(t *testing.T) {
 
 func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":401,"message":"Invalid auth token provided"}`))
 	}))
@@ -66,6 +67,25 @@ func TestVerify_InvalidKey_ReturnsInactive(t *testing.T) {
 
 	assert.Equal(t, finding.StatusVerifiedInactive, result.Status)
 	assert.Equal(t, "Snyk API key is invalid or revoked", result.Message)
+}
+
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>login</html>`},
+		{contentType: "application/json", body: `{"code":401,"message":"challenge"}`},
+	}
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		result := (&Verifier{apiURL: server.URL, httpClient: server.Client()}).Verify(
+			context.Background(), detector.RawFinding{Raw: []byte("synthetic-snyk-key")},
+		)
+		server.Close()
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
 }
 
 func TestVerify_ForbiddenKey_ReturnsVerifyError(t *testing.T) {

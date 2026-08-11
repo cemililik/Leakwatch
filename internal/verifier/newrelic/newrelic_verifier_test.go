@@ -60,7 +60,7 @@ func TestVerify_RegionFallbackDecisionMatrix(t *testing.T) {
 		{
 			name:     "US unauthorized then EU active",
 			statuses: []int{http.StatusUnauthorized, http.StatusOK},
-			bodies:   []string{`{}`, `{"data":{"requestContext":{"userId":"eu-user"}}}`},
+			bodies:   []string{`{"errors":[{"message":"authentication required"}]}`, `{"data":{"requestContext":{"userId":"eu-user"}}}`},
 			want:     finding.StatusVerifiedActive, wantRequests: 2,
 		},
 		{
@@ -72,25 +72,25 @@ func TestVerify_RegionFallbackDecisionMatrix(t *testing.T) {
 		{
 			name:     "all regions unauthorized",
 			statuses: []int{http.StatusUnauthorized, http.StatusUnauthorized},
-			bodies:   []string{`{}`, `{}`},
+			bodies:   []string{`{"errors":[{"message":"authentication required"}]}`, `{"errors":[{"message":"authentication required"}]}`},
 			want:     finding.StatusVerifiedInactive, wantRequests: 2,
 		},
 		{
 			name:     "403 is never inactive",
 			statuses: []int{http.StatusForbidden, http.StatusUnauthorized},
-			bodies:   []string{`{}`, `{}`},
+			bodies:   []string{`{}`, `{"errors":[{"message":"authentication required"}]}`},
 			want:     finding.StatusVerifyError, wantRequests: 2,
 		},
 		{
 			name:     "provider failure plus 401 is inconclusive",
 			statuses: []int{http.StatusInternalServerError, http.StatusUnauthorized},
-			bodies:   []string{`{}`, `{}`},
+			bodies:   []string{`{}`, `{"errors":[{"message":"authentication required"}]}`},
 			want:     finding.StatusVerifyError, wantRequests: 2,
 		},
 		{
 			name:     "GraphQL error plus 401 is inconclusive",
 			statuses: []int{http.StatusOK, http.StatusUnauthorized},
-			bodies:   []string{`{"errors":[{"message":"forbidden"}]}`, `{}`},
+			bodies:   []string{`{"errors":[{"message":"forbidden"}]}`, `{"errors":[{"message":"authentication required"}]}`},
 			want:     finding.StatusVerifyError, wantRequests: 2,
 		},
 	}
@@ -120,6 +120,32 @@ func TestVerify_RegionFallbackDecisionMatrix(t *testing.T) {
 	}
 }
 
+func TestVerify_InactiveResponseMustBeDefinitiveJSON(t *testing.T) {
+	tests := []struct{ contentType, body string }{
+		{contentType: "text/html", body: `<html>proxy login</html>`},
+		{contentType: "application/json", body: `{"errors":[{"message":"challenge"}]}`},
+	}
+	for _, tc := range tests {
+		servers := make([]*httptest.Server, 2)
+		endpoints := make([]endpoint, 2)
+		for i := range servers {
+			servers[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			endpoints[i] = endpoint{region: []string{"US", "EU"}[i], url: servers[i].URL}
+		}
+		result := (&Verifier{endpoints: endpoints, httpClient: servers[0].Client()}).Verify(
+			context.Background(), rawFinding(testToken),
+		)
+		for _, server := range servers {
+			server.Close()
+		}
+		assert.Equal(t, finding.StatusVerifyError, result.Status)
+	}
+}
+
 func TestVerifyWithRequestGate_AdmitsOnlyActualRegionalRequests(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -138,7 +164,7 @@ func TestVerifyWithRequestGate_AdmitsOnlyActualRegionalRequests(t *testing.T) {
 		{
 			name:      "US rejection admits EU immediately before fallback",
 			statuses:  []int{http.StatusUnauthorized, http.StatusOK},
-			bodies:    []string{`{}`, `{"data":{"requestContext":{"userId":2}}}`},
+			bodies:    []string{`{"errors":[{"message":"authentication required"}]}`, `{"data":{"requestContext":{"userId":2}}}`},
 			wantGates: 2,
 			wantCalls: 2,
 		},

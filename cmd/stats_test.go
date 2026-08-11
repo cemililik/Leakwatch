@@ -89,6 +89,9 @@ func TestVerifierContracts_UseRealDetectorOutput(t *testing.T) {
 			case meta.VerifierLive:
 				assert.Equal(t, finding.StatusVerifyError, result.Status,
 					"live capability must reach its context-cancelled provider request")
+				message := strings.ToLower(result.Message)
+				assert.True(t, strings.Contains(message, "context canceled") || strings.Contains(message, "cancelled"),
+					"live capability must fail at the cancelled provider boundary, not at an unrelated early return: %s", result.Message)
 			case meta.VerifierFormatOnly:
 				assert.Equal(t, finding.StatusUnverified, result.Status)
 				assert.True(t, strings.Contains(strings.ToLower(result.Message), "format valid"),

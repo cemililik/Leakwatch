@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -218,7 +219,9 @@ func TestFindingWireSemanticsDocs_MatchEngine(t *testing.T) {
 	} {
 		contents, err := os.ReadFile(path)
 		require.NoError(t, err)
-		assert.Contains(t, string(contents), "11")
+		counts := VerificationCapabilityCounts()
+		assert.Contains(t, string(contents), fmt.Sprintf("%d ", counts.None),
+			"not-verifiable detector count must come from the capability manifest")
 	}
 }
 

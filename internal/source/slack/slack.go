@@ -42,6 +42,7 @@ const (
 	// single page fetch will absorb before giving up, preventing an
 	// unbounded retry loop against a workspace that never recovers.
 	maxRateLimitRetries = 5
+	maxSlackPages       = 10_000
 
 	// defaultRetryAfter is used when a *slack.RateLimitedError reports a
 	// non-positive RetryAfter duration, as a safe fallback backoff.
@@ -65,6 +66,7 @@ type SlackSource struct {
 	bufferSize            int
 	client                slackClient
 	newClient             func(token string) slackClient
+	skippedAttachments    int
 
 	// err records the first terminal failure that aborted scanning (channel
 	// listing / auth / pagination). It is written only by the Chunks goroutine,
@@ -77,10 +79,14 @@ type SlackSource struct {
 
 // defaultNewClient creates a real Slack API client.
 func defaultNewClient(token string) slackClient {
-	return slack.New(token, slack.OptionHTTPClient(&http.Client{
+	return slack.New(token, slack.OptionHTTPClient(newSlackHTTPClient()))
+}
+
+func newSlackHTTPClient() *http.Client {
+	return &http.Client{
 		CheckRedirect: rejectSlackRedirect,
 		Timeout:       slackRequestTimeout,
-	}))
+	}
 }
 
 func rejectSlackRedirect(_ *http.Request, _ []*http.Request) error {
@@ -189,6 +195,13 @@ func (s *SlackSource) Chunks(ctx context.Context) <-chan source.Chunk {
 	ch := make(chan source.Chunk, bufferSize)
 	go func() {
 		defer close(ch)
+		s.skippedAttachments = 0
+		defer func() {
+			if s.skippedAttachments > 0 {
+				slog.Warn("Slack scan completed with skipped attachments",
+					slog.Int("skipped_attachments", s.skippedAttachments))
+			}
+		}()
 
 		s.ensureClient()
 
@@ -237,7 +250,10 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 	cursor := ""
 	retries := 0
 
-	for {
+	for page := 1; ; page++ {
+		if page > maxSlackPages {
+			return allChannels, fmt.Errorf("slack list conversations exceeded %d pages", maxSlackPages)
+		}
 		select {
 		case <-ctx.Done():
 			return allChannels, ctx.Err()
@@ -279,8 +295,12 @@ func (s *SlackSource) listChannels(ctx context.Context, limiter *rate.Limiter) (
 
 		allChannels = append(allChannels, channels...)
 
+		nextCursor = strings.TrimSpace(nextCursor)
 		if nextCursor == "" {
 			break
+		}
+		if nextCursor == cursor {
+			return allChannels, fmt.Errorf("slack list conversations returned a stalled cursor")
 		}
 		cursor = nextCursor
 	}
@@ -371,7 +391,11 @@ func (s *SlackSource) processChannel(
 	}
 	cursor := ""
 
-	for {
+	for page := 1; ; page++ {
+		if page > maxSlackPages {
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s exceeded %d pages", channel.ID, maxSlackPages))
+			return
+		}
 		resp, ok := s.fetchConversationHistoryPage(ctx, historyLimiter, channel, cursor)
 		if !ok || !s.processSlackMessages(ctx, ch, fileInfoLimiter, fileDownloadLimiter, channel, resp.Messages, seen) {
 			return
@@ -380,7 +404,12 @@ func (s *SlackSource) processChannel(
 		if !resp.HasMore {
 			return
 		}
-		cursor = resp.ResponseMetaData.NextCursor
+		nextCursor := strings.TrimSpace(resp.ResponseMetaData.NextCursor)
+		if nextCursor == "" || nextCursor == cursor {
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s returned a stalled cursor", channel.ID))
+			return
+		}
+		cursor = nextCursor
 	}
 }
 
@@ -394,6 +423,7 @@ func (s *SlackSource) fetchConversationHistoryPage(
 	for retries := 0; ; retries++ {
 		if err := limiter.Wait(ctx); err != nil {
 			slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", s.safeSlackError(err))
+			s.captureErr(fmt.Errorf("slack conversation history for channel %s rate limiter wait: %w", channel.ID, err))
 			return nil, false
 		}
 		response, err := s.client.GetConversationHistoryContext(ctx, params)
@@ -431,6 +461,7 @@ func (s *SlackSource) retryConversationHistory(ctx context.Context, channelID st
 		"channel", channelID, "retry_after", retryAfter, "attempt", attempt)
 	if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
 		slog.Warn("slack rate limiter wait failed", "channel", channelID, "error", s.safeSlackError(waitErr))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s retry wait: %w", channelID, waitErr))
 		return false
 	}
 	return true
@@ -498,8 +529,16 @@ func (s *SlackSource) processSlackFiles(
 		seen[attached.ID] = struct{}{}
 		chunk, ok, err := s.fileChunk(ctx, fileInfoLimiter, fileDownloadLimiter, channel, message, attached, metadata)
 		if err != nil {
-			s.captureErr(err)
-			return false
+			if ctx.Err() != nil {
+				return false
+			}
+			s.skippedAttachments++
+			slog.Warn("skipping unreadable Slack attachment",
+				"channel", channel.ID,
+				"message_ts", message.Timestamp,
+				"file_id", attached.ID,
+				"error", s.safeSlackError(err))
+			continue
 		}
 		if ok && !sendSlackChunk(ctx, output, chunk) {
 			return false

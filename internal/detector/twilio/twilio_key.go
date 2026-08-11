@@ -6,6 +6,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/HodeTech/leakwatch/internal/detector"
 	"github.com/HodeTech/leakwatch/pkg/finding"
@@ -14,15 +15,15 @@ import (
 var (
 	// An SK value is an API Key SID: a public identifier, not a secret. It is
 	// used only as companion context when it is assigned to an API Key SID role.
-	twilioKeySIDAssignmentPattern     = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?sid["']?\s*[:=]\s*["']?(SK[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
-	twilioAccountSIDAssignmentPattern = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?account[._-]*sid["']?\s*[:=]\s*["']?(AC[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
+	twilioKeySIDAssignmentPattern     = regexp.MustCompile(`(?i)(?:^|[^0-9A-Za-z_])(?:(?:[a-z0-9]+[._-]+)*twilio[._-]*|x[._-]*)?api[._-]*(?:key[._-]*)?sid["']?\s*[:=]\s*["']?(SK[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
+	twilioAccountSIDAssignmentPattern = regexp.MustCompile(`(?i)(?:^|[^0-9A-Za-z_])(?:(?:[a-z0-9]+[._-]+)*twilio[._-]*)?account[._-]*sid["']?\s*[:=]\s*["']?(AC[0-9a-f]{32})(?:["']|[ \t\r\n,;}#]|$)`)
 
 	// Twilio documents API Key Secrets as opaque values and does not promise a
 	// fixed length or alphabet. These alternatives preserve an exact value span
 	// for double-quoted, single-quoted, and bounded unquoted assignments.
-	twilioAPISecretAssignmentPattern = regexp.MustCompile(`(?i)\b(?:twilio[._-]*)?api[._-]*(?:key[._-]*)?secret["']?\s*[:=]\s*(?:"([^"\r\n]{1,512})"|'([^'\r\n]{1,512})'|([^"' \t\r\n,;}#]{1,512})(?:[ \t\r\n,;}#]|$))`)
+	twilioAPISecretAssignmentPattern = regexp.MustCompile(`(?i)(?:^|[^0-9A-Za-z_])(?:(?:[a-z0-9]+[._-]+)*twilio[._-]*|x[._-]*)?api[._-]*(?:key[._-]*)?secret["']?\s*[:=]\s*(?:"([^"\r\n]{1,512})"|'([^'\r\n]{1,512})'|([^"' \t\r\n,;}#]{1,512})(?:[ \t\r\n,;}#]|$))`)
 
-	logicalBlockSeparatorPattern = regexp.MustCompile(`(?:\r?\n[ \t]*\r?\n|\r?\n[ \t]*-[ \t]+|\r?\n[ \t]*\[[^\r\n]+\][ \t]*(?:\r?\n|$))`)
+	logicalBlockSeparatorPattern = regexp.MustCompile(`(?:\r?\n[ \t]*\r?\n|\r?\n[ \t]*\[[^\r\n]+\][ \t]*(?:\r?\n|$))`)
 )
 
 // companionProximityWindow bounds how far a non-secret SID may sit from the
@@ -40,10 +41,10 @@ func (d *Detector) ID() string { return "twilio-api-key" }
 // Description returns a human-readable description.
 func (d *Detector) Description() string { return "Twilio API Key Secret" }
 
-// Keywords is empty because supported assignment roles include common
-// separator and casing variants. Running Scan for every chunk avoids a matcher
-// prefilter silently dropping a valid paired credential.
-func (d *Detector) Keywords() []string { return []string{} }
+// Keywords returns the invariant role component shared by every supported
+// secret assignment. The matcher lowercases chunks before keyword selection,
+// so this skips unrelated files without losing casing or separator variants.
+func (d *Detector) Keywords() []string { return []string{"secret"} }
 
 // Severity returns the default severity level for a leaked API Key Secret.
 func (d *Detector) Severity() finding.Severity { return finding.SeverityCritical }
@@ -89,7 +90,7 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 			continue
 		}
 
-		keyIndex := nearestUnusedCompanion(data, secretMatch, keySIDs, usedKeySIDs)
+		keyIndex, ambiguous := nearestUnusedCompanionMatch(data, secretMatch, keySIDs, usedKeySIDs)
 		if keyIndex < 0 {
 			continue
 		}
@@ -98,6 +99,9 @@ func (d *Detector) Scan(_ context.Context, data []byte) []detector.RawFinding {
 
 		extra := map[string]string{
 			"api_key_sid": string(data[keyMatch.valueStart:keyMatch.valueEnd]),
+		}
+		if ambiguous {
+			extra["pairing_ambiguous"] = "true"
 		}
 		if accountIndex := nearestCompanion(data, keyMatch, accountSIDs); accountIndex >= 0 {
 			accountMatch := accountSIDs[accountIndex]
@@ -147,8 +151,13 @@ func assignmentMatches(pattern *regexp.Regexp, data []byte) []assignmentMatch {
 			// string as the assignment terminator and report a truncated secret.
 			continue
 		}
+		wholeStart := index[0]
+		if wholeStart < len(data) && !isASCIIAlphaNumeric(data[wholeStart]) {
+			_, size := utf8.DecodeRune(data[wholeStart:])
+			wholeStart += size
+		}
 		matches = append(matches, assignmentMatch{
-			wholeStart: index[0],
+			wholeStart: wholeStart,
 			// End correlation at the value, excluding a closing quote or a
 			// delimiter consumed only to prove the lexical boundary.
 			wholeEnd:   valueEnd,
@@ -157,6 +166,11 @@ func assignmentMatches(pattern *regexp.Regexp, data []byte) []assignmentMatch {
 		})
 	}
 	return matches
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z' ||
+		value >= '0' && value <= '9'
 }
 
 func escapedAt(data []byte, index int) bool {
@@ -168,8 +182,14 @@ func escapedAt(data []byte, index int) bool {
 }
 
 func nearestUnusedCompanion(data []byte, target assignmentMatch, candidates []assignmentMatch, used []bool) int {
+	best, _ := nearestUnusedCompanionMatch(data, target, candidates, used)
+	return best
+}
+
+func nearestUnusedCompanionMatch(data []byte, target assignmentMatch, candidates []assignmentMatch, used []bool) (int, bool) {
 	best := -1
 	bestDist := -1
+	ambiguous := false
 	for i, candidate := range candidates {
 		if used[i] {
 			continue
@@ -181,12 +201,19 @@ func nearestUnusedCompanion(data []byte, target assignmentMatch, candidates []as
 		if bestDist == -1 || dist < bestDist {
 			bestDist = dist
 			best = i
+			ambiguous = false
 		} else if dist == bestDist {
-			// Ambiguous equidistant context must not be guessed.
-			best = -1
+			ambiguous = true
+			// Consecutive SID/SECRET pairs put a secret equidistant from the
+			// preceding credential and the next SID. Prefer the preceding SID;
+			// suppressing the finding would hide a real credential.
+			if candidate.wholeEnd <= target.wholeStart &&
+				(best < 0 || candidates[best].wholeEnd > target.wholeStart) {
+				best = i
+			}
 		}
 	}
-	return best
+	return best, ambiguous
 }
 
 func nearestCompanion(data []byte, target assignmentMatch, candidates []assignmentMatch) int {

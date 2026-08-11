@@ -94,9 +94,29 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		ActiveMessage:          "Grafana API key is active",
 		InactiveMessage:        "Grafana API key is invalid or revoked",
 		Decode:                 decodePermissionsObject,
+		DecodeInactive:         decodeInactiveResponse,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
+}
+
+func decodeInactiveResponse(body io.Reader) error {
+	var response struct {
+		Message string `json:"message"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(response.Message)) {
+	case "invalid api key", "unauthorized":
+	default:
+		return fmt.Errorf("unexpected Grafana authentication error")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("unexpected trailing Grafana response data")
+	}
+	return nil
 }
 
 func normalizeTrustedInstanceURL(rawURL string) (string, error) {

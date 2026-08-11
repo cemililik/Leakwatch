@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"unicode"
@@ -158,7 +159,7 @@ func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat,
 		signals.observe(data[offset:lineEnd], line, offset)
 		offset = nextLineOffset(lineEnd, len(data))
 	}
-	return signals.detectedFormat()
+	return signals.detectedFormat(data)
 }
 
 type lineConfigSignals struct {
@@ -166,16 +167,28 @@ type lineConfigSignals struct {
 	pendingYAMLParentIndent                             int
 	yamlNested, yamlInvalid, dotenvInvalid, tomlInvalid bool
 	hasYAMLDocumentMarker                               bool
+	hasPlausibleYAMLSecret                              bool
 }
 
 func (s *lineConfigSignals) observe(rawLine, trimmedLine []byte, offset int) {
-	if signal, ok := yamlMappingSignal(rawLine); ok {
+	signal, yamlMapping := yamlMappingSignal(rawLine)
+	switch {
+	case yamlMapping:
 		s.observeYAML(signal)
+		if assignment, parsed := parseLineAssignment(rawLine, offset, formatYAML); parsed &&
+			assignment.hasValue && isHighConfidenceSecretKey(assignment.key) &&
+			isContextSecretValue(assignment.key, assignment.value) {
+			s.hasPlausibleYAMLSecret = true
+		}
 		s.dotenvInvalid = true
-	} else if isDotenvAssignment(trimmedLine) {
+	case isDotenvAssignment(trimmedLine):
 		s.dotenvAssignments++
 		s.yamlInvalid = true
-	} else {
+	case isNeutralDotenvLine(trimmedLine):
+		// Empty placeholders are valid and common in committed .env templates.
+		// They are neutral evidence and must not invalidate later assignments.
+		s.yamlInvalid = true
+	default:
 		s.dotenvInvalid, s.yamlInvalid = true, true
 	}
 	if _, ok := parseLineAssignment(rawLine, offset, formatTOML); ok {
@@ -200,9 +213,10 @@ func (s *lineConfigSignals) observeYAML(signal yamlSignal) {
 	}
 }
 
-func (s lineConfigSignals) detectedFormat() (lineConfigFormat, bool) {
-	if (s.hasYAMLDocumentMarker && s.yamlSignalCount > 0) || s.yamlNested ||
-		(s.yamlSignalCount >= 2 && !s.yamlInvalid) {
+func (s lineConfigSignals) detectedFormat(data []byte) (lineConfigFormat, bool) {
+	hasYAMLEvidence := (s.hasYAMLDocumentMarker && s.yamlSignalCount > 0) || s.yamlNested ||
+		(s.yamlSignalCount >= 2 && !s.yamlInvalid && s.hasPlausibleYAMLSecret)
+	if hasYAMLEvidence && isStructuredYAMLDocument(data) {
 		return formatYAML, true
 	}
 	if s.dotenvAssignments > 0 && !s.dotenvInvalid && s.yamlSignalCount == 0 {
@@ -216,6 +230,29 @@ func (s lineConfigSignals) detectedFormat() (lineConfigFormat, bool) {
 		return formatTOML, true
 	}
 	return "", false
+}
+
+func isStructuredYAMLDocument(data []byte) bool {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	documents := 0
+	for {
+		var document yaml.Node
+		err := decoder.Decode(&document)
+		if err == io.EOF {
+			return documents > 0
+		}
+		if err != nil || len(document.Content) == 0 {
+			return false
+		}
+		root := document.Content[0]
+		if root.Kind != yaml.MappingNode && root.Kind != yaml.SequenceNode {
+			return false
+		}
+		documents++
+		if documents > 128 {
+			return false
+		}
+	}
 }
 
 func contextLineEnd(ctx context.Context, data []byte, offset int) (int, bool) {
@@ -274,6 +311,26 @@ func isDotenvAssignment(line []byte) bool {
 		return false
 	}
 	key := bytes.TrimSpace(line[:index])
+	if !isDotenvKey(key) {
+		return false
+	}
+	return len(bytes.TrimSpace(line[index+1:])) > 0
+}
+
+func isNeutralDotenvLine(line []byte) bool {
+	line = bytes.TrimSpace(line)
+	if bytes.HasPrefix(line, []byte("export ")) {
+		line = bytes.TrimSpace(line[len("export "):])
+	}
+	index := bytes.IndexByte(line, '=')
+	if index <= 0 || !isShellIdentifier(bytes.TrimSpace(line[:index])) {
+		return false
+	}
+	key := bytes.TrimSpace(line[:index])
+	return len(bytes.TrimSpace(line[index+1:])) == 0 || key[0] < 'A' || key[0] > 'Z'
+}
+
+func isDotenvKey(key []byte) bool {
 	if len(key) == 0 || key[0] < 'A' || key[0] > 'Z' {
 		return false
 	}
@@ -282,7 +339,23 @@ func isDotenvAssignment(line []byte) bool {
 			return false
 		}
 	}
-	return len(bytes.TrimSpace(line[index+1:])) > 0
+	return true
+}
+
+func isShellIdentifier(key []byte) bool {
+	if len(key) == 0 || !isASCIIAlpha(key[0]) && key[0] != '_' {
+		return false
+	}
+	for _, b := range key[1:] {
+		if !isASCIIAlpha(b) && (b < '0' || b > '9') && b != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 }
 
 func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAssignment, bool) {
@@ -723,17 +796,26 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 		if tokenCount&255 == 0 && ctx.Err() != nil {
 			return nil
 		}
+		if tokenCount >= maxStructuredTokens {
+			slog.WarnContext(ctx, "structured config XML scan truncated at token limit",
+				slog.Int("token_limit", maxStructuredTokens),
+				slog.Int("findings_preserved", len(state.findings)))
+			return state.findings
+		}
 		tokenStart := int(decoder.InputOffset())
 		token, err := decoder.Token()
 		if err == io.EOF {
 			break
 		}
-		if err != nil || tokenCount >= maxStructuredTokens {
+		if err != nil {
 			return nil
 		}
 		tokenCount++
 		if !state.consume(token, tokenStart, int(decoder.InputOffset())) {
-			return nil
+			slog.WarnContext(ctx, "structured config XML scan truncated at structural limit",
+				slog.Int("depth_limit", maxStructuredDepth),
+				slog.Int("findings_preserved", len(state.findings)))
+			return state.findings
 		}
 	}
 	if len(state.stack) != 0 {

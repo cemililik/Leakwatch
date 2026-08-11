@@ -83,9 +83,24 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 		ActiveMessage:          "GitHub token is active",
 		InactiveMessage:        "GitHub token is invalid or revoked",
 		DecodeResponse:         decodeUserResponse,
+		DecodeInactive:         decodeGitHubInactive,
 		RequireCompleteBody:    true,
 		RequireJSONContentType: true,
 	})
+}
+
+func decodeGitHubInactive(body io.Reader) error {
+	var response struct {
+		Message string `json:"message"`
+	}
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(&response); err != nil {
+		return err
+	}
+	if strings.TrimSpace(response.Message) != "Bad credentials" {
+		return fmt.Errorf("unexpected GitHub authentication error")
+	}
+	return requireGitHubJSONEOF(decoder)
 }
 
 // decodeUserResponse parses the required identity body and enriches classic PAT

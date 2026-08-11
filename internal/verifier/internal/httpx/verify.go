@@ -523,13 +523,13 @@ func (spec TokenSpec) handleActive(ctx context.Context, resp *http.Response) fin
 }
 
 func (spec TokenSpec) handleInactive(ctx context.Context, resp *http.Response) finding.VerificationResult {
-	if spec.DecodeInactive != nil {
-		if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
-			return finding.VerificationResult{
-				Status:  finding.StatusVerifyError,
-				Message: fmt.Sprintf("HTTP %d inactive response Content-Type is not JSON", resp.StatusCode),
-			}
+	if spec.RequireJSONContentType && !isJSONContentType(resp.Header.Get("Content-Type")) {
+		return finding.VerificationResult{
+			Status:  finding.StatusVerifyError,
+			Message: fmt.Sprintf("HTTP %d inactive response Content-Type is not JSON", resp.StatusCode),
 		}
+	}
+	if spec.DecodeInactive != nil {
 		contents, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes+1))
 		if err != nil {
 			return finding.VerificationResult{

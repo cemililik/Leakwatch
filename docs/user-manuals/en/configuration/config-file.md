@@ -99,7 +99,8 @@ verification:
   # Enable live verification against provider APIs.
   enabled: true
 
-  # Per-request HTTP timeout. Must be >= 1ms when verification is enabled.
+  # Per-finding verification-operation timeout, including bounded fallback and
+  # request admission. Must be >= 1ms when verification is enabled.
   # Use a duration string (e.g. "10s", "500ms") — a bare integer is
   # treated as nanoseconds and will fail validation.
   timeout: 10s
