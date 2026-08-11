@@ -370,103 +370,11 @@ func (s *SlackSource) processChannel(
 		seen = seenFiles[0]
 	}
 	cursor := ""
-	retries := 0
 
 	for {
-		select {
-		case <-ctx.Done():
+		resp, ok := s.fetchConversationHistoryPage(ctx, historyLimiter, channel, cursor)
+		if !ok || !s.processSlackMessages(ctx, ch, fileInfoLimiter, fileDownloadLimiter, channel, resp.Messages, seen) {
 			return
-		default:
-		}
-
-		if err := historyLimiter.Wait(ctx); err != nil {
-			slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", s.safeSlackError(err))
-			return
-		}
-
-		params := &slack.GetConversationHistoryParameters{
-			ChannelID: channel.ID,
-			Cursor:    cursor,
-			Limit:     defaultHistoryLimit,
-		}
-
-		// Push the since filter down to the API via the "oldest" parameter so
-		// older messages are never transferred. The client-side check below
-		// remains as a correctness backstop for boundary timestamps.
-		if !s.since.IsZero() {
-			params.Oldest = formatSlackTimestamp(s.since)
-		}
-
-		resp, err := s.client.GetConversationHistoryContext(ctx, params)
-		if err != nil {
-			if retryAfter, ok := rateLimitRetryAfter(err); ok {
-				retries++
-				if retries > maxRateLimitRetries {
-					slog.Warn("slack conversation history rate limited, giving up",
-						"channel", channel.ID, "attempts", retries, "error", s.safeSlackError(err))
-					s.captureErr(fmt.Errorf("slack conversation history for channel %s: rate limited after %d retries: %w", channel.ID, maxRateLimitRetries, err))
-					return
-				}
-				slog.Warn("slack conversation history rate limited, retrying",
-					"channel", channel.ID, "retry_after", retryAfter, "attempt", retries)
-				if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
-					slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", s.safeSlackError(waitErr))
-					return
-				}
-				continue
-			}
-			slog.Warn("slack conversation history failed", "channel", channel.ID, "error", s.safeSlackError(err))
-			s.captureErr(fmt.Errorf("slack conversation history for channel %s: %w", channel.ID, err))
-			return
-		}
-		retries = 0
-
-		for _, msg := range resp.Messages {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Apply since filter by parsing the message timestamp.
-			if !s.since.IsZero() {
-				msgTime := parseSlackTimestamp(msg.Timestamp)
-				if msgTime.Before(s.since) {
-					continue
-				}
-			}
-
-			metadata := finding.SourceMetadata{
-				SourceType:  "slack",
-				Channel:     channel.ID,
-				ChannelName: channel.Name,
-				MessageUser: msg.User,
-				MessageTS:   msg.Timestamp,
-				ThreadTS:    msg.ThreadTimestamp,
-			}
-			if msg.Text != "" && !sendSlackChunk(ctx, ch, source.Chunk{Data: []byte(msg.Text), SourceMetadata: metadata}) {
-				return
-			}
-
-			if s.includeFiles {
-				for _, attached := range msg.Files {
-					if attached.ID == "" {
-						continue
-					}
-					if _, duplicate := seen[attached.ID]; duplicate {
-						continue
-					}
-					seen[attached.ID] = struct{}{}
-					fileChunk, ok, fileErr := s.fileChunk(ctx, fileInfoLimiter, fileDownloadLimiter, channel, msg, attached, metadata)
-					if fileErr != nil {
-						s.captureErr(fileErr)
-						return
-					}
-					if ok && !sendSlackChunk(ctx, ch, fileChunk) {
-						return
-					}
-				}
-			}
 		}
 
 		if !resp.HasMore {
@@ -474,6 +382,130 @@ func (s *SlackSource) processChannel(
 		}
 		cursor = resp.ResponseMetaData.NextCursor
 	}
+}
+
+func (s *SlackSource) fetchConversationHistoryPage(
+	ctx context.Context,
+	limiter *rate.Limiter,
+	channel slack.Channel,
+	cursor string,
+) (*slack.GetConversationHistoryResponse, bool) {
+	params := s.historyParameters(channel.ID, cursor)
+	for retries := 0; ; retries++ {
+		if err := limiter.Wait(ctx); err != nil {
+			slog.Warn("slack rate limiter wait failed", "channel", channel.ID, "error", s.safeSlackError(err))
+			return nil, false
+		}
+		response, err := s.client.GetConversationHistoryContext(ctx, params)
+		if err == nil {
+			return response, true
+		}
+		if !s.retryConversationHistory(ctx, channel.ID, retries+1, err) {
+			return nil, false
+		}
+	}
+}
+
+func (s *SlackSource) historyParameters(channelID, cursor string) *slack.GetConversationHistoryParameters {
+	params := &slack.GetConversationHistoryParameters{ChannelID: channelID, Cursor: cursor, Limit: defaultHistoryLimit}
+	if !s.since.IsZero() {
+		params.Oldest = formatSlackTimestamp(s.since)
+	}
+	return params
+}
+
+func (s *SlackSource) retryConversationHistory(ctx context.Context, channelID string, attempt int, err error) bool {
+	retryAfter, rateLimited := rateLimitRetryAfter(err)
+	if !rateLimited {
+		slog.Warn("slack conversation history failed", "channel", channelID, "error", s.safeSlackError(err))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s: %w", channelID, err))
+		return false
+	}
+	if attempt > maxRateLimitRetries {
+		slog.Warn("slack conversation history rate limited, giving up",
+			"channel", channelID, "attempts", attempt, "error", s.safeSlackError(err))
+		s.captureErr(fmt.Errorf("slack conversation history for channel %s: rate limited after %d retries: %w", channelID, maxRateLimitRetries, err))
+		return false
+	}
+	slog.Warn("slack conversation history rate limited, retrying",
+		"channel", channelID, "retry_after", retryAfter, "attempt", attempt)
+	if waitErr := waitRetryAfter(ctx, retryAfter); waitErr != nil {
+		slog.Warn("slack rate limiter wait failed", "channel", channelID, "error", s.safeSlackError(waitErr))
+		return false
+	}
+	return true
+}
+
+func (s *SlackSource) processSlackMessages(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	messages []slack.Message,
+	seen map[string]struct{},
+) bool {
+	for _, message := range messages {
+		if ctx.Err() != nil {
+			return false
+		}
+		if !s.since.IsZero() && parseSlackTimestamp(message.Timestamp).Before(s.since) {
+			continue
+		}
+		if !s.processSlackMessage(ctx, output, fileInfoLimiter, fileDownloadLimiter, channel, message, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *SlackSource) processSlackMessage(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	message slack.Message,
+	seen map[string]struct{},
+) bool {
+	metadata := finding.SourceMetadata{
+		SourceType: "slack", Channel: channel.ID, ChannelName: channel.Name,
+		MessageUser: message.User, MessageTS: message.Timestamp, ThreadTS: message.ThreadTimestamp,
+	}
+	if message.Text != "" && !sendSlackChunk(ctx, output, source.Chunk{Data: []byte(message.Text), SourceMetadata: metadata}) {
+		return false
+	}
+	if !s.includeFiles {
+		return true
+	}
+	return s.processSlackFiles(ctx, output, fileInfoLimiter, fileDownloadLimiter, channel, message, metadata, seen)
+}
+
+func (s *SlackSource) processSlackFiles(
+	ctx context.Context,
+	output chan<- source.Chunk,
+	fileInfoLimiter, fileDownloadLimiter *rate.Limiter,
+	channel slack.Channel,
+	message slack.Message,
+	metadata finding.SourceMetadata,
+	seen map[string]struct{},
+) bool {
+	for _, attached := range message.Files {
+		if attached.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[attached.ID]; duplicate {
+			continue
+		}
+		seen[attached.ID] = struct{}{}
+		chunk, ok, err := s.fileChunk(ctx, fileInfoLimiter, fileDownloadLimiter, channel, message, attached, metadata)
+		if err != nil {
+			s.captureErr(err)
+			return false
+		}
+		if ok && !sendSlackChunk(ctx, output, chunk) {
+			return false
+		}
+	}
+	return true
 }
 
 func sendSlackChunk(ctx context.Context, output chan<- source.Chunk, chunk source.Chunk) bool {

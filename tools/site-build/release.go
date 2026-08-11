@@ -163,87 +163,112 @@ func applySiteReleaseUpdates(siteDir string, updates []sitePageUpdate) error {
 	if err := validateDirectoryTree(siteDir, siteDir); err != nil {
 		return fmt.Errorf("inspect site transaction root: %w", err)
 	}
+	normalized, err := normalizeSiteUpdates(siteDir, updates)
+	if err != nil {
+		return err
+	}
+	createdDirs, err := prepareSiteTargetDirectories(siteDir, normalized)
+	if err != nil {
+		return err
+	}
+	prepared, err := prepareSiteUpdates(normalized)
+	if err != nil {
+		cleanupPreparedSiteUpdates(prepared)
+		cleanupCreatedDirectories(createdDirs)
+		return err
+	}
+	if err := publishPreparedSiteUpdates(prepared); err != nil {
+		cleanupPreparedSiteUpdates(prepared)
+		cleanupCreatedDirectories(createdDirs)
+		return err
+	}
+	return nil
+}
 
+func normalizeSiteUpdates(siteDir string, updates []sitePageUpdate) ([]sitePageUpdate, error) {
 	seenTargets := make(map[string]struct{}, len(updates))
 	normalized := make([]sitePageUpdate, len(updates))
 	for index, update := range updates {
 		update.path = filepath.Clean(update.path)
 		rel, err := filepath.Rel(siteDir, update.path)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("site transaction target %s escapes %s", update.path, siteDir)
+			return nil, fmt.Errorf("site transaction target %s escapes %s", update.path, siteDir)
 		}
 		if _, duplicate := seenTargets[update.path]; duplicate {
-			return fmt.Errorf("site transaction contains duplicate target %s", update.path)
+			return nil, fmt.Errorf("site transaction contains duplicate target %s", update.path)
 		}
 		seenTargets[update.path] = struct{}{}
 		normalized[index] = update
 	}
-	updates = normalized
+	return normalized, nil
+}
 
+func prepareSiteTargetDirectories(siteDir string, updates []sitePageUpdate) ([]string, error) {
 	var createdDirs []string
 	for _, update := range updates {
 		created, err := ensureDirectoryTreeTracked(siteDir, filepath.Dir(update.path))
 		if err != nil {
 			cleanupCreatedDirectories(createdDirs)
-			return fmt.Errorf("prepare target directory for %s: %w", update.path, err)
+			return nil, fmt.Errorf("prepare target directory for %s: %w", update.path, err)
 		}
 		createdDirs = append(createdDirs, created...)
 	}
+	return createdDirs, nil
+}
 
+func prepareSiteUpdates(updates []sitePageUpdate) ([]preparedSiteUpdate, error) {
 	prepared := make([]preparedSiteUpdate, 0, len(updates))
-	cleanupTemps := func() {
-		for _, item := range prepared {
-			if item.tempPath != "" {
-				_ = os.Remove(item.tempPath)
-			}
-		}
-	}
 	for _, update := range updates {
-		item := preparedSiteUpdate{update: update}
-		info, err := os.Lstat(update.path)
-		switch {
-		case err == nil:
-			if !info.Mode().IsRegular() {
-				cleanupTemps()
-				cleanupCreatedDirectories(createdDirs)
-				return fmt.Errorf("site transaction target %s must be a regular file", update.path)
-			}
-			item.originalContent, err = os.ReadFile(update.path)
-			if err != nil {
-				cleanupTemps()
-				cleanupCreatedDirectories(createdDirs)
-				return fmt.Errorf("snapshot site target %s: %w", update.path, err)
-			}
-			item.originalMode = info.Mode().Perm()
-			item.existed = true
-		case os.IsNotExist(err):
-		case err != nil:
-			cleanupTemps()
-			cleanupCreatedDirectories(createdDirs)
-			return fmt.Errorf("inspect site target %s: %w", update.path, err)
-		}
-
-		item.tempPath, err = prepareSiblingFile(update.path, update.content, update.mode)
+		item, err := prepareSiteUpdate(update)
 		if err != nil {
-			cleanupTemps()
-			cleanupCreatedDirectories(createdDirs)
-			return fmt.Errorf("stage site target %s: %w", update.path, err)
+			return prepared, err
 		}
 		prepared = append(prepared, item)
 	}
+	return prepared, nil
+}
 
+func prepareSiteUpdate(update sitePageUpdate) (preparedSiteUpdate, error) {
+	item := preparedSiteUpdate{update: update}
+	info, err := os.Lstat(update.path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return item, fmt.Errorf("site transaction target %s must be a regular file", update.path)
+		}
+		item.originalContent, err = os.ReadFile(update.path)
+		if err != nil {
+			return item, fmt.Errorf("snapshot site target %s: %w", update.path, err)
+		}
+		item.originalMode, item.existed = info.Mode().Perm(), true
+	} else if !os.IsNotExist(err) {
+		return item, fmt.Errorf("inspect site target %s: %w", update.path, err)
+	}
+	item.tempPath, err = prepareSiblingFile(update.path, update.content, update.mode)
+	if err != nil {
+		return item, fmt.Errorf("stage site target %s: %w", update.path, err)
+	}
+	return item, nil
+}
+
+func publishPreparedSiteUpdates(prepared []preparedSiteUpdate) error {
 	for index := range prepared {
 		item := &prepared[index]
 		if err := replaceSiteFile(item.tempPath, item.update.path); err != nil {
 			publishErr := fmt.Errorf("publish site target %s: %w", item.update.path, err)
 			rollbackErr := rollbackSiteUpdates(prepared[:index])
-			cleanupTemps()
-			cleanupCreatedDirectories(createdDirs)
 			return errors.Join(publishErr, rollbackErr)
 		}
 		item.tempPath = ""
 	}
 	return nil
+}
+
+func cleanupPreparedSiteUpdates(prepared []preparedSiteUpdate) {
+	for _, item := range prepared {
+		if item.tempPath != "" {
+			_ = os.Remove(item.tempPath)
+		}
+	}
 }
 
 func prepareSiblingFile(target string, content []byte, mode os.FileMode) (string, error) {
@@ -312,14 +337,14 @@ func replaceReleaseFooter(content []byte, version string) ([]byte, error) {
 	if closeOffset < 0 {
 		return nil, fmt.Errorf("marked release footer has no closing span")
 	}
-	close := bodyStart + closeOffset
-	if strings.ContainsAny(text[bodyStart:close], "<>") {
+	closingSpan := bodyStart + closeOffset
+	if strings.ContainsAny(text[bodyStart:closingSpan], "<>") {
 		return nil, fmt.Errorf("marked release footer body must be plain text")
 	}
-	if footerTextCount == 1 && !strings.Contains(text[bodyStart:close], "concept: redacted") {
+	if footerTextCount == 1 && !strings.Contains(text[bodyStart:closingSpan], "concept: redacted") {
 		return nil, fmt.Errorf("release footer text exists outside the marked span")
 	}
-	wanted := text[:bodyStart] + version + releaseFooterText + text[close:]
+	wanted := text[:bodyStart] + version + releaseFooterText + text[closingSpan:]
 	return []byte(wanted), nil
 }
 

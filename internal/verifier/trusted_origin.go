@@ -13,20 +13,39 @@ import (
 // accepting a finding-derived URL would turn verification into a credential
 // exfiltration primitive.
 func NormalizeTrustedHTTPSOrigin(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	u, err := url.ParseRequestURI(raw)
+	u, err := parseTrustedHTTPSOrigin(raw)
 	if err != nil {
-		return "", fmt.Errorf("invalid trusted origin: %w", err)
+		return "", err
+	}
+	hostname, err := trustedOriginHostname(u)
+	if err != nil {
+		return "", err
+	}
+	u.Host = hostnameWithOptionalPort(hostname, u.Port())
+	u.Scheme = "https"
+	u.Path = ""
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func parseTrustedHTTPSOrigin(raw string) (*url.URL, error) {
+	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid trusted origin: %w", err)
 	}
 	if !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Opaque != "" {
-		return "", fmt.Errorf("invalid trusted origin: an absolute HTTPS origin is required")
+		return nil, fmt.Errorf("invalid trusted origin: an absolute HTTPS origin is required")
 	}
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return "", fmt.Errorf("invalid trusted origin: userinfo, query, and fragment are not allowed")
+		return nil, fmt.Errorf("invalid trusted origin: userinfo, query, and fragment are not allowed")
 	}
 	if u.EscapedPath() != "" && u.EscapedPath() != "/" {
-		return "", fmt.Errorf("invalid trusted origin: a base origin without a path is required")
+		return nil, fmt.Errorf("invalid trusted origin: a base origin without a path is required")
 	}
+	return u, nil
+}
+
+func trustedOriginHostname(u *url.URL) (string, error) {
 	hostname := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if hostname == "" || strings.ContainsAny(hostname, "* \t\r\n") {
 		return "", fmt.Errorf("invalid trusted origin: a concrete hostname is required")
@@ -40,21 +59,27 @@ func NormalizeTrustedHTTPSOrigin(raw string) (string, error) {
 	if looksLikeNumericHost(hostname) {
 		return "", fmt.Errorf("invalid trusted origin: non-canonical numeric targets are not allowed")
 	}
-	port := u.Port()
+	if err := validateTrustedOriginPort(u.Port()); err != nil {
+		return "", err
+	}
+	return hostname, nil
+}
+
+func validateTrustedOriginPort(port string) error {
 	if port != "" {
 		value, portErr := strconv.ParseUint(port, 10, 16)
 		if portErr != nil || value == 0 {
-			return "", fmt.Errorf("invalid trusted origin: port must be between 1 and 65535")
+			return fmt.Errorf("invalid trusted origin: port must be between 1 and 65535")
 		}
 	}
-	u.Host = hostname
+	return nil
+}
+
+func hostnameWithOptionalPort(hostname, port string) string {
 	if port != "" {
-		u.Host += ":" + port
+		return hostname + ":" + port
 	}
-	u.Scheme = "https"
-	u.Path = ""
-	u.RawPath = ""
-	return strings.TrimRight(u.String(), "/"), nil
+	return hostname
 }
 
 func looksLikeNumericHost(hostname string) bool {

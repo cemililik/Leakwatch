@@ -99,11 +99,11 @@ func (d *APIKeyDetector) Scan(_ context.Context, data []byte) []detector.RawFind
 	for _, match := range matches {
 		keyOpen := submatchBytes(data, match, 1)
 		key := submatchBytes(data, match, 2)
-		keyClose := submatchBytes(data, match, 3)
+		keyClosingQuote := submatchBytes(data, match, 3)
 		valueOpen := submatchBytes(data, match, 4)
 		value := submatchBytes(data, match, 5)
-		valueClose := submatchBytes(data, match, 6)
-		if !validQuotePair(keyOpen, keyClose) || !validQuotePair(valueOpen, valueClose) {
+		valueClosingQuote := submatchBytes(data, match, 6)
+		if !validQuotePair(keyOpen, keyClosingQuote) || !validQuotePair(valueOpen, valueClosingQuote) {
 			continue
 		}
 		if !hasAssignmentBoundary(data, match[1]) {
@@ -152,11 +152,11 @@ func submatchBytes(data []byte, indexes []int, group int) []byte {
 	return data[start:end]
 }
 
-func validQuotePair(open, close []byte) bool {
-	if len(open) == 0 || len(close) == 0 {
-		return len(open) == 0 && len(close) == 0
+func validQuotePair(open, closingQuote []byte) bool {
+	if len(open) == 0 || len(closingQuote) == 0 {
+		return len(open) == 0 && len(closingQuote) == 0
 	}
-	return len(open) == 1 && len(close) == 1 && open[0] == close[0]
+	return len(open) == 1 && len(closingQuote) == 1 && open[0] == closingQuote[0]
 }
 
 // hasAssignmentBoundary rejects partial captures such as a 64-byte prefix of

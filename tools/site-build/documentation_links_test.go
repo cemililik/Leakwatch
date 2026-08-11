@@ -209,9 +209,20 @@ func (v *markdownLinkValidator) validateDestination(sourcePath, rawDestination s
 	if parsed.Scheme != "" {
 		return nil
 	}
+	target, err := v.resolveLocalLinkTarget(sourcePath, rawDestination, parsed)
+	if err != nil {
+		return err
+	}
+	if err := v.validateLocalLinkTarget(sourcePath, rawDestination, target); err != nil {
+		return err
+	}
+	return v.validateMarkdownFragment(sourcePath, rawDestination, target, parsed.Fragment)
+}
+
+func (v *markdownLinkValidator) resolveLocalLinkTarget(sourcePath, rawDestination string, parsed *url.URL) (string, error) {
 	decodedPath, err := url.PathUnescape(parsed.Path)
 	if err != nil {
-		return fmt.Errorf("%s has malformed escaped link %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
+		return "", fmt.Errorf("%s has malformed escaped link %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
 	}
 	var target string
 	if decodedPath == "" {
@@ -224,8 +235,12 @@ func (v *markdownLinkValidator) validateDestination(sourcePath, rawDestination s
 	target = filepath.Clean(target)
 	rel, err := filepath.Rel(v.root, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%s has link %q outside the repository", filepath.ToSlash(sourcePath), rawDestination)
+		return "", fmt.Errorf("%s has link %q outside the repository", filepath.ToSlash(sourcePath), rawDestination)
 	}
+	return target, nil
+}
+
+func (v *markdownLinkValidator) validateLocalLinkTarget(sourcePath, rawDestination, target string) error {
 	info, err := os.Lstat(target)
 	if err != nil {
 		return fmt.Errorf("%s has unresolved link %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
@@ -233,18 +248,23 @@ func (v *markdownLinkValidator) validateDestination(sourcePath, rawDestination s
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s links to symlink %q; documentation targets must be repository-owned regular paths", filepath.ToSlash(sourcePath), rawDestination)
 	}
-	if parsed.Fragment != "" && strings.EqualFold(filepath.Ext(target), ".md") {
-		fragment, err := url.PathUnescape(parsed.Fragment)
-		if err != nil {
-			return fmt.Errorf("%s has malformed escaped fragment in %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
-		}
-		anchors, err := v.anchorsFor(target)
-		if err != nil {
-			return fmt.Errorf("%s cannot inspect fragment target %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
-		}
-		if _, exists := anchors[fragment]; !exists {
-			return fmt.Errorf("%s has unresolved fragment %q in %s", filepath.ToSlash(sourcePath), fragment, filepath.ToSlash(target))
-		}
+	return nil
+}
+
+func (v *markdownLinkValidator) validateMarkdownFragment(sourcePath, rawDestination, target, rawFragment string) error {
+	if rawFragment == "" || !strings.EqualFold(filepath.Ext(target), ".md") {
+		return nil
+	}
+	fragment, err := url.PathUnescape(rawFragment)
+	if err != nil {
+		return fmt.Errorf("%s has malformed escaped fragment in %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
+	}
+	anchors, err := v.anchorsFor(target)
+	if err != nil {
+		return fmt.Errorf("%s cannot inspect fragment target %q: %w", filepath.ToSlash(sourcePath), rawDestination, err)
+	}
+	if _, exists := anchors[fragment]; !exists {
+		return fmt.Errorf("%s has unresolved fragment %q in %s", filepath.ToSlash(sourcePath), fragment, filepath.ToSlash(target))
 	}
 	return nil
 }

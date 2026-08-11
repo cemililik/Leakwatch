@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 
@@ -101,53 +100,19 @@ func (v *Verifier) Verify(ctx context.Context, raw detector.RawFinding) finding.
 }
 
 func normalizeTrustedInstanceURL(rawURL string) (string, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	u, err := url.ParseRequestURI(rawURL)
+	normalized, err := verifier.NormalizeTrustedHTTPSOrigin(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid Grafana instance URL: %w", err)
 	}
-	if !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Opaque != "" {
-		return "", fmt.Errorf("invalid Grafana instance URL: an absolute HTTPS origin is required")
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid Grafana instance URL after normalization: %w", err)
 	}
-	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return "", fmt.Errorf("invalid Grafana instance URL: userinfo, query, and fragment are not allowed")
-	}
-	if u.EscapedPath() != "" && u.EscapedPath() != "/" {
-		return "", fmt.Errorf("invalid Grafana instance URL: a base origin without a path is required")
-	}
-
-	hostname := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if hostname == "" || strings.ContainsAny(hostname, "* \t\r\n") {
-		return "", fmt.Errorf("invalid Grafana instance URL: a concrete hostname is required")
-	}
+	hostname := u.Hostname()
 	if hostname == "grafana.com" || hostname == "www.grafana.com" {
 		return "", fmt.Errorf("invalid Grafana instance URL: the central grafana.com portal is not an issuing instance")
 	}
-	if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") {
-		return "", fmt.Errorf("invalid Grafana instance URL: local targets are not allowed")
-	}
-	if _, parseErr := netip.ParseAddr(hostname); parseErr == nil {
-		return "", fmt.Errorf("invalid Grafana instance URL: IP-literal targets are not allowed")
-	} else if strings.Contains(hostname, ":") || looksLikeNonCanonicalIPv4(hostname) {
-		return "", fmt.Errorf("invalid Grafana instance URL: malformed IP target")
-	}
-
-	u.Scheme = "https"
-	u.Path = ""
-	u.RawPath = ""
-	return strings.TrimRight(u.String(), "/"), nil
-}
-
-func looksLikeNonCanonicalIPv4(hostname string) bool {
-	if strings.HasPrefix(hostname, "0x") {
-		return true
-	}
-	for _, r := range hostname {
-		if (r < '0' || r > '9') && r != '.' {
-			return false
-		}
-	}
-	return true
+	return normalized, nil
 }
 
 func decodePermissionsObject(body io.Reader) (map[string]string, string, error) {

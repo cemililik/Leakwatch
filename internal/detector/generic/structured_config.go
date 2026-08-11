@@ -155,137 +155,153 @@ type structuredCandidate struct {
 // continues through the entire bounded input even after that retention cap, so
 // a large valid prefix cannot hide a secret near the end of a file.
 func lexJSONLike(ctx context.Context, data []byte) ([]jsonToken, []structuredCandidate, bool) {
-	tokens := make([]jsonToken, 0, minInt(len(data)/8, 4_096))
-	candidates := make([]structuredCandidate, 0, 8)
-	var previous [2]jsonToken
-	previousCount := 0
-	depth := 0
-	nextContextCheck := 0
-
-	emit := func(token jsonToken) {
-		if token.kind == jsonString {
-			decoded, ok := decodeJSONString(data, token)
-			if !ok {
-				token.kind = jsonOther
-			} else {
-				token.text = decoded
-			}
-		}
-		if previousCount == 2 && previous[0].kind == jsonString &&
-			previous[1].kind == jsonColon && token.kind == jsonString &&
-			previous[0].depth <= maxStructuredDepth && token.depth <= maxStructuredDepth &&
-			isHighConfidenceSecretKey(previous[0].text) &&
-			isContextSecretValue(previous[0].text, token.text) && len(candidates) < maxStructuredFindings {
-			candidates = append(candidates, structuredCandidate{key: previous[0], value: token})
-		}
-		if len(tokens) < maxStructuredTokens {
-			tokens = append(tokens, token)
-		}
-		if previousCount < 2 {
-			previous[previousCount] = token
-			previousCount++
-			return
-		}
-		previous[0], previous[1] = previous[1], token
+	lexer := jsonLikeLexer{
+		data: data, tokens: make([]jsonToken, 0, minInt(len(data)/8, 4_096)),
+		candidates: make([]structuredCandidate, 0, 8),
 	}
-
-	for i := 0; i < len(data); {
-		if i >= nextContextCheck {
-			select {
-			case <-ctx.Done():
-				return nil, nil, false
-			default:
-			}
-			nextContextCheck = i + 4_096
+	for position := 0; position < len(data); {
+		if ctx.Err() != nil {
+			return nil, nil, false
 		}
-		switch data[i] {
-		case ' ', '\t', '\r', '\n':
-			i++
-		case '/':
-			if i+1 < len(data) && data[i+1] == '/' {
-				i += 2
-				for i < len(data) && data[i] != '\n' {
-					if i >= nextContextCheck {
-						if ctx.Err() != nil {
-							return nil, nil, false
-						}
-						nextContextCheck = i + 4_096
-					}
-					i++
-				}
-				continue
+		next, complete := lexer.scanToken(ctx, position)
+		if !complete {
+			return nil, nil, false
+		}
+		position = next
+	}
+	return lexer.tokens, lexer.candidates, true
+}
+
+type jsonLikeLexer struct {
+	data          []byte
+	tokens        []jsonToken
+	candidates    []structuredCandidate
+	previous      [2]jsonToken
+	previousCount int
+	depth         int
+}
+
+func (l *jsonLikeLexer) scanToken(ctx context.Context, position int) (int, bool) {
+	value := l.data[position]
+	if value == ' ' || value == '\t' || value == '\r' || value == '\n' {
+		return position + 1, true
+	}
+	if value == '/' {
+		return l.scanCommentOrSlash(ctx, position)
+	}
+	if value == '"' {
+		token, next, ok, complete := scanJSONString(ctx, l.data, position, l.depth)
+		if ok {
+			l.emit(token)
+		}
+		return next, complete
+	}
+	if kind, opening, closing, ok := jsonStructuralToken(value); ok {
+		if closing && l.depth > 0 {
+			l.depth--
+		}
+		l.emit(jsonToken{kind: kind, start: position, end: position + 1, depth: l.depth})
+		if opening {
+			l.depth++
+		}
+		return position + 1, true
+	}
+	return l.scanOtherToken(ctx, position)
+}
+
+func jsonStructuralToken(value byte) (jsonTokenKind, bool, bool, bool) {
+	switch value {
+	case ':':
+		return jsonColon, false, false, true
+	case ',':
+		return jsonComma, false, false, true
+	case '{':
+		return jsonObjectStart, true, false, true
+	case '[':
+		return jsonArrayStart, true, false, true
+	case '}':
+		return jsonObjectEnd, false, true, true
+	case ']':
+		return jsonArrayEnd, false, true, true
+	default:
+		return jsonOther, false, false, false
+	}
+}
+
+func (l *jsonLikeLexer) scanCommentOrSlash(ctx context.Context, position int) (int, bool) {
+	if position+1 >= len(l.data) || (l.data[position+1] != '/' && l.data[position+1] != '*') {
+		l.emit(jsonToken{kind: jsonOther, start: position, end: position + 1, depth: l.depth})
+		return position + 1, true
+	}
+	lineComment := l.data[position+1] == '/'
+	position += 2
+	nextContextCheck := position + 4_096
+	for position < len(l.data) {
+		if lineComment && l.data[position] == '\n' {
+			break
+		}
+		if !lineComment && position+1 < len(l.data) && l.data[position] == '*' && l.data[position+1] == '/' {
+			return position + 2, true
+		}
+		if position >= nextContextCheck {
+			if ctx.Err() != nil {
+				return position, false
 			}
-			if i+1 < len(data) && data[i+1] == '*' {
-				i += 2
-				for i+1 < len(data) && (data[i] != '*' || data[i+1] != '/') {
-					if i >= nextContextCheck {
-						if ctx.Err() != nil {
-							return nil, nil, false
-						}
-						nextContextCheck = i + 4_096
-					}
-					i++
-				}
-				if i+1 < len(data) {
-					i += 2
-				}
-				continue
+			nextContextCheck = position + 4_096
+		}
+		position++
+	}
+	return position, true
+}
+
+func (l *jsonLikeLexer) scanOtherToken(ctx context.Context, position int) (int, bool) {
+	start := position
+	nextContextCheck := position + 4_096
+	for position < len(l.data) && !isJSONDelimiter(l.data[position]) {
+		if position >= nextContextCheck {
+			if ctx.Err() != nil {
+				return position, false
 			}
-			emit(jsonToken{kind: jsonOther, start: i, end: i + 1, depth: depth})
-			i++
-		case '"':
-			token, next, ok, complete := scanJSONString(ctx, data, i, depth)
-			if !complete {
-				return nil, nil, false
-			}
-			i = next
-			if ok {
-				emit(token)
-			}
-		case ':':
-			emit(jsonToken{kind: jsonColon, start: i, end: i + 1, depth: depth})
-			i++
-		case ',':
-			emit(jsonToken{kind: jsonComma, start: i, end: i + 1, depth: depth})
-			i++
-		case '{':
-			emit(jsonToken{kind: jsonObjectStart, start: i, end: i + 1, depth: depth})
-			depth++
-			i++
-		case '[':
-			emit(jsonToken{kind: jsonArrayStart, start: i, end: i + 1, depth: depth})
-			depth++
-			i++
-		case '}':
-			if depth > 0 {
-				depth--
-			}
-			emit(jsonToken{kind: jsonObjectEnd, start: i, end: i + 1, depth: depth})
-			i++
-		case ']':
-			if depth > 0 {
-				depth--
-			}
-			emit(jsonToken{kind: jsonArrayEnd, start: i, end: i + 1, depth: depth})
-			i++
-		default:
-			start := i
-			for i < len(data) && !isJSONDelimiter(data[i]) {
-				if i >= nextContextCheck {
-					if ctx.Err() != nil {
-						return nil, nil, false
-					}
-					nextContextCheck = i + 4_096
-				}
-				i++
-			}
-			if i == start {
-				i++
-			}
-			emit(jsonToken{kind: jsonOther, start: start, end: i, depth: depth})
+			nextContextCheck = position + 4_096
+		}
+		position++
+	}
+	if position == start {
+		position++
+	}
+	l.emit(jsonToken{kind: jsonOther, start: start, end: position, depth: l.depth})
+	return position, true
+}
+
+func (l *jsonLikeLexer) emit(token jsonToken) {
+	if token.kind == jsonString {
+		decoded, ok := decodeJSONString(l.data, token)
+		if !ok {
+			token.kind = jsonOther
+		} else {
+			token.text = decoded
 		}
 	}
-	return tokens, candidates, true
+	if l.isSecretCandidate(token) {
+		l.candidates = append(l.candidates, structuredCandidate{key: l.previous[0], value: token})
+	}
+	if len(l.tokens) < maxStructuredTokens {
+		l.tokens = append(l.tokens, token)
+	}
+	if l.previousCount < 2 {
+		l.previous[l.previousCount] = token
+		l.previousCount++
+		return
+	}
+	l.previous[0], l.previous[1] = l.previous[1], token
+}
+
+func (l *jsonLikeLexer) isSecretCandidate(token jsonToken) bool {
+	return l.previousCount == 2 && l.previous[0].kind == jsonString &&
+		l.previous[1].kind == jsonColon && token.kind == jsonString &&
+		l.previous[0].depth <= maxStructuredDepth && token.depth <= maxStructuredDepth &&
+		isHighConfidenceSecretKey(l.previous[0].text) &&
+		isContextSecretValue(l.previous[0].text, token.text) && len(l.candidates) < maxStructuredFindings
 }
 
 func scanJSONString(ctx context.Context, data []byte, start, depth int) (jsonToken, int, bool, bool) {

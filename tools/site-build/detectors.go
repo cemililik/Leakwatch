@@ -364,72 +364,87 @@ func extractDetectors(f *ast.File) (out []detEntry, dropped []string) {
 // reference package-level regexp vars and whose proximity is a positive
 // integer literal or constant. Unsupported shapes fail closed in strict mode.
 func playgroundCorrelationOf(fd *ast.FuncDecl, patterns map[string]string, ints map[string]int) (primary, required []string, proximity int, sameBlock, rejectPlaceholders, oneToOne, ok bool) {
-	if fd == nil || fd.Body == nil || len(fd.Body.List) != 1 {
+	contract, valid := directPlaygroundContract(fd)
+	if !valid {
 		return nil, nil, 0, false, false, false, false
+	}
+	values := playgroundCorrelationValues{}
+	seenFields := map[string]bool{}
+	for _, element := range contract.Elts {
+		field, fieldName, valid := playgroundContractField(element, seenFields)
+		if !valid || !values.applyField(fieldName, field.Value, patterns, ints) {
+			return nil, nil, 0, false, false, false, false
+		}
+		seenFields[fieldName] = true
+	}
+	requiredFields := seenFields["Primary"] && seenFields["RequiredNearby"] && seenFields["ProximityBytes"]
+	ok = requiredFields && len(values.primary) > 0 && len(values.required) > 0 && values.proximity > 0
+	return values.primary, values.required, values.proximity, values.sameBlock, values.rejectPlaceholders, values.oneToOne, ok
+}
+
+type playgroundCorrelationValues struct {
+	primary, required             []string
+	proximity                     int
+	sameBlock, rejectPlaceholders bool
+	oneToOne                      bool
+}
+
+func directPlaygroundContract(fd *ast.FuncDecl) (*ast.CompositeLit, bool) {
+	if fd == nil || fd.Body == nil || len(fd.Body.List) != 1 {
+		return nil, false
 	}
 	ret, isReturn := fd.Body.List[0].(*ast.ReturnStmt)
 	if !isReturn || len(ret.Results) != 1 {
-		return nil, nil, 0, false, false, false, false
+		return nil, false
 	}
 	contract, isContract := ret.Results[0].(*ast.CompositeLit)
 	if !isContract || !isPlaygroundContractType(contract.Type) {
-		return nil, nil, 0, false, false, false, false
+		return nil, false
 	}
+	return contract, true
+}
 
-	seenFields := map[string]bool{}
-	for _, element := range contract.Elts {
-		field, isField := element.(*ast.KeyValueExpr)
-		if !isField {
-			return nil, nil, 0, false, false, false, false
-		}
-		name, isName := field.Key.(*ast.Ident)
-		if !isName || seenFields[name.Name] {
-			return nil, nil, 0, false, false, false, false
-		}
-		seenFields[name.Name] = true
-		switch name.Name {
-		case "Primary":
-			var valid bool
-			primary, valid = regexpIdentifierList(field.Value, patterns)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		case "RequiredNearby":
-			var valid bool
-			required, valid = regexpIdentifierList(field.Value, patterns)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		case "ProximityBytes":
-			var valid bool
-			proximity, valid = integerValue(field.Value, ints)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		case "SameLogicalBlock":
-			var valid bool
-			sameBlock, valid = boolLiteral(field.Value)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		case "RejectPlaceholders":
-			var valid bool
-			rejectPlaceholders, valid = boolLiteral(field.Value)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		case "OneToOne":
-			var valid bool
-			oneToOne, valid = boolLiteral(field.Value)
-			if !valid {
-				return nil, nil, 0, false, false, false, false
-			}
-		default:
-			return nil, nil, 0, false, false, false, false
-		}
+func playgroundContractField(element ast.Expr, seen map[string]bool) (*ast.KeyValueExpr, string, bool) {
+	field, isField := element.(*ast.KeyValueExpr)
+	if !isField {
+		return nil, "", false
 	}
-	requiredFields := seenFields["Primary"] && seenFields["RequiredNearby"] && seenFields["ProximityBytes"]
-	return primary, required, proximity, sameBlock, rejectPlaceholders, oneToOne, requiredFields && len(primary) > 0 && len(required) > 0 && proximity > 0
+	name, isName := field.Key.(*ast.Ident)
+	if !isName || seen[name.Name] {
+		return nil, "", false
+	}
+	return field, name.Name, true
+}
+
+func (values *playgroundCorrelationValues) applyField(name string, value ast.Expr, patterns map[string]string, ints map[string]int) bool {
+	switch name {
+	case "Primary":
+		var valid bool
+		values.primary, valid = regexpIdentifierList(value, patterns)
+		return valid
+	case "RequiredNearby":
+		var valid bool
+		values.required, valid = regexpIdentifierList(value, patterns)
+		return valid
+	case "ProximityBytes":
+		var valid bool
+		values.proximity, valid = integerValue(value, ints)
+		return valid
+	case "SameLogicalBlock":
+		var valid bool
+		values.sameBlock, valid = boolLiteral(value)
+		return valid
+	case "RejectPlaceholders":
+		var valid bool
+		values.rejectPlaceholders, valid = boolLiteral(value)
+		return valid
+	case "OneToOne":
+		var valid bool
+		values.oneToOne, valid = boolLiteral(value)
+		return valid
+	default:
+		return false
+	}
 }
 
 func isPlaygroundContractType(expr ast.Expr) bool {

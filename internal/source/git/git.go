@@ -179,29 +179,39 @@ func (s *GitSource) resolveCommitHash(ctx context.Context, ref string) (*object.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ref = strings.TrimSpace(ref)
-
-	if len(ref) == fullHashLen {
-		if !isHexString(ref) {
-			return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
-		}
-		c, err := s.repo.CommitObject(plumbing.NewHash(ref))
-		if err != nil {
-			return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		return c, nil
+	normalized, full, err := normalizeCommitHashReference(ref)
+	if err != nil {
+		return nil, err
 	}
+	if full {
+		return s.resolveFullCommitHash(ctx, normalized)
+	}
+	return s.resolveAbbreviatedCommitHash(ctx, normalized)
+}
 
+func normalizeCommitHashReference(ref string) (string, bool, error) {
+	ref = strings.TrimSpace(ref)
 	if len(ref) < minAbbrevHashLen {
-		return nil, fmt.Errorf("since-commit %q is too short: provide at least %d hex characters or a full 40-character SHA", ref, minAbbrevHashLen)
+		return "", false, fmt.Errorf("since-commit %q is too short: provide at least %d hex characters or a full 40-character SHA", ref, minAbbrevHashLen)
 	}
 	if len(ref) > fullHashLen || !isHexString(ref) {
-		return nil, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
+		return "", false, fmt.Errorf("since-commit %q is not a valid commit hash", ref)
 	}
+	return ref, len(ref) == fullHashLen, nil
+}
 
+func (s *GitSource) resolveFullCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
+	commit, err := s.repo.CommitObject(plumbing.NewHash(ref))
+	if err != nil {
+		return nil, fmt.Errorf("since-commit %q not found: %w", ref, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return commit, nil
+}
+
+func (s *GitSource) resolveAbbreviatedCommitHash(ctx context.Context, ref string) (*object.Commit, error) {
 	// Deliberately NOT go-git's Repository.ResolveRevision: it resolves a hash
 	// prefix by collecting every candidate and returning the first that resolves,
 	// with no ambiguity signal (there is no ErrAmbiguousRevision in go-git). For a

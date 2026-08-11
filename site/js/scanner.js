@@ -188,6 +188,60 @@
 
   var lastFound = [], lastTruncated = false;
 
+  function capturedDisplay(match, detector) {
+    var captured = "";
+    for (var i = 1; i < match.length; i++) {
+      if (match[i] && match[i].length > captured.length && (detector.required.length || match[i].length >= MIN_MATCH)) {
+        captured = match[i];
+      }
+    }
+    return captured || match[0];
+  }
+
+  function closestCompanionIndex(detector, text, byteOffsets, primaryRange, companions) {
+    var companionIndex = -1, bestDistance = -1;
+    companions.forEach(function (companion, index) {
+      if (detector.oneToOne && companion.used) return;
+      var distance = rangeGap(byteOffsets, primaryRange, companion);
+      if (distance > detector.proximity || (detector.sameBlock && !sameLogicalBlock(text, primaryRange, companion))) return;
+      if (bestDistance === -1 || distance < bestDistance) {
+        bestDistance = distance;
+        companionIndex = index;
+      } else if (distance === bestDistance) {
+        companionIndex = -1;
+      }
+    });
+    return companionIndex;
+  }
+
+  function recordDetectorMatch(detector, text, byteOffsets, companions, match, found, seen) {
+    var whole = match[0];
+    var display = capturedDisplay(match, detector);
+    var valueOffset = whole.lastIndexOf(display);
+    var primaryRange = { start: match.index, end: match.index + valueOffset + display.length };
+    var closing = valueOffset + display.length;
+    var truncatedQuotedValue = closing < whole.length && (whole[closing] === '"' || whole[closing] === "'") && escapedAt(whole, closing);
+    var companionIndex = closestCompanionIndex(detector, text, byteOffsets, primaryRange, companions);
+    var correlated = !detector.required.length || companionIndex >= 0;
+    if (!correlated || truncatedQuotedValue || whole.length < MIN_MATCH || (detector.rejectPlaceholders && isPlaceholder(display))) return;
+    if (detector.oneToOne && companionIndex >= 0) companions[companionIndex].used = true;
+    var line = lineOf(text, match.index);
+    var key = detector.id + "|" + display + "|" + line;
+    if (!seen[key]) {
+      seen[key] = true;
+      found.push({ id: detector.id, sev: detector.sev, line: line, val: display });
+    }
+  }
+
+  function scanDetectorPattern(detector, re, text, byteOffsets, companions, found, seen) {
+    re.lastIndex = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      recordDetectorMatch(detector, text, byteOffsets, companions, match, found, seen);
+      if (match.index === re.lastIndex) re.lastIndex++; // avoid zero-width loop
+    }
+  }
+
   function detectText(input) {
     var bounded = truncateUTF8(String(input || ""), INPUT_CAP);
     var text = bounded.text;
@@ -201,41 +255,7 @@
       if (d.kw.length && !d.kw.some(function (k) { return lower.indexOf(k.toLowerCase()) !== -1; })) return;
       var companions = allMatchRanges(d.required, text);
       d.res.forEach(function (re) {
-        re.lastIndex = 0;
-        var m;
-        while ((m = re.exec(text)) !== null) {
-          var whole = m[0];
-          // Prefer the captured secret value over its assignment wrapper.
-          var disp = whole, captured = "";
-          for (var i = 1; i < m.length; i++) {
-            if (m[i] && m[i].length > captured.length && (d.required.length || m[i].length >= MIN_MATCH)) captured = m[i];
-          }
-          if (captured) disp = captured;
-          var valueOffset = whole.lastIndexOf(disp);
-          var primaryRange = { start: m.index, end: m.index + valueOffset + disp.length };
-          var closing = valueOffset + disp.length;
-          var truncatedQuotedValue = closing < whole.length && (whole[closing] === '"' || whole[closing] === "'") && escapedAt(whole, closing);
-          var companionIndex = -1, bestDistance = -1;
-          companions.forEach(function (companion, index) {
-            if (d.oneToOne && companion.used) return;
-            var distance = rangeGap(byteOffsets, primaryRange, companion);
-            if (distance > d.proximity || (d.sameBlock && !sameLogicalBlock(text, primaryRange, companion))) return;
-            if (bestDistance === -1 || distance < bestDistance) {
-              bestDistance = distance;
-              companionIndex = index;
-            } else if (distance === bestDistance) {
-              companionIndex = -1;
-            }
-          });
-          var correlated = !d.required.length || companionIndex >= 0;
-          if (correlated && !truncatedQuotedValue && whole.length >= MIN_MATCH && (!d.rejectPlaceholders || !isPlaceholder(disp))) {
-            if (d.oneToOne && companionIndex >= 0) companions[companionIndex].used = true;
-            var line = lineOf(text, m.index);
-            var key = d.id + "|" + disp + "|" + line;
-            if (!seen[key]) { seen[key] = true; found.push({ id: d.id, sev: d.sev, line: line, val: disp }); }
-          }
-          if (m.index === re.lastIndex) re.lastIndex++; // avoid zero-width loop
-        }
+        scanDetectorPattern(d, re, text, byteOffsets, companions, found, seen);
       });
     });
 

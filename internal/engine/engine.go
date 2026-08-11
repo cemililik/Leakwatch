@@ -162,123 +162,16 @@ func (e *Engine) Scan(ctx context.Context, src source.Source) (*ScanResult, erro
 
 	jobs := make(chan source.Chunk, e.config.Concurrency*channelBufferMultiplier)
 	results := make(chan verifier.VerifyPair, e.config.Concurrency*channelBufferMultiplier)
-
-	// Start workers.
-	var wg sync.WaitGroup
-	for i := 0; i < e.config.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			e.worker(ctx, jobs, results)
-		}()
-	}
-
-	// Collect and verify results incrementally (bounded streaming).
-	//
-	// Raw secret byte lifetime: each VerifyPair carries the raw secret bytes
-	// (p.Raw) in memory only so that verification can re-present them to the
-	// relevant API. These bytes are never logged, written to disk, or otherwise
-	// persisted (per the project's secret-safety rule).
-	//
-	// Memory bound (ENG-M-02, resolved): rather than accumulating every detected
-	// pair for the whole scan before verifying, the collector buffers at most
-	// maxPairsInFlight pairs, streams that batch into verification, appends the
-	// resulting findings, and drops its references to the raw bytes so they
-	// become garbage-collectable immediately. Peak raw-secret memory is therefore
-	// bounded by maxPairsInFlight rather than by the total number of findings.
-	var findings []finding.Finding
-	var collectWg sync.WaitGroup
-	collectWg.Add(1)
-	go func() {
-		defer collectWg.Done()
-		batch := make([]verifier.VerifyPair, 0, maxPairsInFlight)
-		flush := func() {
-			if len(batch) == 0 {
-				return
-			}
-			findings = append(findings, e.verifyBatch(ctx, batch)...)
-			// Drop references to raw secret bytes so they are GC-eligible now
-			// instead of living until the whole scan completes.
-			for i := range batch {
-				batch[i] = verifier.VerifyPair{}
-			}
-			batch = batch[:0]
-		}
-		for p := range results {
-			batch = append(batch, p)
-			if len(batch) >= maxPairsInFlight {
-				flush()
-			}
-		}
-		flush()
-	}()
-
-	// Send chunks to the jobs channel.
-	// NOTE: Context cancellation during this loop depends on the source implementation
-	// closing its Chunks channel promptly when ctx is cancelled. If a source blocks
-	// indefinitely on send, this loop may not exit until the source returns.
-	scannedChunks := 0
-	// fullyDrained is true only when the range below exits because the source
-	// closed its chunks channel (normal completion), false when we break out
-	// early on cancellation. It gates the src.Err() read below: reading the
-	// source's terminal error is only race-free once its channel is closed.
-	fullyDrained := true
-loop:
-	for chunk := range src.Chunks(ctx) {
-		select {
-		case <-ctx.Done():
-			fullyDrained = false
-			break loop
-		case jobs <- chunk:
-			scannedChunks++
-		}
-	}
+	workers := e.startScanWorkers(ctx, jobs, results)
+	collected := e.startResultCollector(ctx, results)
+	scannedChunks, fullyDrained := enqueueSourceChunks(ctx, src, jobs)
 	close(jobs)
-
-	// Surface the source's terminal outcome. src.Err() is only valid to read
-	// after the source's chunks channel is fully drained (closed); that close is
-	// the happens-before edge publishing the error the source recorded before
-	// closing. On the cancellation break path the source goroutine may still be
-	// running, so we skip the read and let the interrupt path below report the
-	// outcome instead.
-	var srcErr error
-	if fullyDrained {
-		srcErr = src.Err()
-		if srcErr == nil && scannedChunks == 0 {
-			// A clean scan that produced nothing: make the silently-empty result
-			// visible so "0 findings, nothing scanned" is not mistaken for a
-			// verified-clean target.
-			slog.Warn("scan target yielded no scannable content", "source", src.Type())
-		}
-	}
-
-	// Wait for workers to finish
-	wg.Wait()
+	srcErr := completedSourceError(src, fullyDrained, scannedChunks)
+	workers.Wait()
 	close(results)
-
-	// Wait for the collector (which also ran verification) to finish.
-	collectWg.Wait()
-
-	// Apply post-scan filters.
-	findings = e.applyFilters(findings)
-
-	// Impose a single deterministic order so output is stable run-to-run.
+	findings := e.applyFilters(<-collected)
 	sortFindings(findings)
-
-	result := &ScanResult{
-		Findings:      findings,
-		ScannedChunks: scannedChunks,
-		Duration:      time.Since(start),
-		Interrupted:   ctx.Err() != nil,
-	}
-
-	slog.Info(
-		"scan completed",
-		"findings", len(findings),
-		"chunks", scannedChunks,
-		"duration", result.Duration,
-		"interrupted", result.Interrupted,
-	)
+	result := completedScanResult(start, findings, scannedChunks, ctx.Err() != nil)
 
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("scan interrupted: %w", ctx.Err())
@@ -292,6 +185,85 @@ loop:
 	}
 
 	return result, nil
+}
+
+func (e *Engine) startScanWorkers(
+	ctx context.Context,
+	jobs <-chan source.Chunk,
+	results chan<- verifier.VerifyPair,
+) *sync.WaitGroup {
+	workers := &sync.WaitGroup{}
+	for range e.config.Concurrency {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			e.worker(ctx, jobs, results)
+		}()
+	}
+	return workers
+}
+
+// startResultCollector keeps raw-secret memory bounded to maxPairsInFlight and
+// clears every processed batch before accepting the next one.
+func (e *Engine) startResultCollector(ctx context.Context, results <-chan verifier.VerifyPair) <-chan []finding.Finding {
+	collected := make(chan []finding.Finding, 1)
+	go func() {
+		var findings []finding.Finding
+		batch := make([]verifier.VerifyPair, 0, maxPairsInFlight)
+		for pair := range results {
+			batch = append(batch, pair)
+			if len(batch) >= maxPairsInFlight {
+				findings = append(findings, e.verifyBatch(ctx, batch)...)
+				batch = clearVerificationBatch(batch)
+			}
+		}
+		findings = append(findings, e.verifyBatch(ctx, batch)...)
+		clearVerificationBatch(batch)
+		collected <- findings
+		close(collected)
+	}()
+	return collected
+}
+
+func clearVerificationBatch(batch []verifier.VerifyPair) []verifier.VerifyPair {
+	for index := range batch {
+		batch[index] = verifier.VerifyPair{}
+	}
+	return batch[:0]
+}
+
+func enqueueSourceChunks(ctx context.Context, src source.Source, jobs chan<- source.Chunk) (int, bool) {
+	scanned := 0
+	for chunk := range src.Chunks(ctx) {
+		select {
+		case <-ctx.Done():
+			return scanned, false
+		case jobs <- chunk:
+			scanned++
+		}
+	}
+	return scanned, true
+}
+
+func completedSourceError(src source.Source, fullyDrained bool, scannedChunks int) error {
+	if !fullyDrained {
+		return nil
+	}
+	err := src.Err()
+	if err == nil && scannedChunks == 0 {
+		slog.Warn("scan target yielded no scannable content", "source", src.Type())
+	}
+	return err
+}
+
+func completedScanResult(start time.Time, findings []finding.Finding, scannedChunks int, interrupted bool) *ScanResult {
+	result := &ScanResult{
+		Findings: findings, ScannedChunks: scannedChunks,
+		Duration: time.Since(start), Interrupted: interrupted,
+	}
+	slog.Info("scan completed", "findings", len(findings), "chunks", scannedChunks,
+		"duration", result.Duration, "interrupted", result.Interrupted)
+	return result
 }
 
 func interruptedResult(start time.Time) *ScanResult {

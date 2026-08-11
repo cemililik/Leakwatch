@@ -261,54 +261,63 @@ func markdownContractBlocks(contents string) []documentationBlock {
 	lines := strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n")
 	var blocks []documentationBlock
 	for index := 0; index < len(lines); {
-		for index < len(lines) && strings.TrimSpace(lines[index]) == "" {
-			index++
-		}
+		index = nextNonBlankLine(lines, index)
 		if index >= len(lines) {
 			break
 		}
 		start := index
-		prefix := ""
-		if historicalVersionMarker.MatchString(lines[index]) {
-			index++
-			for index < len(lines) && strings.TrimSpace(lines[index]) == "" {
-				index++
-			}
-			prefix = strings.Join(lines[start:index], "\n") + "\n"
-			if index >= len(lines) {
-				blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix})
-				break
-			}
+		prefix, contentStart := documentationBlockPrefix(lines, index)
+		if contentStart >= len(lines) {
+			blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix})
+			break
 		}
-
-		trimmed := strings.TrimSpace(lines[index])
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fence := trimmed[:3]
-			end := index + 1
-			for end < len(lines) {
-				if strings.HasPrefix(strings.TrimSpace(lines[end]), fence) {
-					end++
-					break
-				}
-				end++
-			}
-			blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix + strings.Join(lines[index:end], "\n")})
-			index = end
-			continue
-		}
-
-		end := index + 1
-		for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
-			if next := strings.TrimSpace(lines[end]); strings.HasPrefix(next, "```") || strings.HasPrefix(next, "~~~") {
-				break
-			}
-			end++
-		}
-		blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix + strings.Join(lines[index:end], "\n")})
+		end := documentationBlockEnd(lines, contentStart)
+		blocks = append(blocks, documentationBlock{startLine: start + 1, text: prefix + strings.Join(lines[contentStart:end], "\n")})
 		index = end
 	}
 	markLeakwatchImageTagTables(blocks)
 	return blocks
+}
+
+func nextNonBlankLine(lines []string, index int) int {
+	for index < len(lines) && strings.TrimSpace(lines[index]) == "" {
+		index++
+	}
+	return index
+}
+
+func documentationBlockPrefix(lines []string, index int) (string, int) {
+	if !historicalVersionMarker.MatchString(lines[index]) {
+		return "", index
+	}
+	contentStart := nextNonBlankLine(lines, index+1)
+	return strings.Join(lines[index:contentStart], "\n") + "\n", contentStart
+}
+
+func documentationBlockEnd(lines []string, start int) int {
+	trimmed := strings.TrimSpace(lines[start])
+	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		return fencedDocumentationBlockEnd(lines, start, trimmed[:3])
+	}
+	end := start + 1
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" && !startsMarkdownFence(lines[end]) {
+		end++
+	}
+	return end
+}
+
+func fencedDocumentationBlockEnd(lines []string, start int, fence string) int {
+	for end := start + 1; end < len(lines); end++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[end]), fence) {
+			return end + 1
+		}
+	}
+	return len(lines)
+}
+
+func startsMarkdownFence(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
 func markLeakwatchImageTagTables(blocks []documentationBlock) {

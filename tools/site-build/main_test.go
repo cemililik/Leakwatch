@@ -443,6 +443,23 @@ func TestCommitStagedSite_LateFooterErrorDoesNotPublishGeneratedFiles(t *testing
 }
 
 func TestCommitStagedSite_ReplaceFailureRollsBackEveryPublishedTarget(t *testing.T) {
+	fixture := prepareSiteRollbackFixture(t)
+	injectThirdReplaceFailure(t)
+
+	if _, err := commitStagedSite(fixture.root, fixture.stageRoot, "v1.7.0"); err == nil {
+		t.Fatal("commitStagedSite() error = nil, want injected transaction failure")
+	}
+	assertSiteTransactionRolledBack(t, fixture)
+}
+
+type siteRollbackFixture struct {
+	root, stageRoot, siteDir   string
+	existingPath, newPath      string
+	footerPath, originalFooter string
+}
+
+func prepareSiteRollbackFixture(t *testing.T) siteRollbackFixture {
+	t.Helper()
 	root := t.TempDir()
 	siteDir := filepath.Join(root, "site")
 	jsDir := filepath.Join(siteDir, "js")
@@ -471,7 +488,15 @@ func TestCommitStagedSite_ReplaceFailureRollsBackEveryPublishedTarget(t *testing
 	if err := os.WriteFile(filepath.Join(stagedJS, "b-new.js"), []byte("new file output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return siteRollbackFixture{
+		root: root, stageRoot: stageRoot, siteDir: siteDir,
+		existingPath: existingPath, newPath: newPath,
+		footerPath: footerPath, originalFooter: originalFooter,
+	}
+}
 
+func injectThirdReplaceFailure(t *testing.T) {
+	t.Helper()
 	originalReplace := replaceSiteFile
 	callCount := 0
 	replaceSiteFile = func(oldPath, newPath string) error {
@@ -482,35 +507,38 @@ func TestCommitStagedSite_ReplaceFailureRollsBackEveryPublishedTarget(t *testing
 		return os.Rename(oldPath, newPath)
 	}
 	t.Cleanup(func() { replaceSiteFile = originalReplace })
+}
 
-	if _, err := commitStagedSite(root, stageRoot, "v1.7.0"); err == nil {
-		t.Fatal("commitStagedSite() error = nil, want injected transaction failure")
-	}
-	existing, err := os.ReadFile(existingPath)
+func assertSiteTransactionRolledBack(t *testing.T, fixture siteRollbackFixture) {
+	t.Helper()
+	existing, err := os.ReadFile(fixture.existingPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(existing) != "old generated output" {
 		t.Fatalf("existing generated target was not rolled back: %q", existing)
 	}
-	info, err := os.Stat(existingPath)
+	info, err := os.Stat(fixture.existingPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("rolled-back target mode = %o, want 600", got)
 	}
-	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(fixture.newPath); !os.IsNotExist(err) {
 		t.Fatalf("new target survived transaction rollback: err=%v", err)
 	}
-	footer, err := os.ReadFile(footerPath)
+	footer, err := os.ReadFile(fixture.footerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(footer) != originalFooter {
+	if string(footer) != fixture.originalFooter {
 		t.Fatalf("footer changed after failed transaction: %q", footer)
 	}
-	for _, pattern := range []string{filepath.Join(jsDir, ".*.tmp-*"), filepath.Join(siteDir, ".*.tmp-*")} {
+	for _, pattern := range []string{
+		filepath.Join(fixture.siteDir, "js", ".*.tmp-*"),
+		filepath.Join(fixture.siteDir, ".*.tmp-*"),
+	} {
 		matches, globErr := filepath.Glob(pattern)
 		if globErr != nil {
 			t.Fatal(globErr)

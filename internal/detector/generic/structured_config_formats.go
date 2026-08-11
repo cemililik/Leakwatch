@@ -46,98 +46,97 @@ func (d *StructuredConfigDetector) scanLineConfig(ctx context.Context, data []by
 	if !confident {
 		return nil
 	}
-	findings := make([]detector.RawFinding, 0, 4)
-	var yamlPath []yamlPathComponent
-	var tomlPath []string
+	scanner := lineConfigScanner{detector: d, ctx: ctx, data: data, format: format}
+	return scanner.scan()
+}
 
-	for offset := 0; offset < len(data); {
-		lineEnd, complete := contextLineEnd(ctx, data, offset)
+type lineConfigScanner struct {
+	detector *StructuredConfigDetector
+	ctx      context.Context
+	data     []byte
+	format   lineConfigFormat
+	findings []detector.RawFinding
+	yamlPath []yamlPathComponent
+	tomlPath []string
+}
+
+func (s *lineConfigScanner) scan() []detector.RawFinding {
+	s.findings = make([]detector.RawFinding, 0, 4)
+	for offset := 0; offset < len(s.data); {
+		lineEnd, complete := contextLineEnd(s.ctx, s.data, offset)
 		if !complete {
 			return nil
 		}
-		line := data[offset:lineEnd]
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
+		offset = s.processLine(offset, lineEnd)
+	}
+	return s.findings
+}
 
-		if format == formatTOML {
-			if section, ok := parseTOMLSection(line); ok {
-				tomlPath = section
-				offset = nextLineOffset(lineEnd, len(data))
-				continue
-			}
-		}
-
-		assignment, ok := parseLineAssignment(line, offset, format)
-		if !ok {
-			offset = nextLineOffset(lineEnd, len(data))
-			continue
-		}
-
-		var path []string
-		switch format {
-		case formatYAML:
-			for len(yamlPath) > 0 && yamlPath[len(yamlPath)-1].indent >= assignment.indent {
-				yamlPath = yamlPath[:len(yamlPath)-1]
-			}
-			path = yamlComponents(yamlPath)
-			if !assignment.hasValue {
-				yamlPath = append(yamlPath, yamlPathComponent{indent: assignment.indent, key: assignment.key})
-				offset = nextLineOffset(lineEnd, len(data))
-				continue
-			}
-		case formatTOML:
-			path = append(append([]string(nil), tomlPath...), assignment.inlinePath...)
-		}
-
-		if format == formatYAML && assignment.blockStyle != 0 {
-			value, start, end, nextOffset, scalarOK := parseYAMLBlockScalar(
-				ctx, data, nextLineOffset(lineEnd, len(data)), assignment.indent, assignment.blockStyle,
-			)
-			if !scalarOK {
-				offset = nextOffset
-				continue
-			}
-			assignment.value = value
-			assignment.valueStart = start
-			assignment.valueEnd = end
-			offset = nextOffset
-		}
-
-		if assignment.hasValue && isHighConfidenceSecretKey(assignment.key) &&
-			isContextSecretValue(assignment.key, assignment.value) && len(findings) < maxStructuredFindings {
-			keyPath := joinJSONPath(appendJSONPath(path, assignment.key))
-			raw := bytes.Clone(data[assignment.valueStart:assignment.valueEnd])
-			findings = append(findings, detector.RawFinding{
-				DetectorID: d.ID(),
-				Raw:        raw,
-				Redacted:   detector.RedactBytes(raw),
-				ExtraData: map[string]string{
-					"key_name":      assignment.key,
-					"key_path":      keyPath,
-					"config_format": string(format),
-				},
-				ByteStart: assignment.valueStart,
-				ByteEnd:   assignment.valueEnd,
-			})
-		}
-		if assignment.blockStyle == 0 {
-			offset = nextLineOffset(lineEnd, len(data))
+func (s *lineConfigScanner) processLine(offset, lineEnd int) int {
+	nextOffset := nextLineOffset(lineEnd, len(s.data))
+	line := bytes.TrimSuffix(s.data[offset:lineEnd], []byte{'\r'})
+	if s.format == formatTOML {
+		if section, ok := parseTOMLSection(line); ok {
+			s.tomlPath = section
+			return nextOffset
 		}
 	}
-	return findings
+	assignment, ok := parseLineAssignment(line, offset, s.format)
+	if !ok {
+		return nextOffset
+	}
+	path, terminal := s.assignmentPath(assignment)
+	if terminal {
+		return nextOffset
+	}
+	if s.format == formatYAML && assignment.blockStyle != 0 {
+		var scalarOK bool
+		assignment.value, assignment.valueStart, assignment.valueEnd, nextOffset, scalarOK = parseYAMLBlockScalar(s.ctx, s.data, nextOffset, assignment.indent, assignment.blockStyle)
+		if !scalarOK {
+			return nextOffset
+		}
+	}
+	s.appendFinding(path, assignment)
+	return nextOffset
+}
+
+func (s *lineConfigScanner) assignmentPath(assignment lineAssignment) ([]string, bool) {
+	switch s.format {
+	case formatYAML:
+		for len(s.yamlPath) > 0 && s.yamlPath[len(s.yamlPath)-1].indent >= assignment.indent {
+			s.yamlPath = s.yamlPath[:len(s.yamlPath)-1]
+		}
+		path := yamlComponents(s.yamlPath)
+		if !assignment.hasValue {
+			s.yamlPath = append(s.yamlPath, yamlPathComponent{indent: assignment.indent, key: assignment.key})
+			return path, true
+		}
+		return path, false
+	case formatTOML:
+		return append(append([]string(nil), s.tomlPath...), assignment.inlinePath...), false
+	default:
+		return nil, false
+	}
+}
+
+func (s *lineConfigScanner) appendFinding(path []string, assignment lineAssignment) {
+	if !assignment.hasValue || !isHighConfidenceSecretKey(assignment.key) ||
+		!isContextSecretValue(assignment.key, assignment.value) || len(s.findings) >= maxStructuredFindings {
+		return
+	}
+	raw := bytes.Clone(s.data[assignment.valueStart:assignment.valueEnd])
+	s.findings = append(s.findings, detector.RawFinding{
+		DetectorID: s.detector.ID(), Raw: raw, Redacted: detector.RedactBytes(raw),
+		ExtraData: map[string]string{
+			"key_name": assignment.key, "key_path": joinJSONPath(appendJSONPath(path, assignment.key)),
+			"config_format": string(s.format),
+		},
+		ByteStart: assignment.valueStart, ByteEnd: assignment.valueEnd,
+	})
 }
 
 func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat, bool) {
-	yamlSignalCount := 0
-	yamlNested := false
-	yamlInvalid := false
-	pendingYAMLParentIndent := -1
-	hasYAMLDocumentMarker := false
-	dotenvAssignments := 0
-	dotenvInvalid := false
-	tomlAssignments := 0
-	tomlInvalid := false
+	signals := lineConfigSignals{pendingYAMLParentIndent: -1}
 	for offset := 0; offset < len(data); {
 		lineEnd, complete := contextLineEnd(ctx, data, offset)
 		if !complete {
@@ -148,54 +147,72 @@ func detectLineConfigFormat(ctx context.Context, data []byte) (lineConfigFormat,
 			offset = nextLineOffset(lineEnd, len(data))
 			continue
 		}
-		if lineAssignment, ok := parseTOMLSection(line); ok && len(lineAssignment) > 0 {
+		if section, ok := parseTOMLSection(line); ok && len(section) > 0 {
 			return formatTOML, true
 		}
 		if bytes.Equal(line, []byte("---")) {
-			hasYAMLDocumentMarker = true
+			signals.hasYAMLDocumentMarker = true
 			offset = nextLineOffset(lineEnd, len(data))
 			continue
 		}
-		if signal, ok := yamlMappingSignal(data[offset:lineEnd]); ok {
-			yamlSignalCount++
-			if pendingYAMLParentIndent >= 0 {
-				if signal.indent > pendingYAMLParentIndent {
-					yamlNested = true
-				}
-				if signal.indent <= pendingYAMLParentIndent {
-					pendingYAMLParentIndent = -1
-				}
-			}
-			if !signal.hasValue {
-				pendingYAMLParentIndent = signal.indent
-			}
-			dotenvInvalid = true
-		} else if isDotenvAssignment(line) {
-			dotenvAssignments++
-			yamlInvalid = true
-		} else {
-			dotenvInvalid = true
-			yamlInvalid = true
-		}
-		if _, ok := parseLineAssignment(data[offset:lineEnd], offset, formatTOML); ok {
-			tomlAssignments++
-		} else {
-			tomlInvalid = true
-		}
+		signals.observe(data[offset:lineEnd], line, offset)
 		offset = nextLineOffset(lineEnd, len(data))
 	}
-	if (hasYAMLDocumentMarker && yamlSignalCount > 0) || yamlNested ||
-		(yamlSignalCount >= 2 && !yamlInvalid) {
+	return signals.detectedFormat()
+}
+
+type lineConfigSignals struct {
+	yamlSignalCount, dotenvAssignments, tomlAssignments int
+	pendingYAMLParentIndent                             int
+	yamlNested, yamlInvalid, dotenvInvalid, tomlInvalid bool
+	hasYAMLDocumentMarker                               bool
+}
+
+func (s *lineConfigSignals) observe(rawLine, trimmedLine []byte, offset int) {
+	if signal, ok := yamlMappingSignal(rawLine); ok {
+		s.observeYAML(signal)
+		s.dotenvInvalid = true
+	} else if isDotenvAssignment(trimmedLine) {
+		s.dotenvAssignments++
+		s.yamlInvalid = true
+	} else {
+		s.dotenvInvalid, s.yamlInvalid = true, true
+	}
+	if _, ok := parseLineAssignment(rawLine, offset, formatTOML); ok {
+		s.tomlAssignments++
+	} else {
+		s.tomlInvalid = true
+	}
+}
+
+func (s *lineConfigSignals) observeYAML(signal yamlSignal) {
+	s.yamlSignalCount++
+	if s.pendingYAMLParentIndent >= 0 {
+		if signal.indent > s.pendingYAMLParentIndent {
+			s.yamlNested = true
+		}
+		if signal.indent <= s.pendingYAMLParentIndent {
+			s.pendingYAMLParentIndent = -1
+		}
+	}
+	if !signal.hasValue {
+		s.pendingYAMLParentIndent = signal.indent
+	}
+}
+
+func (s lineConfigSignals) detectedFormat() (lineConfigFormat, bool) {
+	if (s.hasYAMLDocumentMarker && s.yamlSignalCount > 0) || s.yamlNested ||
+		(s.yamlSignalCount >= 2 && !s.yamlInvalid) {
 		return formatYAML, true
 	}
-	if dotenvAssignments > 0 && !dotenvInvalid && yamlSignalCount == 0 {
+	if s.dotenvAssignments > 0 && !s.dotenvInvalid && s.yamlSignalCount == 0 {
 		return formatDotenv, true
 	}
 	// Without source-extension metadata a lone `password = "..."` line is
 	// indistinguishable from source code. Requiring a complete, multi-assignment
 	// document preserves support for sectionless TOML while keeping that common
 	// code shape out of the high-confidence detector.
-	if tomlAssignments >= 2 && !tomlInvalid && yamlSignalCount == 0 {
+	if s.tomlAssignments >= 2 && !s.tomlInvalid && s.yamlSignalCount == 0 {
 		return formatTOML, true
 	}
 	return "", false
@@ -269,48 +286,70 @@ func isDotenvAssignment(line []byte) bool {
 }
 
 func parseLineAssignment(line []byte, base int, format lineConfigFormat) (lineAssignment, bool) {
+	trimmed, indentBytes, originalIndent, ok := normalizeAssignmentLine(line, format)
+	if !ok {
+		return lineAssignment{}, false
+	}
+	keyPath, delimiterIndex, ok := assignmentKeyPath(trimmed, format)
+	if !ok {
+		return lineAssignment{}, false
+	}
+	key := keyPath[len(keyPath)-1]
+	inlinePath := keyPath[:len(keyPath)-1]
+	valueBase := base + indentBytes + delimiterIndex + 1
+	valueBytes := trimmed[delimiterIndex+1:]
+	return assignmentFromValue(key, inlinePath, valueBytes, valueBase, originalIndent, format)
+}
+
+func normalizeAssignmentLine(line []byte, format lineConfigFormat) ([]byte, int, int, bool) {
 	trimmed := bytes.TrimLeft(line, " \t")
 	indentBytes := len(line) - len(trimmed)
 	originalIndent := visualIndent(line[:indentBytes])
 	if len(trimmed) == 0 || trimmed[0] == '#' || trimmed[0] == ';' || bytes.HasPrefix(trimmed, []byte("//")) {
-		return lineAssignment{}, false
+		return nil, 0, 0, false
 	}
+	prefix := ""
 	if format == formatYAML && bytes.HasPrefix(trimmed, []byte("- ")) {
-		rest := trimmed[2:]
+		prefix = "- "
+	} else if format == formatDotenv && bytes.HasPrefix(trimmed, []byte("export ")) {
+		prefix = "export "
+	}
+	if prefix != "" {
+		rest := trimmed[len(prefix):]
 		withoutSpacing := bytes.TrimLeft(rest, " \t")
-		indentBytes += 2 + len(rest) - len(withoutSpacing)
+		indentBytes += len(prefix) + len(rest) - len(withoutSpacing)
 		trimmed = withoutSpacing
 	}
-	if format == formatDotenv && bytes.HasPrefix(trimmed, []byte("export ")) {
-		rest := trimmed[len("export "):]
-		withoutSpacing := bytes.TrimLeft(rest, " \t")
-		indentBytes += len("export ") + len(rest) - len(withoutSpacing)
-		trimmed = withoutSpacing
-	}
+	return trimmed, indentBytes, originalIndent, true
+}
 
+func assignmentKeyPath(trimmed []byte, format lineConfigFormat) ([]string, int, bool) {
 	delimiter := byte('=')
 	if format == formatYAML {
 		delimiter = ':'
 	}
 	index := bytes.IndexByte(trimmed, delimiter)
 	if index <= 0 {
-		return lineAssignment{}, false
+		return nil, 0, false
 	}
 	keyBytes := bytes.TrimSpace(trimmed[:index])
-	keyPath := []string{string(keyBytes)}
 	if format == formatTOML {
-		var keyOK bool
-		keyPath, keyOK = parseTOMLDottedKey(keyBytes)
-		if !keyOK {
-			return lineAssignment{}, false
-		}
-	} else if !isPlainConfigKey(keyBytes) {
-		return lineAssignment{}, false
+		path, ok := parseTOMLDottedKey(keyBytes)
+		return path, index, ok
 	}
-	key := keyPath[len(keyPath)-1]
-	inlinePath := keyPath[:len(keyPath)-1]
-	valueBase := base + indentBytes + index + 1
-	valueBytes := trimmed[index+1:]
+	if !isPlainConfigKey(keyBytes) {
+		return nil, 0, false
+	}
+	return []string{string(keyBytes)}, index, true
+}
+
+func assignmentFromValue(
+	key string,
+	inlinePath []string,
+	valueBytes []byte,
+	valueBase, originalIndent int,
+	format lineConfigFormat,
+) (lineAssignment, bool) {
 	trimmedValue := bytes.TrimSpace(valueBytes)
 	if len(trimmedValue) == 0 || (format == formatYAML && trimmedValue[0] == '#') {
 		return lineAssignment{key: key, inlinePath: inlinePath, indent: originalIndent}, true
@@ -386,17 +425,31 @@ func parseYAMLBlockScalar(
 	parentIndent int,
 	style byte,
 ) (string, int, int, int, bool) {
-	type blockLine struct {
-		start, end  int
-		indentBytes int
-		blank       bool
+	lines, contentIndentBytes, nextOffset, ok := collectYAMLBlockLines(ctx, data, offset, parentIndent)
+	if !ok {
+		return "", 0, 0, nextOffset, false
 	}
-	lines := make([]blockLine, 0, 4)
+	decoded, first, last, ok := decodeYAMLBlockLines(data, lines, contentIndentBytes, style)
+	return decoded, first, last, nextOffset, ok
+}
+
+type yamlBlockLine struct {
+	start, end  int
+	indentBytes int
+	blank       bool
+}
+
+func collectYAMLBlockLines(
+	ctx context.Context,
+	data []byte,
+	offset, parentIndent int,
+) ([]yamlBlockLine, int, int, bool) {
+	lines := make([]yamlBlockLine, 0, 4)
 	contentIndentBytes := -1
 	for offset < len(data) {
 		lineEnd, complete := contextLineEnd(ctx, data, offset)
 		if !complete {
-			return "", 0, 0, len(data), false
+			return nil, 0, len(data), false
 		}
 		line := data[offset:lineEnd]
 		if len(line) > 0 && line[len(line)-1] == '\r' {
@@ -405,7 +458,7 @@ func parseYAMLBlockScalar(
 		trimmed := bytes.TrimSpace(line)
 		indentBytes := len(line) - len(bytes.TrimLeft(line, " \t"))
 		if bytes.IndexByte(line[:indentBytes], '\t') >= 0 {
-			return "", 0, 0, offset, false
+			return nil, 0, offset, false
 		}
 		indent := visualIndent(line[:indentBytes])
 		if len(trimmed) > 0 && indent <= parentIndent {
@@ -416,15 +469,18 @@ func parseYAMLBlockScalar(
 				contentIndentBytes = indentBytes
 			}
 		}
-		lines = append(lines, blockLine{
+		lines = append(lines, yamlBlockLine{
 			start: offset, end: offset + len(line), indentBytes: indentBytes, blank: len(trimmed) == 0,
 		})
 		offset = nextLineOffset(lineEnd, len(data))
 	}
 	if contentIndentBytes <= parentIndent || len(lines) == 0 {
-		return "", 0, 0, offset, false
+		return nil, 0, offset, false
 	}
+	return lines, contentIndentBytes, offset, true
+}
 
+func decodeYAMLBlockLines(data []byte, lines []yamlBlockLine, contentIndentBytes int, style byte) (string, int, int, bool) {
 	first, last := -1, -1
 	var decoded strings.Builder
 	previousBlank := false
@@ -438,7 +494,7 @@ func parseYAMLBlockScalar(
 		}
 		contentStart := line.start + contentIndentBytes
 		if contentStart > line.end {
-			return "", 0, 0, offset, false
+			return "", 0, 0, false
 		}
 		if first < 0 {
 			first = contentStart
@@ -455,9 +511,9 @@ func parseYAMLBlockScalar(
 		previousBlank = false
 	}
 	if first < 0 || last <= first || decoded.Len() > maxStructuredStringLen {
-		return "", 0, 0, offset, false
+		return "", 0, 0, false
 	}
-	return decoded.String(), first, last, offset, true
+	return decoded.String(), first, last, true
 }
 
 func parseLineScalar(value []byte, base int, format lineConfigFormat) (string, int, int, bool) {
@@ -476,41 +532,54 @@ func parseLineScalar(value []byte, base int, format lineConfigFormat) (string, i
 		return parseLineScalar(rest, base+anchorEnd, format)
 	}
 	if value[0] == '\'' || value[0] == '"' {
-		quote := value[0]
-		end := findClosingQuoteForFormat(value, quote, format)
-		if end <= 0 || !onlyWhitespaceOrComment(value[end+1:]) {
-			return "", 0, 0, false
-		}
-		raw := value[1:end]
-		if len(raw) > maxStructuredStringLen {
-			return "", 0, 0, false
-		}
+		return parseQuotedLineScalar(value, base, format)
+	}
+	return parsePlainLineScalar(value, base, format)
+}
+
+func parseQuotedLineScalar(value []byte, base int, format lineConfigFormat) (string, int, int, bool) {
+	quote := value[0]
+	end := findClosingQuoteForFormat(value, quote, format)
+	if end <= 0 || !onlyWhitespaceOrComment(value[end+1:]) {
+		return "", 0, 0, false
+	}
+	raw := value[1:end]
+	if len(raw) > maxStructuredStringLen {
+		return "", 0, 0, false
+	}
+	decoded, ok := decodeQuotedLineScalar(value[:end+1], raw, quote, format)
+	if !ok {
+		return "", 0, 0, false
+	}
+	return decoded, base + 1, base + end, true
+}
+
+func decodeQuotedLineScalar(quoted, raw []byte, quote byte, format lineConfigFormat) (string, bool) {
+	if quote == '\'' {
 		decoded := string(raw)
-		if quote == '"' {
-			var unquoted string
-			var err error
-			switch format {
-			case formatYAML:
-				err = yaml.Unmarshal(value[:end+1], &unquoted)
-			case formatTOML:
-				var scalar struct {
-					Value string `toml:"value"`
-				}
-				err = toml.Unmarshal(append([]byte("value = "), value[:end+1]...), &scalar)
-				unquoted = scalar.Value
-			default:
-				unquoted, err = strconv.Unquote(string(value[:end+1]))
-			}
-			if err != nil {
-				return "", 0, 0, false
-			}
-			decoded = unquoted
-		} else if format == formatYAML {
+		if format == formatYAML {
 			decoded = strings.ReplaceAll(decoded, "''", "'")
 		}
-		return decoded, base + 1, base + end, true
+		return decoded, true
 	}
+	var decoded string
+	var err error
+	switch format {
+	case formatYAML:
+		err = yaml.Unmarshal(quoted, &decoded)
+	case formatTOML:
+		var scalar struct {
+			Value string `toml:"value"`
+		}
+		err = toml.Unmarshal(append([]byte("value = "), quoted...), &scalar)
+		decoded = scalar.Value
+	default:
+		decoded, err = strconv.Unquote(string(quoted))
+	}
+	return decoded, err == nil
+}
 
+func parsePlainLineScalar(value []byte, base int, format lineConfigFormat) (string, int, int, bool) {
 	end := len(value)
 	for i := 1; i < len(value); i++ {
 		if value[i] == '#' && (value[i-1] == ' ' || value[i-1] == '\t') {
@@ -648,8 +717,7 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 	}
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.Strict = true
-	stack := make([]xmlFrame, 0, 8)
-	findings := make([]detector.RawFinding, 0, 4)
+	state := xmlScanState{detector: d, data: data, stack: make([]xmlFrame, 0, 8), findings: make([]detector.RawFinding, 0, 4)}
 	tokenCount := 0
 	for {
 		if tokenCount&255 == 0 && ctx.Err() != nil {
@@ -664,133 +732,171 @@ func (d *StructuredConfigDetector) scanXML(ctx context.Context, data []byte) []d
 			return nil
 		}
 		tokenCount++
-		switch value := token.(type) {
-		case xml.StartElement:
-			if len(stack) >= maxStructuredDepth {
-				return nil
-			}
-			path := []string(nil)
-			if len(stack) > 0 {
-				stack[len(stack)-1].hasChild = true
-				path = append(path, stack[len(stack)-1].path...)
-			}
-			path = append(path, value.Name.Local)
-			attributes, ok := parseXMLAttributeSpans(
-				data[tokenStart:int(decoder.InputOffset())], tokenStart, value.Attr,
-			)
-			if !ok {
-				return nil
-			}
-			findings = appendXMLAttributeFindings(d, findings, data, path, attributes)
-			stack = append(stack, xmlFrame{
-				name: value.Name.Local, path: path,
-				contentStart: int(decoder.InputOffset()), textStart: -1, validText: true,
-			})
-		case xml.CharData:
-			if len(stack) == 0 {
-				continue
-			}
-			frame := &stack[len(stack)-1]
-			start := tokenStart
-			end := int(decoder.InputOffset())
-			if bytes.HasPrefix(data[start:end], []byte("<![CDATA[")) &&
-				bytes.HasSuffix(data[start:end], []byte("]]>")) {
-				start += len("<![CDATA[")
-				end -= len("]]>")
-			}
-			if frame.textStart < 0 {
-				frame.textStart = start
-			}
-			frame.textEnd = end
-			frame.text = append(frame.text, value...)
-		case xml.Comment, xml.Directive, xml.ProcInst:
-			if len(stack) > 0 {
-				stack[len(stack)-1].validText = false
-			}
-		case xml.EndElement:
-			if len(stack) == 0 || stack[len(stack)-1].name != value.Name.Local {
-				return nil
-			}
-			frame := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if frame.hasChild || !frame.validText || frame.textStart < frame.contentStart {
-				continue
-			}
-			decoded := strings.TrimSpace(string(frame.text))
-			start, end := trimSpaceBounds(data, frame.textStart, frame.textEnd)
-			if start >= end || !isHighConfidenceSecretKey(frame.name) ||
-				!isContextSecretValue(frame.name, decoded) || len(findings) >= maxStructuredFindings {
-				continue
-			}
-			raw := bytes.Clone(data[start:end])
-			findings = append(findings, detector.RawFinding{
-				DetectorID: d.ID(), Raw: raw, Redacted: detector.RedactBytes(raw),
-				ExtraData: map[string]string{
-					"key_name": frame.name, "key_path": joinJSONPath(frame.path), "config_format": "xml",
-				},
-				ByteStart: start, ByteEnd: end,
-			})
+		if !state.consume(token, tokenStart, int(decoder.InputOffset())) {
+			return nil
 		}
 	}
-	if len(stack) != 0 {
+	if len(state.stack) != 0 {
 		return nil
 	}
-	return findings
+	return state.findings
+}
+
+type xmlScanState struct {
+	detector *StructuredConfigDetector
+	data     []byte
+	stack    []xmlFrame
+	findings []detector.RawFinding
+}
+
+func (s *xmlScanState) consume(token xml.Token, start, end int) bool {
+	switch value := token.(type) {
+	case xml.StartElement:
+		return s.pushElement(value, start, end)
+	case xml.CharData:
+		s.appendCharacterData(value, start, end)
+	case xml.Comment, xml.Directive, xml.ProcInst:
+		s.invalidateCurrentText()
+	case xml.EndElement:
+		return s.closeElement(value)
+	}
+	return true
+}
+
+func (s *xmlScanState) pushElement(element xml.StartElement, start, end int) bool {
+	if len(s.stack) >= maxStructuredDepth {
+		return false
+	}
+	path := []string(nil)
+	if len(s.stack) > 0 {
+		s.stack[len(s.stack)-1].hasChild = true
+		path = append(path, s.stack[len(s.stack)-1].path...)
+	}
+	path = append(path, element.Name.Local)
+	attributes, ok := parseXMLAttributeSpans(s.data[start:end], start, element.Attr)
+	if !ok {
+		return false
+	}
+	s.findings = appendXMLAttributeFindings(s.detector, s.findings, s.data, path, attributes)
+	s.stack = append(s.stack, xmlFrame{
+		name: element.Name.Local, path: path, contentStart: end, textStart: -1, validText: true,
+	})
+	return true
+}
+
+func (s *xmlScanState) appendCharacterData(value xml.CharData, start, end int) {
+	if len(s.stack) == 0 {
+		return
+	}
+	frame := &s.stack[len(s.stack)-1]
+	if bytes.HasPrefix(s.data[start:end], []byte("<![CDATA[")) && bytes.HasSuffix(s.data[start:end], []byte("]]>")) {
+		start += len("<![CDATA[")
+		end -= len("]]>")
+	}
+	if frame.textStart < 0 {
+		frame.textStart = start
+	}
+	frame.textEnd = end
+	frame.text = append(frame.text, value...)
+}
+
+func (s *xmlScanState) invalidateCurrentText() {
+	if len(s.stack) > 0 {
+		s.stack[len(s.stack)-1].validText = false
+	}
+}
+
+func (s *xmlScanState) closeElement(element xml.EndElement) bool {
+	if len(s.stack) == 0 || s.stack[len(s.stack)-1].name != element.Name.Local {
+		return false
+	}
+	frame := s.stack[len(s.stack)-1]
+	s.stack = s.stack[:len(s.stack)-1]
+	if frame.hasChild || !frame.validText || frame.textStart < frame.contentStart {
+		return true
+	}
+	decoded := strings.TrimSpace(string(frame.text))
+	start, end := trimSpaceBounds(s.data, frame.textStart, frame.textEnd)
+	if start >= end || !isHighConfidenceSecretKey(frame.name) ||
+		!isContextSecretValue(frame.name, decoded) || len(s.findings) >= maxStructuredFindings {
+		return true
+	}
+	raw := bytes.Clone(s.data[start:end])
+	s.findings = append(s.findings, detector.RawFinding{
+		DetectorID: s.detector.ID(), Raw: raw, Redacted: detector.RedactBytes(raw),
+		ExtraData: map[string]string{
+			"key_name": frame.name, "key_path": joinJSONPath(frame.path), "config_format": "xml",
+		},
+		ByteStart: start, ByteEnd: end,
+	})
+	return true
 }
 
 func parseXMLAttributeSpans(raw []byte, base int, decoded []xml.Attr) ([]xmlAttributeSpan, bool) {
 	if len(raw) < 3 || raw[0] != '<' {
 		return nil, false
 	}
-	i := 1
-	for i < len(raw) && !isXMLSpace(raw[i]) && raw[i] != '>' && raw[i] != '/' {
-		i++
-	}
+	i := xmlNameEnd(raw, 1)
 	spans := make([]xmlAttributeSpan, 0, len(decoded))
 	for i < len(raw) {
-		for i < len(raw) && isXMLSpace(raw[i]) {
-			i++
-		}
+		i = skipXMLSpace(raw, i)
 		if i >= len(raw) || raw[i] == '>' || raw[i] == '/' {
 			break
 		}
-		nameStart := i
-		for i < len(raw) && !isXMLSpace(raw[i]) && raw[i] != '=' && raw[i] != '>' && raw[i] != '/' {
-			i++
-		}
-		if i == nameStart {
+		if len(spans) >= len(decoded) {
 			return nil, false
 		}
-		for i < len(raw) && isXMLSpace(raw[i]) {
-			i++
-		}
-		if i >= len(raw) || raw[i] != '=' {
+		span, next, ok := parseXMLAttributeSpan(raw, base, i, decoded[len(spans)])
+		if !ok {
 			return nil, false
 		}
-		i++
-		for i < len(raw) && isXMLSpace(raw[i]) {
-			i++
-		}
-		if i >= len(raw) || (raw[i] != '\'' && raw[i] != '"') {
-			return nil, false
-		}
-		quote := raw[i]
-		i++
-		valueStart := i
-		for i < len(raw) && raw[i] != quote {
-			i++
-		}
-		if i >= len(raw) || len(spans) >= len(decoded) {
-			return nil, false
-		}
-		name := decoded[len(spans)].Name.Local
-		spans = append(spans, xmlAttributeSpan{
-			name: name, value: decoded[len(spans)].Value,
-			valueStart: base + valueStart, valueEnd: base + i,
-		})
-		i++
+		spans = append(spans, span)
+		i = next
 	}
 	return spans, len(spans) == len(decoded)
+}
+
+func xmlNameEnd(raw []byte, start int) int {
+	for start < len(raw) && !isXMLSpace(raw[start]) && raw[start] != '>' && raw[start] != '/' {
+		start++
+	}
+	return start
+}
+
+func skipXMLSpace(raw []byte, start int) int {
+	for start < len(raw) && isXMLSpace(raw[start]) {
+		start++
+	}
+	return start
+}
+
+func parseXMLAttributeSpan(raw []byte, base, start int, decoded xml.Attr) (xmlAttributeSpan, int, bool) {
+	nameEnd := start
+	for nameEnd < len(raw) && !isXMLSpace(raw[nameEnd]) && raw[nameEnd] != '=' && raw[nameEnd] != '>' && raw[nameEnd] != '/' {
+		nameEnd++
+	}
+	if nameEnd == start {
+		return xmlAttributeSpan{}, 0, false
+	}
+	valueStart := skipXMLSpace(raw, nameEnd)
+	if valueStart >= len(raw) || raw[valueStart] != '=' {
+		return xmlAttributeSpan{}, 0, false
+	}
+	valueStart = skipXMLSpace(raw, valueStart+1)
+	if valueStart >= len(raw) || (raw[valueStart] != '\'' && raw[valueStart] != '"') {
+		return xmlAttributeSpan{}, 0, false
+	}
+	quote := raw[valueStart]
+	valueStart++
+	closingOffset := bytes.IndexByte(raw[valueStart:], quote)
+	if closingOffset < 0 {
+		return xmlAttributeSpan{}, 0, false
+	}
+	valueEnd := valueStart + closingOffset
+	return xmlAttributeSpan{
+		name: decoded.Name.Local, value: decoded.Value,
+		valueStart: base + valueStart, valueEnd: base + valueEnd,
+	}, valueEnd + 1, true
 }
 
 func appendXMLAttributeFindings(

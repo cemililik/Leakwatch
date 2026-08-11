@@ -294,8 +294,8 @@ func retryAfterDelay(raw string, now time.Time) (time.Duration, bool) {
 	return delay, true
 }
 
-func addRetryJitter(base, max time.Duration, unit float64) time.Duration {
-	if base <= 0 || max <= base {
+func addRetryJitter(base, maxDelay time.Duration, unit float64) time.Duration {
+	if base <= 0 || maxDelay <= base {
 		return base
 	}
 	if unit < 0 {
@@ -305,8 +305,8 @@ func addRetryJitter(base, max time.Duration, unit float64) time.Duration {
 		unit = 1
 	}
 	jitter := time.Duration(float64(base) * maxJitterRatio * unit)
-	if base+jitter > max {
-		return max
+	if base+jitter > maxDelay {
+		return maxDelay
 	}
 	return base + jitter
 }

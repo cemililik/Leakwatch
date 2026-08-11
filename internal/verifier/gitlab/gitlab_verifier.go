@@ -251,29 +251,11 @@ func normalizedTokenScopes(standard []string, granular []gitLabGranularScope) ([
 		seen[scope] = struct{}{}
 	}
 	for _, scope := range granular {
-		access := strings.TrimSpace(scope.Access)
-		if !isAllowedGranularAccess(access) || len(scope.Permissions) == 0 || len(scope.Permissions) > 128 {
-			return nil, fmt.Errorf("GitLab granular scope has an invalid access contract")
+		labels, err := normalizedGranularScopeLabels(scope)
+		if err != nil {
+			return nil, err
 		}
-		target := ""
-		if access == "selected_memberships" {
-			switch {
-			case scope.ProjectID != nil && *scope.ProjectID > 0 && scope.GroupID == nil:
-				target = ":project:" + strconv.FormatInt(*scope.ProjectID, 10)
-			case scope.GroupID != nil && *scope.GroupID > 0 && scope.ProjectID == nil:
-				target = ":group:" + strconv.FormatInt(*scope.GroupID, 10)
-			default:
-				return nil, fmt.Errorf("GitLab selected-membership scope has an invalid target")
-			}
-		} else if scope.ProjectID != nil || scope.GroupID != nil {
-			return nil, fmt.Errorf("GitLab granular scope has an unexpected membership target")
-		}
-		for _, candidate := range scope.Permissions {
-			permission := strings.TrimSpace(candidate)
-			if permission == "" || len(permission) > 64 || !isSafeMetadataScope(permission) {
-				return nil, fmt.Errorf("GitLab granular scope has an invalid permission")
-			}
-			label := "granular:" + access + target + ":" + permission
+		for _, label := range labels {
 			seen[label] = struct{}{}
 			if len(seen) > 128 {
 				return nil, fmt.Errorf("GitLab normalized scope list exceeds safe limit")
@@ -286,6 +268,43 @@ func normalizedTokenScopes(standard []string, granular []gitLabGranularScope) ([
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func normalizedGranularScopeLabels(scope gitLabGranularScope) ([]string, error) {
+	access := strings.TrimSpace(scope.Access)
+	if !isAllowedGranularAccess(access) || len(scope.Permissions) == 0 || len(scope.Permissions) > 128 {
+		return nil, fmt.Errorf("GitLab granular scope has an invalid access contract")
+	}
+	target, err := granularScopeTarget(access, scope.ProjectID, scope.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	labels := make([]string, 0, len(scope.Permissions))
+	for _, candidate := range scope.Permissions {
+		permission := strings.TrimSpace(candidate)
+		if permission == "" || len(permission) > 64 || !isSafeMetadataScope(permission) {
+			return nil, fmt.Errorf("GitLab granular scope has an invalid permission")
+		}
+		labels = append(labels, "granular:"+access+target+":"+permission)
+	}
+	return labels, nil
+}
+
+func granularScopeTarget(access string, projectID, groupID *int64) (string, error) {
+	if access != "selected_memberships" {
+		if projectID != nil || groupID != nil {
+			return "", fmt.Errorf("GitLab granular scope has an unexpected membership target")
+		}
+		return "", nil
+	}
+	switch {
+	case projectID != nil && *projectID > 0 && groupID == nil:
+		return ":project:" + strconv.FormatInt(*projectID, 10), nil
+	case groupID != nil && *groupID > 0 && projectID == nil:
+		return ":group:" + strconv.FormatInt(*groupID, 10), nil
+	default:
+		return "", fmt.Errorf("GitLab selected-membership scope has an invalid target")
+	}
 }
 
 func isAllowedGranularAccess(access string) bool {
